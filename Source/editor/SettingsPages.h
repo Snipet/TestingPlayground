@@ -101,7 +101,14 @@ namespace playground::ui::settings
     constexpr int kTheme = 0, kZoom = 1;                     // General
     constexpr int kFormatOnRun = 0;                          // Editor
     constexpr int kShowProjects = 0;                         // Projects
+    constexpr int kLookForGit = 10, kChooseGit = 11, kDefaultGit = 12, kShowGitFolder = 13;   // ... its Git rows
     constexpr int kProviderKey = 0;                          // AI
+
+    // The Projects page's Git rows (SettingsGit.cpp, package 05): built after its folder, its codes acted on (true: one
+    // of theirs), and what they read that changes with no input.
+    void gitRows(Builder& b);
+    bool gitAct(const Control& c, Context& ctx);
+    uint64_t gitKey(const Context& ctx);
 
     // What a folder's button says on this platform: Show in Finder, Explorer, File Manager.
     const char* showFolderWord();

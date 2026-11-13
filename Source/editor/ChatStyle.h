@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <string>
 #include <utility>
 
 namespace playground::ui::chat
@@ -74,7 +75,7 @@ namespace playground::ui::chat
     {
         none, plus, key, chevronDown, chevronRight, chevronUp, arrowUp, stop, copy, check, file, play, dial, wave, alert,
         pencil, bolt, chevronLeft, bubble, dice, blocks, list, sun, moon, code, book, question, globe, image, cross,
-        snowflake, gear, chip, circuit, probe, window, folder, star, starFilled, search, flag
+        snowflake, gear, chip, circuit, probe, window, folder, star, starFilled, search, flag, branch
     };
 
     // A convex polygon filled (its vertices in order): cut at its vertices' x into the canvas's trapezoids.
@@ -493,6 +494,63 @@ namespace playground::ui::chat
                 fillConvex(c, xs, ys, 3, ink);
                 break;
             }
+            case Icon::branch:
+            {
+                // A branch: a stem with a dot at each end and a second line joining it from a dot at the right (package
+                // 05: a project linked to a git remote).
+                const float r = std::fmax(1.3f, s * 0.2f);
+                const float x0 = cx - s * 0.45f, x1 = cx + s * 0.45f;
+                c.segment(x0, cy - s * 0.55f, x0, cy + s * 0.55f, w, ink);
+                c.disc(x0, cy - s * 0.7f, r, ink);
+                c.disc(x0, cy + s * 0.7f, r, ink);
+                c.disc(x1, cy - s * 0.35f, r, ink);
+                c.segment(x1, cy - s * 0.2f, x1, cy + s * 0.05f, w, ink);
+                c.segment(x1, cy + s * 0.05f, x0, cy + s * 0.45f, w, ink);
+                break;
+            }
         }
+    }
+
+    // ---- Package 05: the git mark, after a linked project's name (the Projects card, the explorer, the top bar) ----------
+    // The branch glyph, then an up arrow with what there is to push and a down arrow with what there is to pull, each when
+    // it is known and more than none. Its width, and drawn with its left at x on the line through cy.
+    // What the mark shows: on while the project is linked; its counts (-1: not known); its remote, to a screen reader
+    // ("linked to github.com/me/pad").
+    struct BranchMark
+    {
+        bool on = false;
+        int ahead = -1, behind = -1;
+        std::string remote;
+    };
+    inline std::string branchCount(int n) { return n > 99 ? std::string("99+") : std::to_string(n); }
+    inline float branchMarkWidth(funkgui::Canvas& c, int ahead, int behind, const funkgui::TextStyle& st)
+    {
+        float w = 12.0f;
+        if (ahead > 0)
+            w += 10.0f + c.textWidth(branchCount(ahead).c_str(), st) + 2.0f;
+        if (behind > 0)
+            w += 10.0f + c.textWidth(branchCount(behind).c_str(), st) + 2.0f;
+        return w;
+    }
+    inline float drawBranchMark(funkgui::Canvas& c, float x, float cy, int ahead, int behind, const funkgui::TextStyle& st,
+                                funkgui::Col ink)
+    {
+        drawIcon(c, Icon::branch, x + 5.0f, cy, 10.0f, ink);
+        float at = x + 12.0f;
+        const auto arrow = [&](bool up, int n) {
+            const float ax = at + 4.0f, h = 3.5f;
+            const float tip = up ? cy - h : cy + h, tail = up ? cy + h : cy - h;
+            c.segment(ax, tail, ax, tip, 1.2f, ink);
+            c.segment(ax - 2.5f, tip + (up ? 2.5f : -2.5f), ax, tip, 1.2f, ink);
+            c.segment(ax + 2.5f, tip + (up ? 2.5f : -2.5f), ax, tip, 1.2f, ink);
+            const std::string t = branchCount(n);
+            c.text(t.c_str(), at + 8.0f, c.capCentreTop(cy, st), st, ink);
+            at += 10.0f + c.textWidth(t.c_str(), st) + 2.0f;
+        };
+        if (ahead > 0)
+            arrow(true, ahead);
+        if (behind > 0)
+            arrow(false, behind);
+        return at - x;
     }
 }

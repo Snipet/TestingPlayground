@@ -73,6 +73,9 @@ namespace playground::ui
             int index = -1;                           // what the Panel acts on: a tab, a library file, an example, an IR view
             std::string key;                          // a preset's or a project's name
             std::string help;                         // to a screen reader ("": the section's)
+            bool git = false;                         // a project linked to a git remote: the mark after its label
+            int ahead = -1, behind = -1;              // ... its arrows (package 05; -1, 0: none)
+            std::string remote;                       // ... its remote, to a screen reader ("linked to ...")
             std::string spec;                         // the status line's under the pointer ("": the section's; a
                                                       // caption with one says it under the pointer, a caption without
                                                       // is not there for the pointer)
