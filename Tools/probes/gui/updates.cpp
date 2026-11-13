@@ -739,23 +739,39 @@ PROBE(gui, updates)
         P.eq("whatsnew.once.not_due", processor.editorPort().updateState().whatsNewDue ? 1 : 0, 0);
     }
     {
-        // WHATSNEW_CARD: an older version seen, the offer answered, the Settings card open as it is due: it waits.
+        // WHATSNEW_CARD: an older version seen, the update check on and its thread held on the site (so app.json's seen
+        // is not read again until the probe lets go), the Settings card open as What's new becomes due: it waits.
         WhatsNewEnv env("on");
         Home home(base.getChildFile("whatsnew-card"));
-        (void)home.dir.getChildFile("app.json").replaceWithText("{\"updates\":\"later\",\"seen\":\"0.0.1\"}\n");
+        (void)home.dir.getChildFile("app.json").replaceWithText("{\"updates\":\"yes\",\"seen\":\"0.0.1\"}\n");
         pg::Processor processor;
-        pg::ui::Panel panel(processor.ports(), processor.editorPort());
-        funkgui::HeadlessHost host(panel, 0, 2.0f);
-        panel.openSettings("general");
-        host.tick(1);
-        (void)tickUntil(host, [&] { return processor.editorPort().updateState().whatsNewReady; });
-        host.tick(5);
-        P.eq("whatsnew.card.due", processor.editorPort().updateState().whatsNewDue ? 1 : 0, 1);
-        P.eq("whatsnew.card.waits", panel.whatsNewCard().isOpen() || !panel.settingsCard().isOpen() ? 1 : 0, 0);
-        P.eq("whatsnew.card.not_drawn", countTag(host.draw(), pg::ui::kWhatsNewTag), 0);
-        host.keys("escape");
-        P.eq("whatsnew.card.after", tickUntil(host, [&] { return panel.whatsNewCard().isOpen(); }) ? 1 : 0, 1);
-        P.eq("whatsnew.card.title", panel.whatsNewCard().title() == title ? 1 : 0, 1);
+        pg::EditorPort& port = processor.editorPort();
+        home.site->setHold(true);
+        port.editorOpened();                            // the check's thread now waits in its request
+        P.eq("whatsnew.card.held", [&] {
+            const auto until = std::chrono::steady_clock::now() + probe::kWorkWait;
+            while (std::chrono::steady_clock::now() < until && home.site->count() == 0)
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            return home.site->count();
+        }() > 0 ? 1 : 0, 1);
+        {
+            pg::ui::Panel panel(processor.ports(), port);
+            funkgui::HeadlessHost host(panel, 0, 2.0f);
+            host.tick(2);
+            P.eq("whatsnew.card.not_ready", !port.updateState().whatsNewReady && !panel.whatsNewCard().isOpen() ? 1 : 0, 1);
+            P.eq("whatsnew.card.settings", panel.openSettings("general") ? 1 : 0, 1);
+            home.site->setHold(false);
+            (void)tickUntil(host, [&] { return port.updateState().whatsNewReady; });
+            host.tick(5);
+            P.eq("whatsnew.card.due", port.updateState().whatsNewDue ? 1 : 0, 1);
+            P.eq("whatsnew.card.waits", panel.whatsNewCard().isOpen() || !panel.settingsCard().isOpen() ? 1 : 0, 0);
+            P.eq("whatsnew.card.not_drawn", countTag(host.draw(), pg::ui::kWhatsNewTag), 0);
+            host.keys("escape");
+            P.eq("whatsnew.card.after", tickUntil(host, [&] { return panel.whatsNewCard().isOpen(); }) ? 1 : 0, 1);
+            P.eq("whatsnew.card.title", panel.whatsNewCard().title() == title ? 1 : 0, 1);
+            host.keys("escape");
+            host.tick(2);
+        }
     }
     {
         // WHATSNEW_SETTINGS and WHATSNEW_SEVERAL, Paper.

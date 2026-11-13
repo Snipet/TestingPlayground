@@ -131,8 +131,8 @@ PROBE(plugin, changelog)
         P.eq("since.dev_never_seen", numbers(cl::since(made, "", "0.5.0")) == "U" ? 1 : 0, 1);
         P.eq("since.dev_seen_before", numbers(cl::since(made, "0.2.0", "0.5.0")) == "U,0.4.0,0.3.0" ? 1 : 0, 1);
         P.eq("since.dev_prerelease", numbers(cl::since(made, "0.3.0", "0.4.0-rc.1")) == "U" ? 1 : 0, 1);
-        P.eq("since.text_kept", !made.empty() && made[2].text == "- Four." ? 1 : 0, 1);
-        P.eq("since.days_kept", made.size() > 3 && made[3].text == "## 2026-02-20\n\n- Three." ? 1 : 0, 1);
+        P.eq("since.text_kept", made.size() > 1 && made[1].text == "- Four." ? 1 : 0, 1);
+        P.eq("since.days_kept", made.size() > 2 && made[2].text == "## 2026-02-20\n\n- Three." ? 1 : 0, 1);
         P.eq("since.nothing_to_show", static_cast<int64_t>(cl::since(cl::parse("# Changelog\n"), "", "0.1.0").size()), 0);
     }
 
