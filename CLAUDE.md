@@ -88,7 +88,7 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `linux-release-build`), in `build-linux-<preset>`, with clang and lld, on an X display that runs a window manager
   (with `$DISPLAY` unset the menus' pictures are skipped, saying so; a bare X server ends the process: "Linux" below).
 - `cmake --workflow --preset dev-verify`: configure, build (both products' Standalone, AU, VST3, MCP server, headless
-  renderer and probes, and the installer) and run every test in `build-dev`: each of the 75 probes once for each product
+  renderer and probes, and the installer) and run every test in `build-dev`: each of the 76 probes once for each product
   (`effect:fminus.examples`, `synth:fminus.examples`, ...), and the lints (`lint.layers`, `lint.changelog`, ...) and
   the installer's probes once
   (`installer.engine`, `installer.gui`: `build-dev/probe-out/installer/gui.installer*.png`, look at them after any
@@ -793,7 +793,7 @@ place (its `products/<key>.cmake`, and its names in the docs).
   JUCE's own Linux `WebInputStream` speaks plain `http://` alone, and its curl client fills a whole read before it
   returns, so `JUCE_USE_CURL` stays 0 on every target. It keeps the transport's rules (no redirect followed, a 200's
   body to `onChunk` as it arrives, `cancel` within a 40 ms poll, two minutes idle at most); `plugin.providers`
-  TRANSPORT checks them against the probe's own server.
+  TRANSPORT checks them against the probe's own server, on every platform.
 - **The user's folders are XDG's** (`fminus/Xdg.h`, plain C++ in the lowest layer for every side): the projects
   `$XDG_DATA_HOME/Funk/<name>` and the chat's store `$XDG_DATA_HOME/Funk/Playground` (`~/.local/share` unset or
   relative), the shaders' cache `$XDG_CACHE_HOME/Funk/<name>/Shaders`, a shader build's temporary folder
@@ -970,9 +970,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
   every writer and viewer draws what the user sees. Each gesture gives the files to the processor at once
   (`EditorPort::setDraftIf`, through the Panel's sync hook), so Claude's conditional write sees it; when a write of
   Claude's came first that the Panel has not merged, the gesture is undone and the strip says to do it again (neither
-  is overwritten). Typing reaches the processor the same way (`Panel::pushFiles`, never over a draft not merged: that
+  is overwritten). Typing reaches the processor the same way, in the key's own event (`Panel::key`: a draft not merged
+  merges first, so the key lands on it, then `giveTyping`; `Panel::pushFiles`, never over a draft not merged: that
   one merges first, each tab keeping what was typed where the draft left its file, and a tab added, renamed or closed
-  since staying so where the draft left that file as given: `Panel::mergeDraft`); a field open when the view goes is
+  since staying so where the draft left that file as given: `Panel::mergeDraft`, which says so when a file both
+  changed shows the draft's, the typing an undo away); a field open when the view goes is
   written, as a press outside it. The view, zoom and pan of each file are the session's alone (`EditorPort::fileViews`; never in the
   Draft, a project, an export or Claude's view), kept on the user's gestures only. Keep its colours the code editor's
   (the marks are the tab's own `DecorationInks`) and its drawing in `SchematicDraw`, which a picture draws with no
@@ -1126,7 +1128,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - **The network.** The chat is the only code that reaches the network at run time, through `claude::Transport`
   (`ClaudeApi.cpp`: HTTPS, or HTTP to a server on this Mac or the local network; never following a redirect,
   `withNumRedirectsToFollow(0)`: a 3xx comes back with its location, as an error; JUCE's client takes the address
-  as built, `createWithoutParsing`: a parsed query goes into a POST's body), to one host at a time, and only when
+  as built, `createWithoutParsing`: a parsed query goes into a POST's body; and reads a POST's 200 a byte at a time,
+  a line to `onChunk`, since its read waits for the whole count asked, in blocks while slow reads show a backlog:
+  macOS's read moves what is buffered), to one host at a time, and only when
   the user sends a message or chooses a provider: `api.anthropic.com` with the user's own key (the Messages API,
   streamed; `GET /v1/models` once per key), or the provider the user chose (below, "Other model providers"): its own
   server alone, with its own key. The build never reaches the network. Probes never do (`plugin.providers` REDIRECT
@@ -1137,7 +1141,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   Anthropic or another provider (it is billed to the user) unless the user asks for one.
 - **The key** lives only in its encrypted file (`ChatStore.h` says the format and what it protects against):
   `anthropic-key.bin`, in the folder both products share. Never log it, print it, put it in the session, a probe's
-  output, a test fixture or a commit; the panel masks it and speaks only its length. A probe's is `fake::fakeKey()`.
+  output, a test fixture or a commit; the panel masks it (`Panel::maskedKey`: the preset's public prefix at its own
+  server, stars, and the last four of a key of 20 characters or more) and speaks only its length. A probe's is
+  `fake::fakeKey()`.
   With no key stored the chat asks for one, and for nothing else. Another provider's key is sealed the same way in
   `key-<kind>-<16 hex of its server's origin>.bin`, the origin inside it (`chatstore::saveProviderKey`): it is read back
   for that server alone, so a key never goes to another server; an Anthropic key is refused for another provider; the
@@ -1427,7 +1433,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   view_panel's `at`, compare's picture), `kMaxLongSeconds` (300 s) for a call that returns numbers alone
   (measure_output, a check, tune_dials, compare without its picture, trace: `scenario::forNumbers`, set before the
   rest is read), the tail `kMaxTailSeconds` (10 s) after either, a window both (`Request::endSeconds`); past its cap
-  a value is refused in words that name it (a picture's naming the tools that take 300 s); and `scenario::fits`
+  a value is refused in words that name it (a picture's naming the tools that take 300 s), a note's at + len and a
+  move's at + over too (the Reader's `ends`), never cut there; and `scenario::fits`
   (resolve's last step, and compare's for B at its `b_rate`) refuses, at its rate, times past `measure::longestAt`
   (`kMaxRenderSamples` less a whole tail: 145 s at 192 kHz, `measure::latestTime`) and a render past
   `kMaxRenderSamples` a channel (310 s up to 96 kHz, 155 s at 192 kHz: `measure::renderSeconds`, an effect's test
@@ -1807,7 +1814,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   - **Read only but apply.** open reads an instance's files through get_status (files "all" and `peek`, the server's
     own: live, no write, and nothing kept of the look, no token, no mark, `mcpHint`'s cursor where it was, so what the
     user changed still starts Claude's next result), a file or folder the user named (read only, 256 KB a file, sixteen
-    files); apply alone writes, through the link's write_file and run_program, into the program's own .gui file (the
+    files; a folder's `isProgramFile` kinds, program.fm first, the folder sync's copies left out as the renderer leaves
+    them: Sources.h's `syncCopies`, `programFirst`); apply alone writes, through the link's write_file and run_program, into the program's own .gui file (the
     first .gui, else panel.gui), and only when the user asks (the guide says so), its answer starting with write_file's
     line of what the user changed. The plugin's own chat has no sandbox. Its notes are in the guide's interface part
     (`ChatAgent::mcpGuide`'s `kSandboxNotes`); a change to the tool changes them and `FP_MCP_VERSION`.
@@ -1822,13 +1830,15 @@ place (its `products/<key>.cmake`, and its names in the docs).
   can match it bit for bit. The user's audio and MIDI stay in memory: never on disk (trace's export refuses a render
   of it), in the session or a project, never returned as samples (the tool reports numbers; a render hash gives none
   back), no picture of it among the chat's kept thumbnails; freed on forget, the next arm, or ten minutes without a
-  call. A take replays (`plugin/CaptureReplay.h`, through `scenario::captured`):
+  call. So capture is no read-only tool to MCP, and a destructive one (`kFaces`: an arm changes what plays, a new arm or
+  forget lets the take go). A take replays (`plugin/CaptureReplay.h`, through `scenario::captured`):
   a `measure::Request` with its blocks (in the processor's parts, `Request::part`), events, transport, its dials as the
   processor sent them (`Request::frames`, by name for another program), the Engine's clock (`Request::clock`,
   `Engine::setClock`: the voices' grid phase) and the wheels at its start (a racing wheel's control changes those off
   rest, `wheelcc::restOf`; without the host's transport, the Engine's own song position: `Engine::setBeat`; a
   Session's `Engine::restart` puts the wheels, the pedal and the position at rest); the first replay null-tests it
-  once (a compile and a render of the program that played, off the live calls) and the recorder keeps the line for stop
+  once (a compile and a render of the program that played, with the samples as they are, set after `replayOf`, which
+  starts from an empty Replay; off the live calls) and the recorder keeps the line for stop
   and status. restart (mode next) recompiles what plays first (after a run on its way) and waits for that program to
   play alone. Each block keeps the Engine's steals and dropped voices in it (`Meters::steals` and `::dropped`, the audio
   thread's own publish, read at the block's start and end). stop and status stay live but for `picture` (drawn on the
@@ -1865,7 +1875,12 @@ place (its `products/<key>.cmake`, and its names in the docs).
   move that changes the language changes the section, within the start part's token bound (`plugin.mcp`).
 - **Pictures** (`attach`/`detach`, `ChatImages.h`): read on the agent's job thread (`ChatAgent::queueJob`), kept as
   sent (the file's own PNG or JPEG bytes when they fit, else encoded again) with a thumbnail (RGBA8, and encoded for
-  the session); sent as base64 image blocks before the message's text; six a message, twenty in the history. The
+  the session); sent as base64 image blocks before the message's text; six a message, twenty in the history. One
+  past `kMaxPixels` (100 megapixels) is refused by its header's size before any decoder sees it (a PNG's IHDR, a
+  JPEG's first SOFn, a GIF's first image descriptor and its screen, read step for step as JUCE's loaders read them;
+  ImageIO's properties for the rest on macOS), as is one of those three whose header says none (`chatimages::decodes()` counts the decodes). A
+  message sent while some are read shows at once and goes with them: the turn's worker waits for the reads asked
+  before it (`takePending`: Stop ends the wait, `kPictureWaitSeconds` bounds it), never the panel. The
   editor draws thumbnails through FunkGui's image registry (`funkgui::images`, v0.20.0): `Panel::syncPictures`
   registers each picture's id while `chat_` holds it, counted across Panels (Picture.cpp makes one), so the last to
   let go removes it.
@@ -1894,6 +1909,10 @@ place (its `products/<key>.cmake`, and its names in the docs).
   view_panel's view "schematic" is `pictureSchematic` (`editor/Picture.cpp`: a `SchematicPicture`, a Panel of its own
   that holds no editor Panel, so it owns no probe and reads or writes no file view; the drawing at 100 %, labels
   always). write_file of a `.cir` whose text has no `*@` line keeps the old ones and says so.
+- **Claude's text is the editor's** (`asEditorHolds`, ChatAgent.h): every tool that puts Claude's text in the draft
+  (write_file's content, files and from, edit_file's new texts, its `find`'s too, edit_circuit's values and names) puts
+  it there as `TextEditor::sanitise` makes it, saying what changed, so the draft, a version, `seen_` and the tab are one
+  text and the editor's next push changes nothing (`plugin.chat` ASCII, REPLACE).
 - **read_file and edit_file** (`plugin/ChatFiles.cpp`): every read and write says the file's line count and version
   (its text's hash; the newest 16 versions' texts kept, `fileVersions_`). read_file gives a file whole, or a range
   (`from`, `lines`) or the lines holding a text (`find`, `context` lines around each: 0 to 10, 2 unless said; `count`
@@ -1941,7 +1960,7 @@ place (its `products/<key>.cmake`, and its names in the docs).
   user's typing meanwhile is kept and the replacement runs once more on the new text; `expected` only with `name`;
   refused in words: no match (the lines that hold it in another case, and a text's closest passage), more than 2,000
   (`kMaxReplaced`), a pattern past its steps; its result each file's count, lines and version and the first 20 lines
-  changed, numbered; seen by `carrySeen`.
+  changed, numbered; each file as the editor holds it (`asEditorHolds`, said); seen by `carrySeen`.
 - **run_function** (`plugin/ChatFunction.cpp`, `fminus/PatchCall.cpp`: `Patch::call`, `adopt`, `layout`; FMinus's call
   by signature, `Program::callable` and `call`): one of the program's functions called by name with Claude's arguments
   (a number for a float, a double or a whole one for an int, true or false for a bool, an array or `{extent, values}`

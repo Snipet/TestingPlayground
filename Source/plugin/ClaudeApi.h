@@ -3,7 +3,8 @@
 //
 //   Transport       POST and GET against a host: https://api.anthropic.com, with the user's own key (or another
 //                   provider's server: Providers.h). httpsTransport() is JUCE's WebInputStream; the probes give the
-//                   agent a scripted one. A POST's body streams to a callback as it arrives. A redirect is never
+//                   agent a scripted one. A POST's body streams to a callback as it arrives (JUCE's, a line at a
+//                   time: its read waits for the whole count asked, so it reads a byte at a time). A redirect is never
 //                   followed: the request goes to the host it names or nowhere (a 3xx is returned as it came, with
 //                   its location), so a conversation and a key never reach another origin.
 //   SseParser       Server-Sent Events: the stream cut into (event, data) pairs, however the chunks fall.

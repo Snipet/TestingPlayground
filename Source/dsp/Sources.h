@@ -6,6 +6,7 @@
 // messages call the file ("filters.fm:3:12: error: ...").
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <string>
 #include <string_view>
@@ -75,6 +76,42 @@ namespace playground
         return (name.size() > 3 && name.substr(name.size() - 3) == ".fm") || isCircuitFile(name) || isPanelFile(name);
     }
     inline constexpr const char* kProgramFileKinds = ".fm, .cir, .gui, .sc or .sh";
+
+    // The read-only copies the editor's folder sync (plugin/FolderSync.h) writes beside a program's files (host.fm,
+    // which the plugin provides, and the library files its #includes read that the program has not), by the text of
+    // its manifest (.fmsync: the line "fmsync 1", then "copy <16 hex digits> <name>" a copy among its "base" lines).
+    // What reads a folder as a program (the headless renderer, the GUI sandbox) leaves them out, as the plugin does.
+    inline std::vector<std::string> syncCopies(std::string_view manifest)
+    {
+        std::vector<std::string> out;
+        bool first = true;
+        while (!manifest.empty())
+        {
+            const std::size_t end = manifest.find('\n');
+            std::string_view line = manifest.substr(0, end);
+            manifest = end == std::string_view::npos ? std::string_view() : manifest.substr(end + 1);
+            if (!line.empty() && line.back() == '\r')
+                line.remove_suffix(1);
+            if (first)
+            {
+                if (line.substr(0, 8) != "fmsync 1")
+                    return out;
+                first = false;
+            }
+            else if (line.size() > 22 && line.substr(0, 5) == "copy " && line[21] == ' ')
+                out.emplace_back(line.substr(22));
+        }
+        return out;
+    }
+
+    // `names` (a folder's program files) in the order a program's files go: kProgramName first, the rest by name.
+    inline void programFirst(std::vector<std::string>& names)
+    {
+        std::sort(names.begin(), names.end(), [](const std::string& a, const std::string& b) {
+            const bool pa = a == kProgramName, pb = b == kProgramName;
+            return pa != pb ? pa : a < b;
+        });
+    }
 
     // The configuration a netlist was generated with in a compile, when the netlist leaves it to the self-test
     // (fminus/Circuits.h): its self-test key, and the answer it read (fminus::circuit::Choice::text()), or "" for the

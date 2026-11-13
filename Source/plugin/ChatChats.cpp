@@ -475,13 +475,21 @@ namespace playground
         }
         if (!chatstore::validId(id) || !chatstore::hasChat(owner, id))
             return false;
+        // Read before anything stops (the file is replaced whole, never written in place): a chat that cannot be opened
+        // leaves the turn and the chat shown as they are, and the chat shown says why.
+        std::string why;
+        const std::optional<chatstore::Loaded> l = chatstore::loadChat(owner, id, &why);
+        if (!l)
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            addEntry(ChatEntry::Kind::note, "That chat could not be opened: " + (why.empty() ? std::string("it cannot be read") : why) + ".");
+            touch();
+            return false;
+        }
         stop();
         joinWorker();
         const std::lock_guard<std::mutex> store(storeMutex_);
         keepLocked();
-        const std::optional<chatstore::Loaded> l = chatstore::loadChat(owner, id);
-        if (!l)
-            return false;
         showChat(*l, owner, label);
         return true;
     }

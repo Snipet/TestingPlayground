@@ -157,8 +157,7 @@ namespace playground
         struct Incoming
         {
             std::string name, text;
-            int replaced = 0;                          // characters outside ASCII the editor holds as '?'
-            bool lineEnds = false;                     // CR LF (or CR) line ends, read as LF
+            std::string held;                          // what the editor's rule changed (asEditorHolds), or ""
         };
 
         // The program files of `given` (a file, or a folder's), checked; "" or why none is taken. `left`: what a folder
@@ -229,7 +228,7 @@ namespace playground
                     problems += "\n- " + n + " could not be read";
                     continue;
                 }
-                Incoming in{ n, std::string(static_cast<const char*>(mb.getData()), mb.getSize()) };
+                Incoming in{ n, std::string(static_cast<const char*>(mb.getData()), mb.getSize()), {} };
                 if (!isText(in.text))
                 {
                     problems += "\n- " + n + " is not text (it holds a NUL byte, or bytes that are not UTF-8)";
@@ -248,10 +247,7 @@ namespace playground
                     left.push_back(n + " (the folder sync's read-only copy)");
                     continue;
                 }
-                in.replaced = outsideAscii(in.text);
-                in.lineEnds = in.text.find('\r') != std::string::npos;
-                if (in.replaced > 0 || in.lineEnds)
-                    in.text = funkgui::TextEditor::sanitise(in.text);
+                in.held = asEditorHolds(in.text);
                 out.push_back(std::move(in));
             }
             if (!problems.empty())
@@ -268,6 +264,26 @@ namespace playground
                 }();
             return {};
         }
+    }
+
+    std::string asEditorHolds(std::string& text)
+    {
+        const std::size_t nul = text.find('\0');            // sanitise reads the text to its first NUL
+        const std::string_view kept = std::string_view(text).substr(0, nul);
+        const int replaced = outsideAscii(kept);
+        const bool lineEnds = kept.find('\r') != std::string_view::npos;
+        if (replaced == 0 && !lineEnds && nul == std::string::npos)
+            return {};
+        text = funkgui::TextEditor::sanitise(text);
+        std::string out;
+        if (lineEnds)
+            out = "CR LF line ends read as LF";
+        if (replaced > 0)
+            out += (out.empty() ? "" : "; ") + std::to_string(replaced) + (replaced == 1 ? " character" : " characters")
+                 + " outside ASCII became '?', as the editor holds ASCII";
+        if (nul != std::string::npos)
+            out += std::string(out.empty() ? "" : "; ") + "what followed a NUL character was left out";
+        return out;
     }
 
     std::string ChatAgent::writeFileText(const juce::var& input, bool& isError)
@@ -416,7 +432,8 @@ namespace playground
                     const juce::var n = e.getProperty("name", juce::var()), c = e.getProperty("content", juce::var());
                     if (!n.isString() || !c.isString())
                         return fail("files[" + std::to_string(k) + "] needs a name and the content");
-                    incoming.push_back({ n.toString().toStdString(), c.toString().toStdString(), 0, false });
+                    incoming.push_back({ n.toString().toStdString(), c.toString().toStdString(), {} });
+                    incoming.back().held = asEditorHolds(incoming.back().text);
                     if (assets::isAudioName(incoming.back().name))
                         return fail("files[" + std::to_string(k) + "]: " + audioRefusal(incoming.back().name) + ". Nothing was written");
                     if (!validFileName(incoming.back().name))
@@ -465,11 +482,8 @@ namespace playground
                         + (before.count(in.name) == 0 ? "new" : "replaced");
                 if (kept > 0)
                     listed += "; kept the drawing's " + std::to_string(kept) + " *@ lines";
-                if (in.lineEnds)
-                    listed += "; CR LF line ends read as LF";
-                if (in.replaced > 0)
-                    listed += "; " + std::to_string(in.replaced) + (in.replaced == 1 ? " character" : " characters")
-                            + " outside ASCII became '?', as the editor holds ASCII";
+                if (!in.held.empty())
+                    listed += "; " + in.held;
                 listed += ")";
             }
             d.active = shown;
@@ -520,6 +534,7 @@ namespace playground
             file = n.toString().toStdString();
             content = c.toString().toStdString();
         }
+        const std::string held = asEditorHolds(content);
         if (assets::isAudioName(file))
             return fail(audioRefusal(file));
         if (!validFileName(file))
@@ -551,7 +566,7 @@ namespace playground
         const int lines = lineCount(content);
         const std::string count = std::to_string(lines) + (lines == 1 ? " line" : " lines");
         note("wrote " + file + " (" + count + ")");
-        std::string out = "Wrote " + file + " (" + count + "; version " + version + ").";
+        std::string out = "Wrote " + file + " (" + count + (held.empty() ? "" : "; " + held) + "; version " + version + ").";
         if (keptLines > 0)
             out += " Kept the drawing's " + std::to_string(keptLines) + " *@ lines; send edit_circuit 'layout' to redraw it.";
         bool included = i == 0;

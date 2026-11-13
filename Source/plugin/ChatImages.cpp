@@ -11,6 +11,8 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstring>
+#include <string>
 #include <utility>
 
 namespace playground::chatimages
@@ -106,8 +108,176 @@ namespace playground::chatimages
             return out;
         }
 
+        std::atomic<std::size_t> decoded{ 0 };
+
+        // ---- A picture's size from its header, before anything decodes it ------------------------------------------
+        // What JUCE's loaders take a stream for (ImageFileFormat::findImageFormatForStream, in its order: "PNG" at its
+        // second byte, then FF D8 FF, then "GIF"), read as their decoders read it, so that no bytes make a decoder size
+        // the picture from other bytes than these readers do. Each must stay in step with the code it follows (JUCE
+        // 8.0.4's juce_graphics/image_formats: juce_GIFLoader.cpp, jpglib/jdmarker.c, pnglib/pngread.c and
+        // pngrutil.c): where the decoder ends with no picture these may refuse, never the other way. Every read is
+        // bounded by the bytes.
+        struct HeaderSize
+        {
+            enum class Kind { other, unreadable, sized } kind = Kind::other;
+            const char* format = "";
+            uint64_t width = 0, height = 0;
+        };
+
+        uint32_t be16(const std::vector<uint8_t>& b, std::size_t at) { return (uint32_t{ b[at] } << 8) | b[at + 1]; }
+        uint32_t le16(const std::vector<uint8_t>& b, std::size_t at) { return uint32_t{ b[at] } | (uint32_t{ b[at + 1] } << 8); }
+
+        bool overPixels(uint64_t w, uint64_t h) { return w > kMaxPixels || h > kMaxPixels || w * h > kMaxPixels; }
+
+        // libpng (png_read_info): the signature, then the IHDR chunk, whose width and height size the picture. A file
+        // whose first chunk is another (libpng reads an unknown one, then a later IHDR) is refused here.
+        HeaderSize pngSize(const std::vector<uint8_t>& b)
+        {
+            HeaderSize s{ HeaderSize::Kind::unreadable, "PNG" };
+            if (!isPng(b) || b.size() < 24 || b[12] != 'I' || b[13] != 'H' || b[14] != 'D' || b[15] != 'R')
+                return s;
+            s.width = (uint64_t{ be16(b, 16) } << 16) | be16(b, 18);
+            s.height = (uint64_t{ be16(b, 20) } << 16) | be16(b, 22);
+            if (s.width > 0 && s.height > 0)
+                s.kind = HeaderSize::Kind::sized;
+            return s;
+        }
+
+        // libjpeg's read_markers: SOI, then markers found as next_marker finds them (bytes up to an FF passed over, FF
+        // fill, FF 00 passed over), a segment skipped by its length (APPn, COM, DNL, DAC: skip_variable or
+        // get_interesting_appn; DHT, DQT and DRI consume exactly their length or fail), up to the first SOFn, whose
+        // height and width size the picture. Any error (a second SOF, SOS or EOI before one, an unknown marker) is
+        // marked by JUCE's silent error handler, and JUCE then makes no picture. A length under 2 (which libjpeg skips
+        // as 2) and data that ends inside a segment are refused here.
+        HeaderSize jpegSize(const std::vector<uint8_t>& b)
+        {
+            HeaderSize s{ HeaderSize::Kind::unreadable, "JPEG" };
+            std::size_t at = 2;                              // past SOI
+            while (at < b.size())
+            {
+                while (at < b.size() && b[at] != 0xff)       // what is no marker (libjpeg passes over it)
+                    ++at;
+                while (at < b.size() && b[at] == 0xff)       // fill bytes
+                    ++at;
+                if (at >= b.size())
+                    break;
+                const uint8_t m = b[at++];
+                if (m == 0x00 || m == 0x01 || (m >= 0xd0 && m <= 0xd8))
+                    continue;                                // a stuffed byte, TEM, RSTn, SOI: no length
+                if (m == 0xd9 || m == 0xda)
+                    break;                                   // EOI, or SOS before any frame: no picture
+                if (at + 2 > b.size())
+                    break;
+                const std::size_t length = be16(b, at);
+                if (length < 2)
+                    break;
+                const bool sof = m >= 0xc0 && m <= 0xcf && m != 0xc4 && m != 0xc8 && m != 0xcc;
+                if (sof)
+                {
+                    if (length < 7 || at + 7 > b.size())
+                        break;
+                    s.height = be16(b, at + 3);
+                    s.width = be16(b, at + 5);
+                    if (s.width > 0 && s.height > 0)         // a height of 0 (a DNL marker's later) is none here
+                        s.kind = HeaderSize::Kind::sized;
+                    return s;
+                }
+                at += length;
+            }
+            return s;
+        }
+
+        // JUCE's GIFLoader, step for step over the bytes as its MemoryInputStream gives them (a read takes what is
+        // left, at most what it asks): the header and the logical screen, its three bytes, the palette, then its main
+        // loop (';' ends it, '!' an extension as readExtension reads one, ',' the image descriptor whose width and
+        // height size the picture, any other byte passed over). readExtension of a graphic control extension (0xf9)
+        // reads one data block first whatever its size, 0 included, then data blocks until one of size 0. The logical
+        // screen's size is refused past the cap too (macOS's loader may size the picture by it).
+        HeaderSize gifSize(const std::vector<uint8_t>& b)
+        {
+            HeaderSize s{ HeaderSize::Kind::unreadable, "GIF" };
+            std::size_t at = 0;
+            const auto read = [&](std::size_t k) {
+                const std::size_t n = std::min(k, b.size() - at);
+                at += n;
+                return n;
+            };
+            const auto readDataBlock = [&]() -> int {
+                if (read(1) != 1)
+                    return -1;
+                const std::size_t n = b[at - 1];
+                if (n == 0 || read(n) == n)
+                    return static_cast<int>(n);
+                return -1;
+            };
+            const auto readExtension = [&]() -> bool {
+                if (read(1) != 1)
+                    return false;
+                if (b[at - 1] == 0xf9 && readDataBlock() < 0)
+                    return true;
+                int n = 0;
+                do
+                    n = readDataBlock();
+                while (n > 0);
+                return n >= 0;
+            };
+            if (read(6) != 6 || (std::memcmp(b.data(), "GIF87a", 6) != 0 && std::memcmp(b.data(), "GIF89a", 6) != 0)
+                || read(4) != 4)
+                return s;
+            const uint64_t screenW = le16(b, 6), screenH = le16(b, 8);
+            if (screenW == 0 || screenH == 0 || read(3) != 3)
+                return s;                                    // JUCE's loader makes no picture
+            if ((b[10] & 0x80) != 0)
+                for (int i = 0, n = 2 << (b[10] & 7); i < n; ++i)
+                    (void)read(3);                           // the global palette, a short read passed over as JUCE does
+            for (;;)
+            {
+                if (read(1) != 1 || b[at - 1] == ';')
+                    return s;
+                const uint8_t c = b[at - 1];
+                if (c == '!')
+                {
+                    if (readExtension())
+                        continue;
+                    return s;
+                }
+                if (c != ',')
+                    continue;
+                if (read(9) != 9)
+                    return s;
+                s.width = le16(b, at - 9 + 4);
+                s.height = le16(b, at - 9 + 6);
+                if (s.width > 0 && s.height > 0)
+                    s.kind = HeaderSize::Kind::sized;
+                if (s.kind == HeaderSize::Kind::sized && !overPixels(s.width, s.height) && overPixels(screenW, screenH))
+                {
+                    s.width = screenW;
+                    s.height = screenH;
+                }
+                return s;
+            }
+        }
+
+        HeaderSize headerSize(const std::vector<uint8_t>& b)
+        {
+            if (b.size() >= 4 && b[1] == 'P' && b[2] == 'N' && b[3] == 'G')
+                return pngSize(b);
+            if (b.size() >= 3 && b[0] == 0xff && b[1] == 0xd8 && b[2] == 0xff)
+                return jpegSize(b);
+            if (b.size() >= 3 && b[0] == 'G' && b[1] == 'I' && b[2] == 'F')
+                return gifSize(b);
+            return {};
+        }
+
+        std::string tooLarge(const std::string& name, uint64_t w, uint64_t h)
+        {
+            return name + " is " + std::to_string(w) + " x " + std::to_string(h) + " pixels: a picture of more than "
+                 + std::to_string(kMaxPixels / 1'000'000) + " megapixels is not read (make it smaller first).";
+        }
+
         juce::Image decode(const uint8_t* data, std::size_t size)
         {
+            decoded.fetch_add(1, std::memory_order_relaxed);
             juce::MemoryInputStream in(data, size, false);
             return juce::ImageFileFormat::loadFrom(in);   // JUCE's PNG, JPEG and GIF
         }
@@ -115,7 +285,8 @@ namespace playground::chatimages
 #if defined(__APPLE__)
         // ImageIO: any format the system reads, at most `edge` px on its long side, turned upright by its EXIF
         // orientation. `width` and `height` are the file's own size; `turned`, whether it had to be turned.
-        juce::Image decodeSystem(const uint8_t* data, std::size_t size, int edge, int& width, int& height, bool& turned)
+        juce::Image decodeSystem(const uint8_t* data, std::size_t size, int edge, int& width, int& height, bool& turned,
+                                 std::string& refused, const std::string& name)
         {
             width = height = 0;
             turned = false;
@@ -142,6 +313,15 @@ namespace playground::chatimages
                     std::swap(width, height);         // turned a quarter: its upright size
                 CFRelease(props);
             }
+            // Its size before it decodes (kMaxPixels): none said (nothing it reads), or too many, and nothing is decoded.
+            if (width <= 0 || height <= 0 || overPixels(static_cast<uint64_t>(width), static_cast<uint64_t>(height)))
+            {
+                if (width > 0 && height > 0)
+                    refused = tooLarge(name, static_cast<uint64_t>(width), static_cast<uint64_t>(height));
+                CFRelease(src);
+                return {};
+            }
+            decoded.fetch_add(1, std::memory_order_relaxed);
             const int maxSide = edge;
             CFNumberRef max = CFNumberCreate(nullptr, kCFNumberIntType, &maxSide);
             const void* keys[] = { kCGImageSourceCreateThumbnailFromImageAlways, kCGImageSourceCreateThumbnailWithTransform,
@@ -160,11 +340,6 @@ namespace playground::chatimages
             {
                 CGImageRelease(img);
                 return {};
-            }
-            if (width <= 0 || height <= 0)
-            {
-                width = w;
-                height = h;
             }
             juce::Image out(juce::Image::ARGB, w, h, true);
             {
@@ -189,6 +364,8 @@ namespace playground::chatimages
     }
 
     uint32_t nextId() { return lastId.fetch_add(1, std::memory_order_relaxed) + 1; }
+
+    std::size_t decodes() { return decoded.load(std::memory_order_relaxed); }
 
     Prepared fromFile(const std::string& path)
     {
@@ -222,11 +399,27 @@ namespace playground::chatimages
         int fileW = 0, fileH = 0;
         bool turned = false;
         juce::Image sized;
+        // Its size from its header, before any decoder sees it (kMaxPixels).
+        const HeaderSize header = headerSize(bytes);
+        if (header.kind == HeaderSize::Kind::unreadable)
+        {
+            out.why = name + " is not a picture this plugin can read (its " + header.format + " header does not say its size).";
+            return out;
+        }
+        if (header.kind == HeaderSize::Kind::sized && overPixels(header.width, header.height))
+        {
+            out.why = tooLarge(name, header.width, header.height);
+            return out;
+        }
 #if defined(__APPLE__)
         if (!bytes.empty())
-            sized = decodeSystem(bytes.data(), bytes.size(), kMaxEdge, fileW, fileH, turned);
+        {
+            sized = decodeSystem(bytes.data(), bytes.size(), kMaxEdge, fileW, fileH, turned, out.why, name);
+            if (!out.why.empty())
+                return out;
+        }
 #endif
-        if (!sized.isValid() && !bytes.empty())
+        if (!sized.isValid() && header.kind == HeaderSize::Kind::sized)   // JUCE's loaders read these three alone
         {
             const juce::Image img = decode(bytes.data(), bytes.size());
             if (img.isValid())

@@ -3884,7 +3884,10 @@ namespace playground::ui
     }
 
     // The pills in the message box's bar: as wide as their labels (fast mode's after the thinking one, on a model that
-    // takes it), the thinking one narrowed first when they do not fit, then the model's.
+    // takes it), up to send, which none of them ever reaches. When they do not fit, the thinking one narrows first,
+    // then the model's (to kNarrowPill); then fast mode's and web search's show their icons alone (and the room comes
+    // back to the other two); then those two narrow to kLeastPill (a chevron and a few letters). At the least chat (its
+    // kChatMinW) that is room enough: past it, the last pills narrow further rather than run under send.
     void Panel::placeChatBar()
     {
         const funkgui::Rect bar = inputItem().bar();
@@ -3903,14 +3906,41 @@ namespace playground::ui
         fast.setBounds({ x0, y, kPillH, kPillH });
         web.setBounds({ x0, y, kPillH, kPillH });
         const bool withFast = chatTakesFast(), withWeb = chatTakesWeb(), withThinking = chatTakesThinking();
-        const float fw = withFast ? fast.preferredWidth() + 4.0f : 0.0f;
-        const float ww = withWeb ? web.preferredWidth() + 4.0f : 0.0f;
-        const float room = bar.right() - 6.0f - kSendD - 8.0f - fw - ww - x0;
-        float mw = model.preferredWidth(), tw = withThinking ? thinking.preferredWidth() : -4.0f;
-        if (withThinking && mw + 4.0f + tw > room)
-            tw = std::max(64.0f, room - 4.0f - mw);
-        if (mw + 4.0f + tw > room)
-            mw = std::max(64.0f, room - 4.0f - tw);
+        constexpr float kNarrowPill = 64.0f, kLeastPill = 44.0f, kIconPill = kPillH + 4.0f;
+        const float end = bar.right() - 6.0f - kSendD - 8.0f;   // send's left, less a gap
+        float mw = 0.0f, tw = 0.0f, fw = 0.0f, ww = 0.0f;
+        // The model's and the thinking pills in what the switches leave, narrowed in turn down to `least`: whether they
+        // fit.
+        const auto fit = [&](bool compact, float least) {
+            fw = withFast ? (compact ? kIconPill : fast.preferredWidth()) + 4.0f : 0.0f;
+            ww = withWeb ? (compact ? kIconPill : web.preferredWidth()) + 4.0f : 0.0f;
+            const float room = end - fw - ww - x0;
+            mw = model.preferredWidth();
+            tw = withThinking ? thinking.preferredWidth() : -4.0f;
+            if (withThinking && mw + 4.0f + tw > room)
+                tw = std::max(least, room - 4.0f - mw);
+            if (mw + 4.0f + tw > room)
+                mw = std::max(least, room - 4.0f - tw);
+            return mw + 4.0f + tw <= room;
+        };
+        bool compact = false;
+        bool fits = fit(false, kNarrowPill);
+        if (!fits && (withFast || withWeb))
+            fits = fit(compact = true, kNarrowPill);
+        if (!fits)
+            fits = fit(compact, kLeastPill);
+        if (!fits)
+        {
+            // Narrower than any chat the columns make: the thinking pill, then the model's, give up the rest, so that
+            // nothing runs under send.
+            const float room = std::max(0.0f, end - fw - ww - x0);
+            if (withThinking && mw + 4.0f + tw > room)
+                tw = std::max(0.0f, room - 4.0f - mw);
+            if (mw + 4.0f + tw > room)
+                mw = std::max(0.0f, room - (withThinking ? 4.0f + tw : 0.0f));
+        }
+        fast.setCompact(compact);
+        web.setCompact(compact);
         model.setBounds({ x0, y, mw, kPillH });
         thinking.setBounds({ x0 + mw + 4.0f, y, std::max(0.0f, tw), kPillH });
         fast.setBounds({ x0 + mw + 4.0f + tw + 4.0f, y, withFast ? fw - 4.0f : 0.0f, kPillH });
@@ -5393,6 +5423,7 @@ namespace playground::ui
         Draft d = port_.draft();
         const Draft remote = d;
         bool kept = false;
+        std::string crossed;                             // a file typed in that the draft changed too
         if (files().revision() != syncedFiles_)          // typed since the editor last gave its files
         {
             const Draft now = files().draft();
@@ -5425,6 +5456,9 @@ namespace playground::ui
                     f.text = t->text;                    // the draft left it: the typing stays, and goes to the port
                     kept = true;
                 }
+                else if (g != nullptr && t != nullptr && t->text != g->text && f.text != g->text && f.text != t->text
+                         && crossed.empty())
+                    crossed = f.name;                    // both changed it: the draft's shows, the typing an undo away
             // A tab closed since that the draft carries as it was given: it stays closed. One the draft changed stays
             // (neither side's change is lost). The tab the draft shows stays shown, by name.
             const std::string drafted = d.files.empty() ? std::string()
@@ -5460,9 +5494,21 @@ namespace playground::ui
         files().merge(d);
         given_ = remote;
         dirty_ = true;
+        // Typing crossed a write in its own event (Panel::key gives it at once, so only within that event): said, never
+        // silent; the merge is one undo step, so Cmd-Z gives the typed text back.
+        if (!crossed.empty())
+            notice(upper(shortcutText("The tab took a change to " + crossed
+                                      + " over what was just typed there: Cmd-Z gives it back")));
         // what was kept is the port's still to have: no revision of the tabs' is ~0, so the next push gives it
         syncedFiles_ = kept ? ~uint64_t{ 0 } : files().revision();
         return true;
+    }
+
+    // What was typed, to the processor now (Panel::key): no later than its event, so a guarded write sees it.
+    void Panel::giveTyping()
+    {
+        if (!out_ && files().revision() != syncedFiles_ && pushFiles())
+            pushedFiles_ = true;
     }
 
     bool Panel::pushFiles()
@@ -6143,23 +6189,28 @@ namespace playground::ui
         });
     }
 
-    void Panel::sendChat()
+    bool Panel::sendChat()
     {
         funkgui::TextEditor& in = inputItem().editor();
         const std::string text = in.text();
-        if ((text.find_first_not_of(" \t\n") == std::string::npos && chat_.attached.empty()) || chat_.busy)
-            return;
+        // Pictures still being read go with the message (the agent waits for them): pictures alone may be sent so too.
+        const bool blank = text.find_first_not_of(" \t\n") == std::string::npos;
+        if ((blank && chat_.attached.empty() && chat_.attaching == 0) || chat_.busy)
+            return false;
         if (!chat_.ready())
         {
             pendingSend_ = text;                         // it goes once a key is saved
             openKeyDialog();
-            return;
+            return false;
         }
-        port_.chat().send(text);
+        if (!port_.chat().send(text))
+            return false;                                // not taken (Claude Desktop began a call): the box keeps it
         in.setText("");
+        ++sends_;
         chatAt_ = -1.0;                                  // the user's message, shown at once
         refreshChat(host_ != nullptr ? host_->nowSeconds() : 0.0);
         dirty_ = true;
+        return true;
     }
 
     void Panel::openModels()
@@ -6351,7 +6402,73 @@ namespace playground::ui
         return p;
     }
 
-    bool Panel::dialogHasKey() const { return dialogAsBefore() ? chat_.hasKey : dialogInfo_.hasKey; }
+    bool Panel::dialogHasKey() const { return dialogAsBefore() ? chat_.hasKey : dialogInfoNow() && dialogInfo_.hasKey; }
+
+    namespace
+    {
+        // An address as typed, without the spaces around it and the slashes at its end.
+        std::string_view trimmedBase(std::string_view b)
+        {
+            while (!b.empty() && (b.front() == ' ' || b.front() == '\t'))
+                b.remove_prefix(1);
+            while (!b.empty() && (b.back() == ' ' || b.back() == '\t' || b.back() == '\n' || b.back() == '/'))
+                b.remove_suffix(1);
+            return b;
+        }
+
+        // The server an address typed names (its host, and port), as the dialog words it: "" while it is none yet (no
+        // https:// or http://, no host, a space, a user, a query: what ChatPort::setProvider would refuse).
+        std::string typedHost(std::string_view base)
+        {
+            const std::string_view b = trimmedBase(base);
+            std::string_view rest;
+            if (b.rfind("https://", 0) == 0)
+                rest = b.substr(8);
+            else if (b.rfind("http://", 0) == 0)
+                rest = b.substr(7);
+            else
+                return {};
+            const std::string_view host = rest.substr(0, rest.find('/'));
+            if (host.empty() || std::any_of(b.begin(), b.end(), [](char c) {
+                    const auto u = static_cast<unsigned char>(c);
+                    return u <= ' ' || u >= 127 || c == '@' || c == '?' || c == '#';
+                }))
+                return {};
+            return std::string(host);
+        }
+    }
+
+    // What the dialog has read for the provider (a key stored, none needed) is the address typed's: it is read again
+    // once the address rests (tick), not at each key, as a keyring may be asked.
+    bool Panel::dialogInfoNow() const
+    {
+        return std::string_view(dialogPresetRef().kind) != "openai" || dialogInfoBase_ == baseEdit_.buffer;
+    }
+
+    void Panel::readDialogInfo()
+    {
+        dialogInfo_ = port_.chat().providerInfo(dialogProvider());
+        dialogInfoBase_ = baseEdit_.buffer;
+        dirty_ = true;
+    }
+
+    bool Panel::dialogPresetServer() const
+    {
+        const ChatPreset& p = dialogPresetRef();
+        return std::string_view(p.kind) != "openai"
+            || (!std::string_view(p.base).empty() && trimmedBase(baseEdit_.buffer) == trimmedBase(p.base));
+    }
+
+    std::string Panel::dialogTitle() const
+    {
+        if (dialogAnthropic())
+            return "Anthropic API key";
+        const ChatPreset& p = dialogPresetRef();
+        if (dialogPresetServer() || std::string_view(p.id) == "custom")
+            return p.name;
+        const std::string host = typedHost(baseEdit_.buffer);
+        return host.empty() ? std::string("Another server") : host;
+    }
 
     funkgui::text::LineEdit& Panel::dialogEdit() { return dialogField_ == 1 ? baseEdit_ : dialogField_ == 2 ? modelEdit_ : keyEdit_; }
 
@@ -6377,6 +6494,7 @@ namespace playground::ui
         asked.kind = p.kind;
         asked.base = base;
         dialogInfo_ = port_.chat().providerInfo(asked);
+        dialogInfoBase_ = base;
         modelEdit_.set(current && !custom ? chat_.model : dialogInfo_.model, kMaxModelLength);
         modelEdit_.allSelected = false;
         keyEdit_.set("", kMaxKeyLength);
@@ -6581,6 +6699,8 @@ namespace playground::ui
                 edit.allSelected = !edit.buffer.empty();
             else if (e.key != Key::up && e.key != Key::down && edit.key(e, most))
                 keyWhy_.clear();
+            if (dialogField_ == 1)
+                baseTypedAt_ = host_ != nullptr ? host_->nowSeconds() : 0.0;   // what is kept for it: read at rest
             dirty_ = true;
             return true;
         }
@@ -6622,15 +6742,80 @@ namespace playground::ui
         dirty_ = true;
     }
 
-    // The key as the field shows it: its first characters ("sk-ant-"), then a star for each of the others (at most 40),
-    // then its last four.
+    // The key as the field shows it, typed or pasted: the provider's public prefix ("sk-ant-", "sk-or-": the preset's
+    // own, at its own server) when it starts with it, a star for each other character (at most 40), and the last four
+    // only of a key long enough (kKeyTailFrom) that they give nothing away. Nothing else of it is drawn.
     std::string Panel::maskedKey() const
     {
+        constexpr std::size_t kKeyTailFrom = 20;
         const std::string& b = keyEdit_.buffer;
-        const std::size_t head = std::min<std::size_t>(7, b.size());
-        const std::size_t tail = b.size() > head + 4 ? 4 : 0;
+        const std::string_view prefix = dialogPresetServer() ? std::string_view(dialogPresetRef().key)
+                                                             : std::string_view();
+        const std::size_t head = !prefix.empty() && b.rfind(prefix, 0) == 0 ? prefix.size() : 0;
+        const std::size_t tail = b.size() >= kKeyTailFrom && b.size() >= head + 4 ? 4 : 0;
         const std::size_t hidden = b.size() - head - tail;
         return b.substr(0, head) + std::string(std::min<std::size_t>(hidden, 40), '*') + b.substr(b.size() - tail);
+    }
+
+    // The field's hint while it is empty: what a key of this provider starts with, or that one is stored or not needed.
+    std::string Panel::keyDialogHint() const
+    {
+        const ChatPreset& preset = dialogPresetRef();
+        std::string hint;
+        if (dialogAnthropic())
+            hint = "sk-ant-...   (Cmd-V pastes it)";
+        else if (dialogInfoNow() && dialogInfo_.keyless)
+            hint = "None needed";
+        else if (dialogHasKey())
+            hint = "Stored: empty keeps it   (Cmd-V pastes another)";
+        else if (dialogPresetServer() && *preset.key != '\0')
+            hint = std::string(preset.key) + "...   (Cmd-V pastes it)";
+        else
+            hint = "Its key, if it needs one   (Cmd-V pastes it)";
+        return shortcutText(hint);
+    }
+
+    // The lines under the title: what the key is, the server it is stored for and sent to (the address typed: never the
+    // preset's once another is typed, nor a promise while it is no address yet), and whether one is stored; or what a
+    // chat's name is.
+    std::vector<std::string> Panel::keyDialogLines() const
+    {
+        const ChatPreset& preset = dialogPresetRef();
+        if (renaming_)
+            return { "Its name in the chat list (empty: its first message's words).",
+                     std::string("The chats stay on ") + kThisMachine
+                         + (chat_.owner.empty() ? ", with this plugin (no project is open)." : ", with the project.") };
+        if (dialogAnthropic())
+            return { "Claude runs on your own key, from console.anthropic.com (API keys).",
+                     std::string("It is stored encrypted on ") + kThisMachine + ", for both playground plugins,",
+                     "and sent only to api.anthropic.com. Requests are billed to it.",
+                     dialogHasKey() ? std::string("A key is stored, and the chat uses it.") : std::string() };
+        const std::string stored = dialogHasKey() ? std::string("A key is stored: leave the field empty to keep it.")
+                                                  : std::string();
+        if (!dialogPresetServer())
+        {
+            const std::string host = typedHost(baseEdit_.buffer);
+            if (host.empty())
+                return { "Any server that speaks OpenAI's Chat Completions, by its base URL:",
+                         std::string("https://, or http:// for one on ") + kThisMachine + " or the local network. Its",
+                         "key, if it needs one, is stored encrypted and sent only to that server." };
+            if (dialogInfoNow() && dialogInfo_.keyless)
+                return { "A server that speaks OpenAI's Chat Completions, at " + host + ",",
+                         std::string("on ") + kThisMachine + " or the local network: it needs no key.",
+                         "Give its model a context of 32K tokens or more, and one that calls tools." };
+            return { "A server that speaks OpenAI's Chat Completions, at " + host + ".",
+                     std::string("Its key, if it needs one, is stored encrypted on ") + kThisMachine + ",",
+                     "and sent only to " + host + ".", stored };
+        }
+        const std::string host = std::string(preset.base).substr(std::string(preset.base).find("://") + 3);
+        const std::string server = host.substr(0, host.find('/'));
+        if (*preset.key == '\0')
+            return { std::string("A model server on ") + kThisMachine + ": no key, and nothing leaves " + kThisMachine + ".",
+                     "Give its model a context of 32K tokens or more, and one that calls tools.",
+                     std::string("Start it first") + (std::string_view(preset.id) == "ollama" ? " (ollama serve)." : " (its Developer tab: Start Server).") };
+        return { "Chat through " + std::string(preset.name) + " on your own key, from " + preset.keys + ".",
+                 std::string("It is stored encrypted on ") + kThisMachine + " and sent only to " + server + ".",
+                 !stored.empty() ? stored : std::string("Requests are billed to it.") };
     }
 
     void Panel::drawKeyDialog(funkgui::Canvas& c, const funkgui::Theme& th) const
@@ -6648,41 +6833,15 @@ namespace playground::ui
         c.rrect(d.box.x, d.box.y, d.box.w, d.box.h, 16.0f, p.card, 1.0f, p.cardEdge);
 
         const float x = d.box.x + 24.0f;
-        const ChatPreset& preset = dialogPresetRef();
         const bool other = !renaming_ && !dialogAnthropic();
         c.rrect(x, d.box.y + 22.0f, 30.0f, 30.0f, 9.0f, p.accent.withAlpha(0.16f));
         chat::drawIcon(c, renaming_ ? chat::Icon::pencil : chat::Icon::key, x + 15.0f, d.box.y + 37.0f, 15.0f, p.accent);
-        const std::string title = renaming_ ? std::string("Rename this chat") : other ? std::string(preset.name) : std::string("Anthropic API key");
+        const std::string title = renaming_ ? std::string("Rename this chat") : dialogTitle();
         const float titleW = renaming_ ? d.box.w - 48.0f - 42.0f : d.provider.x - 12.0f - (x + 42.0f);
         c.text(fitText(c, title, chat::kH2, titleW).c_str(), x + 42.0f,
                c.capCentreTop(d.box.y + 37.0f, chat::kH2), chat::kH2, p.text);
 
-        // The lines under the title: what the key is, where it goes, and whether one is stored; or what a chat's name is.
-        std::vector<std::string> lines;
-        const std::string host = std::string(preset.base).empty() ? std::string() : std::string(preset.base).substr(std::string(preset.base).find("://") + 3);
-        const std::string server = host.substr(0, host.find('/'));
-        if (renaming_)
-            lines = { "Its name in the chat list (empty: its first message's words).",
-                      std::string("The chats stay on ") + kThisMachine
-                          + (chat_.owner.empty() ? ", with this plugin (no project is open)." : ", with the project.") };
-        else if (!other)
-            lines = { "Claude runs on your own key, from console.anthropic.com (API keys).",
-                      std::string("It is stored encrypted on ") + kThisMachine + ", for both playground plugins,",
-                      "and sent only to api.anthropic.com. Requests are billed to it.",
-                      dialogHasKey() ? std::string("A key is stored, and the chat uses it.") : std::string() };
-        else if (std::string_view(preset.id) == "custom")
-            lines = { "Any server that speaks OpenAI's Chat Completions, by its base URL:",
-                      std::string("https://, or http:// for one on ") + kThisMachine + " or the local network. Its",
-                      "key, if it needs one, is stored encrypted and sent only to that server." };
-        else if (std::string(preset.key).empty())
-            lines = { std::string("A model server on ") + kThisMachine + ": no key, and nothing leaves " + kThisMachine + ".",
-                      "Give its model a context of 32K tokens or more, and one that calls tools.",
-                      std::string("Start it first") + (std::string_view(preset.id) == "ollama" ? " (ollama serve)." : " (its Developer tab: Start Server).") };
-        else
-            lines = { "Chat through " + std::string(preset.name) + " on your own key, from " + preset.keys + ".",
-                      std::string("It is stored encrypted on ") + kThisMachine + " and sent only to " + server + ".",
-                      dialogHasKey() ? std::string("A key is stored: leave the field empty to keep it.")
-                                     : std::string("Requests are billed to it.") };
+        const std::vector<std::string> lines = keyDialogLines();
         float y = d.box.y + 66.0f;
         for (const std::string& line : lines)
         {
@@ -6743,13 +6902,8 @@ namespace playground::ui
             // The key masked (its first and last characters shown), the caret at its end.
             const std::string shown = keyEdit_.buffer.empty() ? std::string() : maskedKey();
             const float maxW = f.w - 28.0f;
-            const std::string hint = !other                   ? std::string("sk-ant-...   (Cmd-V pastes it)")
-                                   : dialogInfo_.keyless       ? std::string("None needed")
-                                   : dialogHasKey()            ? std::string("Stored: empty keeps it   (Cmd-V pastes another)")
-                                   : std::string(preset.key).empty() ? std::string("Its key, if it needs one   (Cmd-V pastes it)")
-                                                             : std::string(preset.key) + "...   (Cmd-V pastes it)";
             if (shown.empty())
-                c.text(fitText(c, shortcutText(hint), chat::kBody, maxW).c_str(), f.x + 14.0f, textTop, chat::kBody, p.faint);
+                c.text(fitText(c, keyDialogHint(), chat::kBody, maxW).c_str(), f.x + 14.0f, textTop, chat::kBody, p.faint);
             else
             {
                 const float w = std::min(c.textWidth(shown.c_str(), chat::kBody), maxW);
@@ -7766,12 +7920,19 @@ namespace playground::ui
             reading_ = true;
         }
         refresh(host_ != nullptr ? host_->nowSeconds() : 0.0);
+        // The key dialog's address typed: what is kept for that server (a key, none needed), read once it rests a
+        // moment or the keys go to another field; until then the dialog promises nothing of a key stored.
+        if (keyOpen_ && !renaming_ && !dialogInfoNow()
+            && (dialogField_ != 1 || (host_ != nullptr ? host_->nowSeconds() : 0.0) - baseTypedAt_ >= 0.3))
+            readDialogInfo();
         if (layoutStale())
             layout();                                    // a netlist's view came or went, or the panel under the code
         syncWindowButtons();
         syncExplorer();
-        // The message box follows its text, one row to eight: the conversation gives it the room.
-        if (std::fabs(inputItem().desiredHeight(inputItem().box().w, kBarH) - composerH_) > 0.5f)
+        // The message box follows its text, one row to eight: the conversation gives it the room. Folded (or no chat:
+        // the code window) it has no height to follow, and asks for no layout: layoutChat() sets it when it opens.
+        if (chatOpen_ && hasChat()
+            && std::fabs(inputItem().desiredHeight(inputItem().box().w, kBarH) - composerH_) > 0.5f)
             layoutChat();
         // The displays: what the Engine published since the last frame, and the scopes' samples.
         {
@@ -8366,16 +8527,26 @@ namespace playground::ui
             return;
         }
         pressed_ = itemAt(pointer_);
-        if (pressed_ >= 0 && items_[static_cast<std::size_t>(pressed_)]->focusable() && !isEdge(pressed_))
+        // Send (or Stop) clicked leaves the caret in the message box: the button with the focus and no ring would take
+        // the next Space or Return as a press (a stop), and the next letters would go to the host. Tabbed to, it keeps
+        // the focus (and its ring): the keyboard's way.
+        if (pressed_ == sendItem_)
+            setFocus(inputItem_);
+        else if (pressed_ >= 0 && items_[static_cast<std::size_t>(pressed_)]->focusable() && !isEdge(pressed_))
             setFocus(pressed_);                          // an edge's drag leaves the focus (the caret) where it was
         else if (pressed_ < 0 && textItem() >= 0)
             setFocus(-1);                                // a press beside everything takes the caret away
         if (pressed_ >= 0 && gestures_ && host_ != nullptr)
         {
             touched_ = pressed_;
+            const uint32_t sent = sends_;
             items_[static_cast<std::size_t>(pressed_)]->pointerDown(e, *gestures_, *host_);
             if (pressed_ == chatViewItem_)
                 reshowChat();                            // a thinking row opened or closed
+            // The press that sent made the button Stop under the pointer: the rest of its click (a double-click's
+            // second press) stops nothing. A later click of its own (one click) stops at once.
+            if (pressed_ == sendItem_ && sends_ != sent)
+                closingPress_ = true;
         }
         dirty_ = true;
         // The Standalone's window has no title bar: a press on the top bar where nothing is drags it instead.
@@ -8645,8 +8816,18 @@ namespace playground::ui
         // leaves it, and a Tab it does not use, which moves on.
         if (const int t = textItem(); t >= 0)
         {
+            // Typing in the editor reaches the processor in the key's own event, as a schematic gesture does: a draft
+            // not merged yet (Claude's write, a host's load) merges first, so the key lands on it, and the tabs then go
+            // at once, so that a guarded write of Claude's (edit_file, edit_circuit) sees the key and runs again on it.
+            const bool editing = t == editorItem_ && !out_;
+            if (editing)
+                (void)mergeDraft();
             if (gestures_ && items_[static_cast<std::size_t>(t)]->key(e, *gestures_))
+            {
+                if (editing)
+                    giveTyping();
                 return true;
+            }
             if (e.key == funkgui::Key::escape)
             {
                 setFocus(-1);
@@ -8732,9 +8913,11 @@ namespace playground::ui
             box.id = kKeyDialogId;
             box.role = funkgui::a11yrole::group;
             box.bounds = d.box;
-            box.title = renaming_ ? "Rename this chat" : dialogAnthropic() ? "Anthropic API key" : std::string(dialogPresetRef().name);
-            box.description = renaming_ ? std::string("Its name in the chat list, on ") + kThisMachine
-                                        : std::string("Stored encrypted on ") + kThisMachine + ", for both playground plugins";
+            box.title = renaming_ ? std::string("Rename this chat") : dialogTitle();
+            // What the dialog's lines say: the server the key is stored for and sent to.
+            for (const std::string& line : keyDialogLines())
+                if (!line.empty())
+                    box.description += (box.description.empty() ? "" : " ") + line;
             out.push_back(box);
             const auto plainField = [&](uint32_t id, const funkgui::Rect& r, const char* title, const funkgui::text::LineEdit& e) {
                 funkgui::A11yItem f;
@@ -8828,7 +9011,9 @@ namespace playground::ui
                 dials |= slotBit(c);
         r ^= static_cast<uint32_t>(dials) * 0x27D4EB2Fu ^ static_cast<uint32_t>(dials >> 32) * 0x165667B1u;
         r |= (keyOpen_ ? 1u : 0u) << 17;
-        r ^= keyOpen_ ? static_cast<uint32_t>(dialogPreset_ + 1) * 0x2545F491u ^ (dialogHasKey() ? 0x61C88647u : 0u) : 0u;
+        r ^= keyOpen_ ? static_cast<uint32_t>(dialogPreset_ + 1) * 0x2545F491u ^ (dialogHasKey() ? 0x61C88647u : 0u)
+                            ^ static_cast<uint32_t>(std::hash<std::string>{}(renaming_ ? std::string() : dialogTitle()))
+                      : 0u;
         r ^= (projects_.isOpen() ? 0x9E3779B1u : 0u) ^ (projects_.revision() * 0x165667B1u);
         r ^= (picker_.isOpen() ? 0x2545F491u : 0u) ^ (picker_.revision() * 0x61C88647u);
         r ^= (export_.isOpen() ? 0x85EBCA77u : 0u) ^ (export_.revision() * 0xC2B2AE3Du);
