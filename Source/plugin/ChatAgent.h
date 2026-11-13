@@ -770,7 +770,7 @@ namespace playground
             bool unknown = false;                                   // one had no price: no cost said
             bool estimate = false;                                  // one was an estimate
         };
-        TurnCost turnCost_;
+        TurnCost turnCost_;                                         // this turn's requests' cost (countUsage)
         // The usage page's reads (ChatUsage.cpp), on the job thread: the last one, what it was of, one at a time.
         mutable std::mutex usageMutex_;
         std::shared_ptr<const UsageView> usageView_;
@@ -778,7 +778,7 @@ namespace playground
         double usageAt_ = 0.0;                                      // when (seconds, steady)
         bool usageReading_ = false, usageResetAsked_ = false;
         uint64_t usageReads_ = 0;
-        void readUsage(usage::Range range, bool resetFirst);                                         // this turn's requests' cost (countUsage)
+        void readUsage(usage::Range range, bool resetFirst);
         bool checksFailing_ = false;                                // one failed when they were last measured
         struct Attached
         {

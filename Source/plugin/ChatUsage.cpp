@@ -74,7 +74,7 @@ namespace playground
 
         bool sameView(const UsageView& a, const UsageView& b)
         {
-            if (a.range != b.range || a.pricesAsOf != b.pricesAsOf || a.reset != b.reset || a.resetFailed != b.resetFailed
+            if (a.range != b.range || a.pricesAsOf != b.pricesAsOf || a.resetFailed != b.resetFailed
                 || a.snapshot.today != b.snapshot.today || a.snapshot.rows.size() != b.snapshot.rows.size())
                 return false;
             for (std::size_t i = 0; i < a.snapshot.rows.size(); ++i)
@@ -120,20 +120,15 @@ namespace playground
     // On the job thread: never the message thread, which never waits on the disk or the folder's lock.
     void ChatAgent::readUsage(usage::Range range, bool resetFirst)
     {
-        bool reset = false, failed = false;
-        if (resetFirst)
-        {
-            reset = usage::reset();
-            failed = !reset;
-        }
+        const bool failed = resetFirst && !usage::reset();
         auto view = std::make_shared<UsageView>();
         const uint64_t seen = usage::revision();
         view->range = range;
         view->snapshot = usage::snapshot(range);
         view->pricesAsOf = usage::pricesInUse().asOf;
         const std::lock_guard<std::mutex> lock(usageMutex_);
-        view->reset = reset || (usageView_ != nullptr && usageView_->reset && !resetFirst);
-        view->resetFailed = failed;
+        // A failed Reset is said until the next one (a reread a few seconds on keeps it).
+        view->resetFailed = failed || (!resetFirst && usageView_ != nullptr && usageView_->resetFailed);
         // The same as the view held (a reread with nothing new): kept, so the page draws nothing again.
         if (usageView_ == nullptr || !sameView(*usageView_, *view))
         {

@@ -223,7 +223,7 @@ namespace playground
         usage::Range range = usage::Range::month;
         usage::Snapshot snapshot;
         std::string pricesAsOf;                  // the table in use (usage::pricesInUse().asOf)
-        bool reset = false, resetFailed = false; // the last Reset asked was done (or failed: the file as it was)
+        bool resetFailed = false;                // the last Reset failed (the file as it was), said until the next one
     };
 
     struct ChatList
@@ -296,9 +296,10 @@ namespace playground
         virtual void deleteChat() = 0;
 
         // The usage page's (UsagePage.h). usage() never waits: the last snapshot read (null before the first), and a
-        // read of `range` asked for, on a thread of the processor's own, when it is of another range, the ledger moved
-        // (usage::revision) or the file may have (a few seconds on); the page asks each frame it shows and draws again
-        // when the revision moves. resetUsage() empties the ledger, on that thread, then reads it again.
+        // read of `range` asked for, on the chat's job thread, when it is of another range, the ledger moved
+        // (usage::revision) or the file may have (5 s on); the page asks each frame it shows and draws again when the
+        // revision moves (a read that finds what it held moves nothing). resetUsage() empties the ledger, on that
+        // thread, then reads it again.
         virtual std::shared_ptr<const UsageView> usage(usage::Range range)
         {
             (void)range;
