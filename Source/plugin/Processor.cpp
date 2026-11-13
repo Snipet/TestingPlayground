@@ -1,6 +1,7 @@
 // Source/plugin/Processor.cpp: see Processor.h.
 #include "plugin/Processor.h"
 
+#include "dsp/Faults.h"
 #include "plugin/ChatStore.h"
 #include "plugin/Factory.h"
 #include "plugin/Launch.h"
@@ -2970,7 +2971,24 @@ namespace playground
                 std::unique_lock<std::mutex> lock(saveGateMutex_);
                 saveGateOpen_.wait(lock, [this] { return !saveGateShut_; });
             }
-            runSave(*j);
+            try
+            {
+                runSave(*j);
+            }
+            catch (...)
+            {
+                // The save failed inside the plugin (out of memory, a reader's exception): said as a save that fails
+                // is, and never past this thread (std::terminate would end the host).
+                j->result.reset();
+                j->ownerId.clear();
+                try
+                {
+                    j->why = "the save failed inside the plugin: " + faults::words(std::current_exception());
+                }
+                catch (...)
+                {
+                }
+            }
             saverDone_.store(true, std::memory_order_release);
         });
         return true;

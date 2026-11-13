@@ -1,10 +1,12 @@
 // Source/dsp/SelfTester.cpp: see SelfTester.h.
 #include "dsp/SelfTester.h"
 
+#include "dsp/Faults.h"
 #include "fminus/Circuit.h"
 
 #include <algorithm>
 #include <chrono>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <utility>
@@ -38,7 +40,16 @@ namespace playground
             explicit Workers(int count)
             {
                 for (int k = 0; k < count; ++k)
-                    threads_.emplace_back([this] { loop(); });
+                {
+                    try
+                    {
+                        threads_.emplace_back([this] { loop(); });
+                    }
+                    catch (...)
+                    {
+                        break;                           // no thread (or no room for one): fewer workers, the asker too
+                    }
+                }
             }
 
             ~Workers()
@@ -74,6 +85,10 @@ namespace playground
                 std::unique_lock<std::mutex> lock(mutex_);
                 done_.wait(lock, [&] { return finished_.load(std::memory_order_acquire) == count && active_ == 0; });
                 job_ = nullptr;
+                // A job that threw, here or on a worker, after every job has returned: the asker's (the test fails
+                // in words, SelfTester::test), never a worker's own end (std::terminate, which would end the host).
+                if (std::exception_ptr e = std::exchange(failed_, nullptr))
+                    std::rethrow_exception(e);
             }
 
         private:
@@ -82,7 +97,16 @@ namespace playground
                 for (int i = next_.fetch_add(1, std::memory_order_relaxed); i < count;
                      i = next_.fetch_add(1, std::memory_order_relaxed))
                 {
-                    job(i);
+                    try
+                    {
+                        job(i);
+                    }
+                    catch (...)
+                    {
+                        const std::lock_guard<std::mutex> lock(mutex_);
+                        if (!failed_)
+                            failed_ = std::current_exception();   // the first, for run() to throw on the asker's thread
+                    }
                     finished_.fetch_add(1, std::memory_order_acq_rel);
                 }
             }
@@ -117,6 +141,7 @@ namespace playground
             int count_ = 0;
             uint64_t batch_ = 0;
             int active_ = 0;                             // workers inside the batch (mutex_)
+            std::exception_ptr failed_;                  // the batch's first job that threw (mutex_)
             bool stop_ = false;
             std::atomic<int> next_{ 0 }, finished_{ 0 };
             std::vector<std::thread> threads_;           // last: made once the rest is
@@ -200,13 +225,20 @@ namespace playground
         tests_.fetch_add(1, std::memory_order_relaxed);
         fminus::circuit::SelfTestOptions o;
         bool answered = false, cancelled = false;
+        try
         {
             Workers workers(SelfTester::workers());
-            o.parallel = [&workers](int count, const std::function<void(int)>& run) { workers.run(count, run); };
+            o.parallel = [&workers](int count, const std::function<void(int)>& run) {
+                workers.run(count, [&run](int i) {
+                    faults::reach(faults::Stage::selfTestBatch);
+                    run(i);
+                });
+            };
             o.cancelled = [this] {
                 return cancel_.load(std::memory_order_relaxed) || stopping_.load(std::memory_order_relaxed);
             };
             o.budget = budget_.load(std::memory_order_relaxed);
+            faults::reach(faults::Stage::selfTest);
             const fminus::circuit::SelfTestResult r = fminus::circuit::selfTest(job.netlist, job.file, {}, o);
             // Cancelled once it was over is cancelled too: a key the newest program dropped stores nothing.
             cancelled = r.cancelled || cancel_.load(std::memory_order_relaxed) || stopping_.load(std::memory_order_relaxed);
@@ -218,6 +250,34 @@ namespace playground
                 circuits::answers().report(job.key, circuits::outcomeOf(job, answered, r.warnings, r.notes, r.errors));
             if (answered)
                 circuits::answers().store(job.key, r.choice->text());
+        }
+        catch (...)
+        {
+            // What the test met (out of memory, an exception of FMinus's, here or on a worker): an internal error, its
+            // outcome no answer, so the key is not tested again and its compiles say why; the provisional configuration
+            // plays on. Never past this thread (std::terminate would end the host). Unless it was cancelled meanwhile.
+            cancelled = cancel_.load(std::memory_order_relaxed) || stopping_.load(std::memory_order_relaxed);
+            if (!cancelled)
+            {
+                try
+                {
+                    const std::string error = job.file + ": error: it failed inside the plugin: "
+                                            + faults::words(std::current_exception()) + "\n";
+                    circuits::Answers::Outcome outcome;
+                    try
+                    {
+                        outcome = circuits::outcomeOf(job, false, {}, {}, error);
+                    }
+                    catch (...)
+                    {
+                        outcome.why = error.substr(job.file.size() + 9, error.size() - job.file.size() - 10);
+                    }
+                    circuits::answers().report(job.key, std::move(outcome));
+                }
+                catch (...)
+                {
+                }                                    // not even that could be said: the key is released, untested
+            }
         }
         circuits::answers().release(job.key);       // after the store: the key is never neither stored nor in flight
         const std::lock_guard<std::mutex> lock(mutex_);

@@ -311,6 +311,8 @@ namespace playground
                                             ShaderCache& cache, bool keepIr, const CircuitPins* pins, const Assets& assets);
 
         void run();
+        // One pass of run()'s loop (mutex_ held on entry and on return): a RUN, a check, the IR, a stop, a refine.
+        void pass(std::unique_lock<std::mutex>& lock);
         void freezer();                        // the freezer's thread
         bool freeze(const DialState& d);       // compiles and offers the copy (the recipe under mutex_)
         // A compile's status published (its revision the next; a failed one's `program` the one that plays on), and

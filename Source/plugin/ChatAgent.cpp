@@ -1,6 +1,7 @@
 // Source/plugin/ChatAgent.cpp: see ChatAgent.h.
 #include "plugin/ChatAgent.h"
 
+#include "dsp/Faults.h"
 #include "plugin/ChatCapture.h"
 #include "plugin/ChatImages.h"
 #include "plugin/ChatScenario.h"
@@ -1316,7 +1317,25 @@ namespace playground
             jobs_.pop_front();
             jobRunning_ = true;
             lock.unlock();
-            job();
+            try
+            {
+                job();
+            }
+            catch (...)
+            {
+                // A job that failed inside the plugin (out of memory): said in the chat, and never past this thread
+                // (std::terminate would end the host). A picture's own read says so itself (attach).
+                try
+                {
+                    const std::lock_guard<std::mutex> l(mutex_);
+                    addEntry(ChatEntry::Kind::note, "Something the chat was doing failed inside the plugin ("
+                                                        + faults::words(std::current_exception()) + ").");
+                    touch();
+                }
+                catch (...)
+                {
+                }
+            }
             job = nullptr;                         // what it held goes now
             lock.lock();
             jobRunning_ = false;
@@ -1541,7 +1560,18 @@ namespace playground
             queueJob([this, p = take[k], seq = seqs[k], epoch] {
                 if (pictureReadHook_)
                     pictureReadHook_();
-                chatimages::Prepared r = chatimages::fromFile(p);
+                chatimages::Prepared r;
+                try
+                {
+                    r = chatimages::fromFile(p);
+                }
+                catch (...)
+                {
+                    // Read or refused, as any picture: one that failed inside the plugin (out of memory) is refused.
+                    r = {};
+                    r.why = juce::File(juce::String::fromUTF8(p.c_str())).getFileName().toStdString()
+                          + " could not be read: it failed inside the plugin (" + faults::words(std::current_exception()) + ").";
+                }
                 const std::lock_guard<std::mutex> lock(mutex_);
                 --attaching_;
                 attachDone_ = std::max(attachDone_, seq);   // read or refused: a message waiting for it goes on

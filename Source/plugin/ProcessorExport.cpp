@@ -3,6 +3,7 @@
 // read (projectstore::load) and written on a thread of its own, never the message thread.
 #include "plugin/Processor.h"
 
+#include "dsp/Faults.h"
 #include "plugin/ProjectExport.h"
 
 #include <juce_core/juce_core.h>
@@ -73,7 +74,26 @@ namespace playground
             exportState_.path = path;
         }
         exportCancel_.store(false);
-        exporter_ = std::thread([this, job = std::move(taken)] { runExport(job); });
+        exporter_ = std::thread([this, job = std::move(taken)] {
+            try
+            {
+                runExport(job);
+            }
+            catch (...)
+            {
+                // The export failed inside the plugin (out of memory, a reader's exception): said as an export that
+                // fails is, and never past this thread (std::terminate would end the host).
+                std::string reason = "the export failed inside the plugin";
+                try
+                {
+                    reason += ": " + faults::words(std::current_exception());
+                }
+                catch (...)
+                {
+                }
+                endExport(false, {}, reason, false);
+            }
+        });
         return true;
     }
 

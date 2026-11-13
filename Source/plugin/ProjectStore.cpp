@@ -1984,10 +1984,36 @@ namespace playground::projectstore
                                 ++it;
                     }
                 }
-                if (job.number >= 0)
-                    readVersions(job.path, numbers);
-                else
-                    read(job.path);
+                try
+                {
+                    if (job.number >= 0)
+                        readVersions(job.path, numbers);
+                    else
+                        read(job.path);
+                }
+                catch (...)
+                {
+                    // A file whose read failed inside the plugin (out of memory on a huge one): kept as a damaged file
+                    // is, read once while it stays as it is, and never past this thread (std::terminate would end the
+                    // host).
+                    try
+                    {
+                        const juce::File f(juce::String::fromUTF8(job.path.c_str()));
+                        juce::int64 modified = 0, size = 0;
+                        FileId id;
+                        if (look(f, modified, size, id))
+                        {
+                            const std::lock_guard<std::mutex> lock(cacheMutex);
+                            keepRead(f, std::nullopt, modified, size);
+                            if (job.number >= 0)
+                                keepVersions(f, std::nullopt, modified, size, numbers);
+                            revision.fetch_add(1, std::memory_order_release);
+                        }
+                    }
+                    catch (...)
+                    {
+                    }                                    // not even that: asked again at the next poll
+                }
                 const std::lock_guard<std::mutex> lock(mutex);
                 for (const std::string& k : keys)
                     asked.erase(k);

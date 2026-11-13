@@ -7,6 +7,7 @@
 #include "plugin/ProjectExport.h"
 #include "plugin/Verify.h"
 
+#include "dsp/Faults.h"
 #include "dsp/Sources.h"
 
 #if !defined(_WIN32) && !defined(__APPLE__)
@@ -1185,10 +1186,32 @@ namespace playground::factorystore
                     const std::lock_guard<std::mutex> lock(m);
                     loaded = state.loaded;
                 }
-                if (doLoad || (doFetch && !loaded))
-                    load();
-                if (doFetch && !cancel.load())
-                    considerFetch(doForce);
+                try
+                {
+                    if (doLoad || (doFetch && !loaded))
+                        load();
+                    if (doFetch && !cancel.load())
+                        considerFetch(doForce);
+                }
+                catch (...)
+                {
+                    // What a read or a fetch met inside the plugin (out of memory): a failure as a check's, in words,
+                    // the set in use kept, and never past this thread (std::terminate would end the host).
+                    try
+                    {
+                        {
+                            const std::lock_guard<std::mutex> lock(m);
+                            state.loaded = true;
+                            state.fetching = false;
+                        }
+                        Refusal r;
+                        refuse(r, Step::none, "it failed inside the plugin: " + faults::words(std::current_exception()));
+                        fail(Failure::check, r);
+                    }
+                    catch (...)
+                    {
+                    }
+                }
                 const std::lock_guard<std::mutex> lock(m);
                 busy = false;
                 cancel.store(false);

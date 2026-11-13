@@ -1,6 +1,7 @@
 // Source/plugin/AbMatch.cpp: see AbMatch.h.
 #include "plugin/AbMatch.h"
 
+#include "dsp/Faults.h"
 #include "dsp/Measure.h"
 #include "fminus/Patch.h"
 
@@ -189,10 +190,31 @@ namespace playground::ab
             waiting_.reset();
             running_ = true;
             lock.unlock();
-            const std::optional<Result> r = measure(job, [this, id = job.id] {
-                const std::lock_guard<std::mutex> l(mutex_);
-                return stop_ || wanted_ != id;
-            });
+            std::optional<Result> r;
+            try
+            {
+                r = measure(job, [this, id = job.id] {
+                    const std::lock_guard<std::mutex> l(mutex_);
+                    return stop_ || wanted_ != id;
+                });
+            }
+            catch (...)
+            {
+                // The measure failed inside the plugin (out of memory): not matched, saying why, and never past this
+                // thread (std::terminate would end the host).
+                try
+                {
+                    Result failed;
+                    failed.id = job.id;
+                    failed.why = "The loudness could not be measured: it failed inside the plugin ("
+                               + faults::words(std::current_exception()) + ")";
+                    r = std::move(failed);
+                }
+                catch (...)
+                {
+                    r.reset();
+                }
+            }
             lock.lock();
             running_ = false;
             if (r && wanted_ == job.id && !stop_)
