@@ -16,7 +16,7 @@
 //   OPEN     PROJECTS' Compare... opens it (the project open and edited: the version open against the editor), the
 //            versions' menu (a right-click on a row: with the version before, with the editor), the top bar's pill's
 //            menu (a right-click: Compare with the saved version, only while the editor has changes), Escape and a
-//            click outside close it
+//            click outside close it (a double-click's second press reaching nothing under it)
 //   PICK     the left dropdown's menu lists Editor and every version, the current one dotted; Editor chosen; the swap
 //            exchanges the sides
 //   DIFF     v1 to v2: a pill a file (gain.fm +1 -1, notes.fm gone, lib.fm new), DIALS and SAMPLES after them, the
@@ -283,8 +283,15 @@ PROBE(gui, diff)
         host.settle();
     }
     P.eq("open.version_menu_editor", card.isOpen() && card.side(0) == 1 && card.side(1) == DC::kEditor ? 1 : 0, 1);
-    clickAt(host, { 4.0f, 4.0f });
+    // A double-click outside, over the PROJECTS pill: the first press closes the card (Panel::pressCard), the second
+    // and the double-click reach nothing (the pill would open PROJECTS).
+    {
+        const funkgui::Point pill = panel.centreOfProjects();
+        host.doubleClick(pill.x, pill.y);
+        host.settle();
+    }
     P.eq("open.click_outside_closes", !card.isOpen() ? 1 : 0, 1);
+    P.eq("open.outside_double_click_swallowed", !card.isOpen() && !browser.isOpen() ? 1 : 0, 1);
     panel.openProjects();
     host.settle();
     browser.chooseProjectNamed(project, W, H);
@@ -549,7 +556,12 @@ PROBE(gui, diff)
     {
         panel.openCompare(project, 1, 2);
         readBoth();
-        clickAt(host, mid(card.places(W, H).ab));
+        // A double-click on A/B...: the first press opens the A/B card (COMPARE gone), the second is swallowed
+        // (Panel::pressCard), never a press on the A/B card that took its place.
+        {
+            const funkgui::Point at = mid(card.places(W, H).ab);
+            host.doubleClick(at.x, at.y);
+        }
         processor.settle();
         host.settle();
         const pg::AbState st = panel.abCard().state();

@@ -118,7 +118,8 @@
 //   setProjectsView() tag filtered on and the order; this Mac's (ProjectStore.h's View), every instance's
 //   exportProject()   a project written as a .zip of its source or a .fmpack (ProjectExport.h), every version or the
 //                     newest only, at once (it reads the project's file whole: never on the message thread for a large
-//                     one; startExport is the editor's way); exportFolder() where a chooser starts (the Desktop)
+//                     one; startExport is the editor's way); exportFolder() where a chooser starts (the Documents
+//                     folder; a probe's sandbox's exports/ under CTest)
 //   startExport()     the same off the message thread (ExportState): one project its export, several a bundle of their
 //   exporting()       exports (ProjectExport.h), each project's file read and written on a thread of its own, the file
 //   cancelExport()    written beside and moved into place, never over a file: one there as it starts refuses it at

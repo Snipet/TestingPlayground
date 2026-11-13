@@ -5922,6 +5922,8 @@ namespace playground::ui
         syncMidi();
         // The editor's save in flight (Cmd-S, PROJECTS' Save): what came of it, once it has ended.
         syncSave();
+        // An export this Panel started (EXPORT): how far it has come, then what came of it.
+        syncExport();
         // PROJECTS and EXPORT read the store's cache alone: what its Reader has read since shows now.
         if (projects_.poll())
             dirty_ = true;
@@ -7449,7 +7451,7 @@ namespace playground::ui
             savingNotice();
         projectsAt_ = -100.0;                            // the explorer reads what it saved, opened or deleted
         const bool importIt = projects_.takeImport();
-        const std::string exportIt = projects_.takeExport();
+        const std::vector<std::string> exportIt = projects_.takeExport();
         const std::pair<std::string, int> abIt = projects_.takeAb();
         const auto [compareIt, compareLeft, compareRight] = projects_.takeCompare();
         if (wasOpen && !projects_.isOpen() && exportIt.empty() && abIt.first.empty() && compareIt.empty())
@@ -7591,57 +7593,137 @@ namespace playground::ui
         dirty_ = true;
     }
 
-    // The save chooser for the export EXPORT asked for, then the file; or, with no chooser, the Desktop.
+    // The save chooser for the export EXPORT asked for, then the export job (EditorPort::startExport: the files read and
+    // written on a thread of the processor's own, never here); or, with no chooser, the export folder. Cancel: the job
+    // cancelled.
     void Panel::afterExport(bool wasOpen)
     {
         if (const std::string n = export_.takeNotice(); !n.empty())
             notice(n);
+        if (export_.takeCancel())
+            port_.cancelExport();
         const ExportCard::Want want = export_.takeWant();
         if (want != ExportCard::Want::none)
         {
             const bool package = want == ExportCard::Want::package;
-            const std::string project = export_.project();
+            const std::vector<std::string> names = export_.projects();
             const bool every = export_.allVersions();
-            const std::string ext = package ? ".fmpack" : ".zip";
-            const auto write = [this, project, package, every](const std::string& path) {
-                Exported out;
-                std::string why;
-                if (port_.exportProject(project, package, every, path, out, why))
-                {
-                    const auto kb = [](int64_t b) { return b < 10240 ? std::to_string(b) + " bytes" : std::to_string((b + 512) / 1024) + " KB"; };
-                    const std::string file = juce::File(juce::String::fromUTF8(path.c_str())).getFileName().toStdString();
-                    export_.exported(true, "Exported " + file + ": " + kb(out.bytes) + (package ? " (" + kb(out.raw) + " of text, " + out.method + ")" : std::string())
-                                               + ", " + std::to_string(out.versions) + (out.versions == 1 ? " version." : " versions."));
-                    notice("EXPORTED: " + upper(file));
-                }
-                else
-                    export_.exported(false, "Not exported: " + why + ".");
-                dirty_ = true;
-            };
+            // A bundle is a .zip whatever its projects' exports are; one project's export is its format's file.
+            const std::string ext = package && names.size() == 1 ? ".fmpack" : ".zip";
+            const std::string base = names.size() == 1 ? ownName(names.front())   // a factory project's own: no colon
+                                                       : std::string(product::kName) + " Projects";
+            // A name no file has where the chooser starts (an export never replaces a file: the plain one taken, a
+            // number after it), so the ordinary path never meets the refusal.
+            const juce::File folder(juce::String::fromUTF8(port_.exportFolder().c_str()));
+            juce::File free = folder.getChildFile(juce::String::fromUTF8((base + ext).c_str()));
+            for (int k = 2; free.exists() && k < 1000; ++k)
+                free = folder.getChildFile(juce::String::fromUTF8((base + " " + std::to_string(k) + ext).c_str()));
             funkgui::FileRequest request;
             request.mode = funkgui::FileRequest::Mode::save;
-            request.title = "Export " + project;
+            request.title = names.size() == 1 ? "Export " + ownName(names.front()) : "Export " + ExportCard::countText(static_cast<int>(names.size()));
             request.pattern = "*" + ext;
-            request.suggestedName = ownName(project) + ext;    // a factory project's own name: no colon in a file's
+            request.suggestedName = free.getFileName().toStdString();
+            const auto write = [this, names, package, every](const std::string& path) { startExport(names, package, every, path); };
             if (host_ == nullptr || !host_->chooseFiles(request, [write](const std::vector<std::string>& paths) {
                     if (!paths.empty())
                         write(paths.front());
                 }))
-            {
-                // No chooser: the Desktop, under a name no file there has.
-                const juce::File desk(juce::String::fromUTF8(port_.exportFolder().c_str()));
-                const std::string base = ownName(project);
-                juce::File to = desk.getChildFile(juce::String::fromUTF8((base + ext).c_str()));
-                for (int k = 2; to.exists() && k < 1000; ++k)
-                    to = desk.getChildFile(juce::String::fromUTF8((base + " " + std::to_string(k) + ext).c_str()));
-                write(to.getFullPathName().toStdString());
-            }
+                write(free.getFullPathName().toStdString());   // no chooser: the free name in the export folder
         }
         if (wasOpen && !export_.isOpen())
         {
             setFocus(focusBeforeProjects_ >= 0 ? focusBeforeProjects_ : editorItem_);
             focusBeforeProjects_ = -1;
         }
+        projectsAt_ = -100.0;
+        dirty_ = true;
+    }
+
+    // The job started, or refused at once in its words (a file there already: an export never replaces one, and the
+    // card asks for another name; the file stays as it is).
+    void Panel::startExport(const std::vector<std::string>& projects, bool package, bool every, const std::string& path)
+    {
+        const uint64_t ended = port_.exporting().ended;
+        std::string why;
+        if (!port_.startExport(projects, package, every, path, why))
+        {
+            if (export_.isOpen())
+                export_.exported(false, "Not exported: " + why + ".");
+            else
+                notice("NOT EXPORTED: " + upper(why));
+            dirty_ = true;
+            return;
+        }
+        exportWatched_ = true;
+        exportEnded_ = ended;
+        exportDone_ = -1;
+        exportNames_ = projects;
+        exportPackage_ = package;
+        const std::string file = juce::File(juce::String::fromUTF8(path.c_str())).getFileName().toStdString();
+        if (export_.isOpen())
+            export_.started(projects.size() == 1 ? "Exporting to " + file + "..." : "Exporting 1 of " + std::to_string(projects.size()) + "...");
+        syncExport();
+        dirty_ = true;
+    }
+
+    // The job this Panel started: its progress to the card and the status ("EXPORTING 3 OF 12") while it runs, then its
+    // outcome in words, once (ExportState::ended moved). The card may have closed meanwhile: the status says it.
+    void Panel::syncExport()
+    {
+        if (!exportWatched_)
+            return;
+        const ExportState s = port_.exporting();
+        const bool many = exportNames_.size() > 1;
+        const bool card = export_.isOpen() && export_.projects() == exportNames_;   // the card that asked (else the status)
+        if (s.ended == exportEnded_)
+        {
+            if (s.busy && s.done != exportDone_)
+            {
+                exportDone_ = s.done;
+                if (card)
+                    export_.progress(s.done, s.total);
+                notice(many ? "EXPORTING " + std::to_string(std::min(s.done + 1, s.total)) + " OF " + std::to_string(s.total)
+                            : "EXPORTING " + upper(ownName(exportNames_.front())) + "...");
+                dirty_ = true;
+            }
+            return;
+        }
+        exportWatched_ = false;
+        const std::string file = juce::File(juce::String::fromUTF8(s.path.c_str())).getFileName().toStdString();
+        const auto size = [](int64_t b) { return b < 10240 ? std::to_string(b) + " bytes" : std::to_string((b + 512) / 1024) + " KB"; };
+        std::string line, said;
+        if (s.ok && !many)
+        {
+            line = "Exported " + file + ": " + size(s.out.bytes)
+                 + (exportPackage_ ? " (" + size(s.out.raw) + " of text, " + s.out.method + ")" : std::string()) + ", "
+                 + std::to_string(s.out.versions) + (s.out.versions == 1 ? " version." : " versions.");
+            said = "EXPORTED: " + upper(file);
+        }
+        else if (s.ok)
+        {
+            const int in = s.total - s.failed;
+            line = "Exported " + (s.failed > 0 ? std::to_string(in) + " of " + std::to_string(s.total) + " projects" : ExportCard::countText(in))
+                 + " to " + file + ": " + size(s.out.bytes) + ".";
+            for (std::size_t i = 0; i < s.failedNames.size(); ++i)
+                line += (i == 0 ? " Left out: " : "; ") + s.failedNames[i];
+            if (!s.failedNames.empty())
+                line += ".";
+            said = s.failed > 0 ? "EXPORTED " + std::to_string(in) + " OF " + std::to_string(s.total) + " PROJECTS"
+                                : "EXPORTED " + std::to_string(in) + (in == 1 ? " PROJECT" : " PROJECTS");
+        }
+        else if (s.cancelled)
+        {
+            line = "Cancelled: no file written.";
+            said = "EXPORT CANCELLED";
+        }
+        else
+        {
+            line = "Not exported: " + s.why + ".";
+            said = "NOT EXPORTED: " + upper(s.why);
+        }
+        if (card)
+            export_.exported(s.ok, line);
+        notice(said);
         projectsAt_ = -100.0;
         dirty_ = true;
     }
@@ -7880,34 +7962,40 @@ namespace playground::ui
         host_->chooseFiles(request, [this](const std::vector<std::string>& paths) { importFiles(paths); });
     }
 
-    // Each a project of its own; the last one chosen in PROJECTS, opened over the panel.
+    // Each file's projects (a bundle's every one: EditorPort::importProjects), each a project of its own; the last one
+    // added chosen in PROJECTS, opened over the panel. The status says how many came in and what was refused, by name.
     void Panel::importFiles(const std::vector<std::string>& paths)
     {
-        std::string last, failed;
-        int done = 0;
+        std::vector<std::string> added, refused;
         for (const std::string& p : paths)
         {
-            std::string name, why;
-            if (port_.importProject(p, name, why))
-            {
-                last = name;
-                ++done;
-            }
-            else
-                failed = why;
+            Imported in;
+            std::string why;
+            const bool any = port_.importProjects(p, in, why);
+            added.insert(added.end(), in.names.begin(), in.names.end());
+            refused.insert(refused.end(), in.refused.begin(), in.refused.end());
+            if (!any && in.refused.empty())                // the file itself refused (not an export, damaged)
+                refused.push_back(juce::File(juce::String::fromUTF8(p.c_str())).getFileName().toStdString() + ": " + why);
         }
         projectsAt_ = -100.0;
-        if (done == 0)
+        // The refused, by name: "<name>: <why>" each, the first few.
+        std::string left;
+        for (std::size_t i = 0; i < refused.size() && i < 3; ++i)
+            left += (i == 0 ? "" : "; ") + refused[i];
+        if (refused.size() > 3)
+            left += "; and " + std::to_string(refused.size() - 3) + " more";
+        if (added.empty())
         {
-            if (!failed.empty())
-                notice("NOT IMPORTED: " + upper(failed));
+            if (!refused.empty())
+                notice("NOT IMPORTED: " + upper(left));
             return;
         }
-        notice(done == 1 ? "IMPORTED: " + upper(last) : "IMPORTED " + std::to_string(done) + " PROJECTS");
+        const std::string count = added.size() == 1 ? "IMPORTED: " + upper(added.back()) : "IMPORTED " + std::to_string(added.size()) + " PROJECTS";
+        notice(refused.empty() ? count : count + "; REFUSED " + upper(left));
         if (!dialogOpen())
         {
             openProjects();
-            projects_.chooseProjectNamed(last, width_, height_);
+            projects_.chooseProjectNamed(added.back(), width_, height_);
         }
         dirty_ = true;
     }
@@ -8748,6 +8836,9 @@ namespace playground::ui
         else if (keyOpen_)
             std::snprintf(line, sizeof line, "%s", dialogAnthropic() ? "API KEY   CMD-V PASTES IT   RETURN SAVES IT   ESCAPE CANCELS"
                                                                      : "PROVIDER   TAB THE NEXT FIELD   CMD-V PASTES   RETURN SAVES   ESCAPE CANCELS");
+        else if (export_.isOpen() && export_.bulk())
+            std::snprintf(line, sizeof line, export_.running() ? "EXPORT   CANCEL STOPS IT, NO FILE LEFT   ESCAPE CLOSES (IT GOES ON)"
+                                                               : "EXPORT   ONE .ZIP OF THEIR EXPORTS   ESCAPE CLOSES");
         else if (export_.isOpen() && export_.readOnly())
             std::snprintf(line, sizeof line, "EXPORT   A FACTORY PROJECT: ITS INFO AS IT IS   ESCAPE CLOSES");
         else if (export_.isOpen())
@@ -8942,44 +9033,31 @@ namespace playground::ui
         {
             pressed_ = -1;
             if (settings_.isOpen())
-            {
-                settings_.pointerDown(pointer_, width_, height_, host_);
-                afterSettings(true);
-            }
+                pressCard([this] { return settings_.isOpen(); }, [this] { settings_.pointerDown(pointer_, width_, height_, host_); },
+                          [this] { afterSettings(true); });
             else if (keyOpen_)
-                keyDialogPointerDown(pointer_);
+                pressCard([this] { return keyOpen_; }, [this] { keyDialogPointerDown(pointer_); }, [] {});
             else if (export_.isOpen())
-            {
-                export_.pointerDown(pointer_, width_, height_);
-                afterExport(true);
-            }
+                pressCard([this] { return export_.isOpen(); }, [this] { export_.pointerDown(pointer_, width_, height_); },
+                          [this] { afterExport(true); });
             else if (name_.isOpen())
-            {
-                name_.pointerDown(pointer_, width_, height_);
-                afterName(true);
-            }
+                pressCard([this] { return name_.isOpen(); }, [this] { name_.pointerDown(pointer_, width_, height_); },
+                          [this] { afterName(true); });
             else if (compare_.isOpen())
-            {
-                compare_.pointerDown(pointer_, host_, width_, height_);
-                afterCompare(true);
-            }
+                pressCard([this] { return compare_.isOpen(); }, [this] { compare_.pointerDown(pointer_, host_, width_, height_); },
+                          [this] { afterCompare(true); });
             else if (ab_.isOpen())
-            {
-                ab_.pointerDown(pointer_, width_, height_);
-                afterAb(true);
-            }
+                pressCard([this] { return ab_.isOpen(); }, [this] { ab_.pointerDown(pointer_, width_, height_); }, [this] { afterAb(true); });
             else if (picker_.isOpen())
-            {
-                (void)picker_.pointerDown(e, host_, width_, height_);   // outside it: closed, the press goes no further
-                afterPicker(true);
-            }
+                pressCard([this] { return picker_.isOpen(); }, [this, &e] { (void)picker_.pointerDown(e, host_, width_, height_); },
+                          [this] { afterPicker(true); });
             else
-            {
-                projectsPress_ = true;
-                projects_.pointerDown(e, host_, width_, height_);
-                afterProjects(true);
-            }
-            closingPress_ = !dialogOpen();
+                pressCard([this] { return projects_.isOpen(); },
+                          [this, &e] {
+                              projectsPress_ = true;     // its drag and release go there (one that closed it: nowhere)
+                              projects_.pointerDown(e, host_, width_, height_);
+                          },
+                          [this] { afterProjects(true); });
             return;
         }
         // A .gui interface's bar (Scroll.h): its thumb drags, a press on its track jumps first.
@@ -9017,6 +9095,15 @@ namespace playground::ui
         windowPress_ = pressed_ < 0 && !e.popup && buttonsRoom_ > 0.0f && pointer_.y < kMainY;
         if (windowPress_)
             port_.dragWindow(e.clicks);
+    }
+
+    void Panel::pressCard(const std::function<bool()>& isOpen, const std::function<void()>& press, const std::function<void()>& after)
+    {
+        press();
+        after();
+        closingPress_ = !isOpen();                       // it closed: the press, and its double-click, end here
+        if (closingPress_)
+            projectsPress_ = false;
     }
 
     // ---- the Standalone window's buttons over the top bar (EditorPort::windowButtons) -------------------------------

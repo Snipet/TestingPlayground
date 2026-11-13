@@ -20,7 +20,8 @@
 //   gui.dump.projects.png PROJECTS: three projects, another than the open one chosen, its older version chosen;
 //                        .projects.factory.png a factory project chosen in the FACTORY group
 //   gui.dump.export.png  EXPORT: a project's info typed and chosen, the line that its chats never go with it;
-//                        .export.factory.png a factory project's, read-only
+//                        .export.factory.png a factory project's, read-only; .export.refused.png a file there already
+//                        refused
 //   gui.dump.frozen.png  the frozen copy playing: the snowflake left of the load in the top bar; .frozen.paper.png
 //   gui.dump.recording.png the capture tool recording for Claude: REC, its seconds and two marks in the status bar,
 //                        Mark beside them; .recording.paper.png
@@ -116,7 +117,11 @@
 //             Up from the first stays, Down from the last skips UNCATEGORISED's header; Save then saves the program
 //             open, no project of the factory one's name made. EXPORT (from Export...)
 //             takes a description, an author, tags, a category and genres, asks where (a save chooser), writes the
-//             package and keeps the info; Import... (an open chooser) adds it as a project of its own, chosen; a factory
+//             package off the message thread (EditorPort::startExport: the card says so until it lands) and keeps the
+//             info; the same path again refused in the refusal's words (an export never replaces a file), the file as
+//             it was; the name suggested free where the chooser starts (one there: "My Patch 2.fmpack"), a chooser
+//             cancelled writing nothing; a press on the card's edge keeps it, a double-click outside closes it and
+//             reaches nothing under it; Import... (an open chooser) adds it as a project of its own, chosen; a factory
 //             project's EXPORT is read-only (a click or a key changes none of its info), writes its package, and Done
 //             closes it
 //   KEYS      Escape leaves the editor, after which Tab moves the focus ring (and no key reaches the text)
@@ -1916,14 +1921,75 @@ PROBE(gui, dump)
             P.eq("export.asks_where", asked != nullptr && asked->mode == funkgui::FileRequest::Mode::save
                                           && asked->suggestedName == "My Patch.fmpack" ? 1 : 0, 1);
             const juce::File target = folder.getChildFile("out").getChildFile("My Patch.fmpack");
+            target.getParentDirectory().createDirectory();
+            // The export runs on the processor's own thread (EditorPort::startExport): the card says so until it lands.
+            const auto landed = [&] {
+                for (const auto by = std::chrono::steady_clock::now() + probe::kWorkWait;
+                     (card.running() || port.exporting().busy) && std::chrono::steady_clock::now() < by;)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    processor.settle();
+                    host.tick(1);
+                }
+                host.settle();
+                return !card.running();
+            };
+            const int parsed0 = pg::projectstore::parses(), reader0 = pg::projectstore::readerParses();
             host.returnFiles({ target.getFullPathName().toStdString() });
             host.settle();
-            std::printf("export: %s\n", card.why().c_str());
+            P.eq("export.landed", landed() ? 1 : 0, 1);
+            // The project's file is read on the job's thread, never the message thread (the store's parses there aside
+            // from its Reader's: none counted outside the job, which reads through projectstore::load too).
+            std::printf("export: %s (%d parse(s), %d by the Reader)\n", card.why().c_str(), pg::projectstore::parses() - parsed0,
+                        pg::projectstore::readerParses() - reader0);
             P.eq("export.written", target.existsAsFile() && card.why().find("Exported My Patch.fmpack") != std::string::npos ? 1 : 0, 1);
             P.eq("export.info_kept", port.projectInfo("My Patch").author == "Probe" ? 1 : 0, 1);
+            // An export never replaces a file: the same path again is refused in the refusal's words, the card asking for
+            // another name, the file as it was.
+            {
+                const juce::int64 before = target.getSize();
+                const juce::Time when = target.getLastModificationTime();
+                click(card.places(W, H).package);
+                host.returnFiles({ target.getFullPathName().toStdString() });
+                host.settle();
+                (void)landed();
+                std::printf("refused: %s\n", card.why().c_str());
+                P.eq("export.refused_there_already", card.isOpen() && card.why().find("is there already: an export never replaces a file") != std::string::npos
+                                                         && card.why().find("choose another name") != std::string::npos ? 1 : 0, 1);
+                P.eq("export.refused_file_kept", target.getSize() == before && target.getLastModificationTime() == when ? 1 : 0, 1);
+                writePng(P, host, "gui.dump.export.refused.png", "export_refused");
+            }
+            // The name suggested is free where the chooser starts (EditorPort::exportFolder): one there takes a number.
+            {
+                const juce::File start(juce::String::fromUTF8(port.exportFolder().c_str()));
+                const juce::File taken = start.getChildFile("My Patch.fmpack");
+                const bool made = taken.replaceWithText("taken");
+                click(card.places(W, H).package);
+                asked = host.pendingFiles();
+                P.eq("export.free_name", made && asked != nullptr && asked->suggestedName == "My Patch 2.fmpack" ? 1 : 0, 1);
+                host.cancelFiles();                      // the chooser cancelled: nothing written
+                host.settle();
+                P.eq("export.chooser_cancelled", !card.running() && taken.loadFileAsString() == "taken"
+                                                     && !start.getChildFile("My Patch 2.fmpack").exists() ? 1 : 0, 1);
+                (void)taken.deleteFile();
+            }
             host.keys("escape");
             host.settle();
             P.eq("export.escape_closes", card.isOpen() ? 0 : 1, 1);
+            // A press outside the card closes it as Done does, and reaches nothing under it; one on its edge does not.
+            {
+                host.click(open.x, open.y);
+                host.settle();
+                clickRow(BL::projects, browser.rowOf("My Patch"));
+                click(browser.places(W, H).exportIt);
+                const funkgui::Rect box = card.places(W, H).box;
+                host.click(box.x + 2.0f, box.y + box.h * 0.5f);   // the card's edge, inside it
+                host.settle();
+                P.eq("export.edge_keeps", card.isOpen() ? 1 : 0, 1);
+                host.doubleClick(open.x, open.y);   // outside, over the PROJECTS pill: its double-click opens nothing
+                host.settle();
+                P.eq("export.outside_closes", !card.isOpen() && !browser.isOpen() ? 1 : 0, 1);
+            }
             // Import: a project of its own, chosen in PROJECTS.
             host.click(open.x, open.y);
             host.settle();
@@ -1965,6 +2031,7 @@ PROBE(gui, dump)
                 const juce::File packed = folder.getChildFile("out").getChildFile(juce::String(file));
                 host.returnFiles({ packed.getFullPathName().toStdString() });
                 host.settle();
+                (void)landed();
                 std::printf("factory export: %s\n", card.why().c_str());
                 P.eq("export.factory_written", packed.existsAsFile() && card.why().find("Exported ") != std::string::npos ? 1 : 0, 1);
                 click(card.places(W, H).done);

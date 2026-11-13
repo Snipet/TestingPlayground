@@ -531,6 +531,7 @@ namespace playground::ui
         float chatWant() const noexcept { return chatWant_; }
         bool explorerEdgeShown() const;
         bool chatEdgeShown() const;
+        int focusItem() const noexcept { return focus_; }   // the item with the focus (-1: none), for probes
         bool edgeFocused(bool chat) const noexcept { return focus_ >= 0 && focus_ == (chat ? chatEdgeItem_ : explorerEdgeItem_); }
         funkgui::Point centreOfExplorerEdge() const;
         funkgui::Point centreOfChatEdge() const;
@@ -648,6 +649,14 @@ namespace playground::ui
                                                          // or sent the message (send is stop under it now): the
                                                          // rest of its click (a double-click's second press, its
                                                          // doubleClick) reaches nothing under it
+        // A press on the card on top (pointerDown, "A card's press"): the card takes it (`press`), then the Panel's
+        // after-hook for it (`after`: its notice, the focus back). When the card that took it is no longer open, the
+        // press closed it (a click outside its box, its Close, Done or Cancel): the press goes no further, and
+        // closingPress_ swallows its double-click's second press, which would land on what lies under it, a card under
+        // it included (PROJECTS under a card it opened). A card that closes on a click outside tests its own box first
+        // in its pointerDown and calls its own close() (ProjectBrowser, ExportCard, DiffCard, PresetPicker,
+        // SettingsCard); a new card is one more pressCard line in pointerDown, nothing copied.
+        void pressCard(const std::function<bool()>& isOpen, const std::function<void()>& press, const std::function<void()>& after);
         bool projectsPress_ = false;                     // the press began in PROJECTS: its drag and release go there
         uint32_t sends_ = 0;                             // messages sent from the box (a press's: did it send?)
         bool guiBarPress_ = false;                       // the press was on a .gui interface's bar: its thumb drags
@@ -835,7 +844,15 @@ namespace playground::ui
         void openProjectNamed(const std::string& name);  // its newest version, asking first over unsaved edits
         void applyPresetNamed(const std::string& name);  // a preset of the project open
         void afterProjects(bool wasOpen);                // the card's notice to the status, the focus back
-        void afterExport(bool wasOpen);                  // its notice; an export asked for: the save chooser, the file
+        void afterExport(bool wasOpen);                  // its notice; an export asked for: the save chooser, the job
+                                                         // started (EditorPort::startExport); Cancel: the job cancelled
+        void startExport(const std::vector<std::string>& projects, bool package, bool every, const std::string& path);
+        void syncExport();                               // the job's progress and outcome, to the card and the status
+        bool exportWatched_ = false;                     // an export this Panel started is under way
+        uint64_t exportEnded_ = 0;                       // ExportState::ended as it started
+        int exportDone_ = -1;                            // ExportState::done as last said
+        std::vector<std::string> exportNames_;           // what it exports
+        bool exportPackage_ = false;
         void afterAb(bool wasOpen);                      // A/B's notice to the status, the focus back once it closed
         void importFiles(const std::vector<std::string>& paths);
         bool dialogOpen() const noexcept
