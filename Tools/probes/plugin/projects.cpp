@@ -68,6 +68,12 @@
 //   DETAIL   a project's versions, presets and info as PROJECTS and EXPORT read them (projectPolled, the store's
 //            detailCached): one this process wrote, from the cache with no file read; one another rewrote, as it was
 //            and handed to the Reader, then the new info once it has read it; none for no such project; a factory one's
+//   VERSION  one version's content as the Compare card asks for it (versionPolled, the store's versionCached and its
+//            Reader's second job): not read on the asking thread (its parses none), `read` false until the Reader has
+//            read the file, then its files, dials (said as the panel says them) and note, its number; 0 the newest; a
+//            number not kept `missing`, a project that is not there too; the table keeps the newest 6 asked (the 7th
+//            asks the Reader again for the first); a file another rewrote is read again; a factory project's at once;
+//            the editor's own content (editorContent) its draft, its dials, with no read
 //   ASYNC    the editor's save off the message thread (startSave) on a project of about 5 MB: its own cost on the
 //            message thread under a tenth of saveVersion's (each the thread's CPU time); held before the store's work
 //            (setSaveGate), saving() says it is in flight and nothing is written yet; one more asked for meanwhile
@@ -1039,6 +1045,78 @@ PROBE(plugin, projects)
         P.eq("detail.factory", factory.empty() || (pd.projectPolled(factory.front().name).read
                                                     && !pd.projectPolled(factory.front().name).versions.empty()) ? 1 : 0, 1);
         P.eq("detail.removed", pd.deleteProject("Detail", w) ? 1 : 0, 1);
+    }
+
+    // ---- VERSION: one version's content off the asking thread (versionPolled; the Compare card's) --------------------
+    {
+        pg::Processor d;
+        pg::EditorPort& pd = d.editorPort();
+        pg::Sources f = twoFiles();
+        pd.setDraft({ f, 1 });
+        pd.run(f);
+        d.settle();
+        std::string w;
+        pg::SavedVersion v;
+        bool made = pd.saveVersion("Diffs", v, w);
+        f[0].text += "// two\n";
+        pd.setDraft({ f, 0 });
+        made = made && pd.saveVersion("Diffs", v, w) && v.number == 2;
+        const std::shared_ptr<ps::Reader> reader = ps::reader();
+        const auto waitReader = [&] {
+            for (int k = 0; k < 2000 && !reader->idle(); ++k)
+                juce::Thread::sleep(5);
+            return reader->idle();
+        };
+        const auto here = [p0 = ps::parses(), r0 = ps::readerParses()] { return (ps::parses() - p0) - (ps::readerParses() - r0); };
+        const pg::VersionContent first = pd.versionPolled("Diffs", 1);
+        P.eq("version.setup", made ? 1 : 0, 1);
+        P.eq("version.not_read_yet", !first.read && !first.missing ? 1 : 0, 1);
+        P.eq("version.reader_done", waitReader() ? 1 : 0, 1);
+        const pg::VersionContent one = pd.versionPolled("Diffs", 1);
+        P.eq("version.read", one.read && !one.missing && one.number == 1 && one.files == twoFiles() && !one.when.empty() ? 1 : 0, 1);
+        bool texts = one.dials.size() == 2;
+        for (const pg::ContentDial& cd : one.dials)
+            texts = texts && !cd.text.empty();
+        P.eq("version.dials", texts ? 1 : 0, 1);
+        (void)pd.versionPolled("Diffs", 0);
+        (void)waitReader();
+        const pg::VersionContent newest = pd.versionPolled("Diffs", 0);
+        P.eq("version.newest", newest.read && newest.number == 2 && newest.files[0].text.find("// two") != std::string::npos ? 1 : 0, 1);
+        (void)pd.versionPolled("Diffs", 99);
+        (void)waitReader();
+        const pg::VersionContent gone = pd.versionPolled("Diffs", 99);
+        P.eq("version.missing", gone.read && gone.missing && gone.files.empty() ? 1 : 0, 1);
+        const pg::VersionContent none = pd.versionPolled("No Such Project", 1);
+        P.eq("version.no_project", none.read && none.missing ? 1 : 0, 1);
+        // The table keeps the newest 6 asked: 1, 0, 99, then 2, 3, 4, 5 (2's files, the others missing): 1 goes.
+        for (const int n : { 2, 3, 4, 5 })
+        {
+            (void)pd.versionPolled("Diffs", n);
+            (void)waitReader();
+        }
+        P.eq("version.kept_six", ps::versionsKept() == ps::kKeptVersions ? 1 : 0, 1);
+        // 0 first (a hit: the last asked now), then 1, which went; the Reader's read of 1 then drops 99, never 0.
+        const bool zeroKept = pd.versionPolled("Diffs", 0).read;
+        P.eq("version.oldest_dropped", zeroKept && !pd.versionPolled("Diffs", 1).read ? 1 : 0, 1);
+        (void)waitReader();
+        // Another rewrites it: asked again, as the file is now.
+        rewrite(dir, "Diffs", "Diffs", [](juce::var& root) {
+            if (auto* v0 = root["versions"][0].getDynamicObject())
+                v0->setProperty("note", "rewritten elsewhere");
+        });
+        P.eq("version.rewritten_not_yet", !pd.versionPolled("Diffs", 1).read ? 1 : 0, 1);
+        (void)waitReader();
+        const pg::VersionContent again = pd.versionPolled("Diffs", 1);
+        P.eq("version.rewritten_read", again.read && again.note == "rewritten elsewhere" ? 1 : 0, 1);
+        P.eq("version.none_here", here(), 0);
+        const std::vector<pg::ProjectEntry> factory = pd.factoryProjects();
+        const pg::VersionContent fv = factory.empty() ? pg::VersionContent{} : pd.versionPolled(factory.front().name, 0);
+        P.eq("version.factory_at_once", factory.empty() || (fv.read && !fv.missing && !fv.files.empty()) ? 1 : 0, 1);
+        const int parsed0 = ps::parses();
+        const pg::VersionContent ed = pd.editorContent();
+        P.eq("version.editor", ed.read && ed.editor && ed.files == pd.draft().files && ed.dials.size() == 2
+                                   && ps::parses() == parsed0 ? 1 : 0, 1);
+        P.eq("version.removed", pd.deleteProject("Diffs", w) ? 1 : 0, 1);
     }
 
     // ---- ASYNC: the editor's save off the message thread (startSave) ---------------------------------------------------

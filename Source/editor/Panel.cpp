@@ -3165,6 +3165,7 @@ namespace playground::ui
         projectsItem_ = button(TB::Shape::pill, chat::Icon::list, [this] { return projectLabel(); }, true,
                                [] { return TB::Look::outlined; }, [this] { openProjects(); }, "Projects",
                                "PROJECTS   SAVE THE PROGRAM ON THIS MAC, A VERSION EACH SAVE (CMD-S); OPEN AN OLDER ONE; ITS PRESETS");
+        static_cast<TB*>(items_[static_cast<std::size_t>(projectsItem_)].get())->setMenu([this] { projectMenu(); });
         // The project open's presets, right of the pill: the one before, its name (a click: their list), the next.
         {
             const auto any = [this] { return !cycle_.presets.empty(); };
@@ -3515,6 +3516,8 @@ namespace playground::ui
         settings_.setMenuOpen([this](const funkgui::Rect& r) { return menuOpenAt(r); });
         projects_.setMenuOpen([this](const funkgui::Rect& r) { return menuOpenAt(r); });
         projects_.setAnswered([this] { afterProjects(true); });   // a menu's answer, as an event's
+        compare_.setMenuOpen([this](const funkgui::Rect& r) { return menuOpenAt(r); });
+        compare_.setAnswered([this] { afterCompare(true); });
 
         // The Standalone's muted input (an effect's: JUCE's guard against a feedback loop): a notice in the status bar,
         // left of the zoom, and this button, which opens SETTINGS.
@@ -5762,6 +5765,13 @@ namespace playground::ui
 
     void Panel::refresh(double nowSec)
     {
+        if (compare_.isOpen())
+        {
+            const uint32_t before = compare_.revision();
+            compare_.tick();                             // a side read by the store's Reader, the editor's files changed
+            if (compare_.revision() != before)
+                dirty_ = true;
+        }
         if (ab_.isOpen())
         {
             const uint32_t before = ab_.revision();
@@ -7327,7 +7337,8 @@ namespace playground::ui
         const bool importIt = projects_.takeImport();
         const std::string exportIt = projects_.takeExport();
         const std::pair<std::string, int> abIt = projects_.takeAb();
-        if (wasOpen && !projects_.isOpen() && exportIt.empty() && abIt.first.empty())
+        const auto [compareIt, compareLeft, compareRight] = projects_.takeCompare();
+        if (wasOpen && !projects_.isOpen() && exportIt.empty() && abIt.first.empty() && compareIt.empty())
         {
             setFocus(focusBeforeProjects_ >= 0 ? focusBeforeProjects_ : editorItem_);
             focusBeforeProjects_ = -1;
@@ -7350,6 +7361,8 @@ namespace playground::ui
                 focusBeforeProjects_ = -1;
             }
         }
+        if (!compareIt.empty())
+            openCompare(compareIt, compareLeft, compareRight);
         dirty_ = true;
     }
 
@@ -7382,6 +7395,74 @@ namespace playground::ui
             projectsAt_ = -100.0;                        // the explorer reads the project a kept version opened
         }
         dirty_ = true;
+    }
+
+    void Panel::openCompare(const std::string& project, int left, int right)
+    {
+        if (dialogOpen() || project.empty())
+            return;
+        files().endRename();
+        pushEditor();                                    // the editor's side is what the tabs show
+        if (focusBeforeProjects_ < 0)
+            focusBeforeProjects_ = focus_;
+        if (!compare_.open(project, left, right))
+        {
+            focusBeforeProjects_ = -1;
+            return;
+        }
+        setFocus(-1);
+        ring_ = false;
+        dirty_ = true;
+    }
+
+    void Panel::afterCompare(bool wasOpen)
+    {
+        if (const std::string n = compare_.takeNotice(); !n.empty())
+            notice(n);
+        const auto [abProject, abA, abB] = compare_.takeAb();
+        if (wasOpen && !compare_.isOpen())
+        {
+            projectsAt_ = -100.0;                        // the explorer reads the project a version opened
+            if (!abProject.empty())
+            {
+                pushEditor();                            // Current is what the tabs show
+                if (ab_.open(abProject, abA, abB))
+                {
+                    setFocus(-1);
+                    dirty_ = true;
+                    return;
+                }
+                notice(upper(ab_.why()));
+            }
+            setFocus(focusBeforeProjects_ >= 0 ? focusBeforeProjects_ : editorItem_);
+            focusBeforeProjects_ = -1;
+        }
+        dirty_ = true;
+    }
+
+    // The top bar's project pill's menu (a right-click on it): PROJECTS, and, while the editor's files have changes the
+    // version open does not hold, Compare with the saved version (that version against the editor's).
+    void Panel::projectMenu()
+    {
+        if (host_ == nullptr || dialogOpen())
+            return;
+        pushEditor();                                    // what "edited" reads is what the tabs show
+        const ProjectState st = port_.project();
+        const bool compare = !st.name.empty() && st.edited && st.version > 0;
+        funkgui::MenuRequest request;
+        if (!st.name.empty())
+            request.items.push_back(dropdown::header(ownName(st.name)));
+        request.items.push_back({ 1, "Projects..." });
+        request.items.push_back({ 2, "Compare with the saved version", compare });
+        request.anchor = triggerRect(projectsItem_);
+        request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
+        host_->showMenu(request, [this, st](int chosen) {
+            if (chosen == 1)
+                openProjects();
+            else if (chosen == 2)
+                openCompare(st.name, st.version, DiffCard::kEditor);
+            dirty_ = true;
+        });
     }
 
     void Panel::openExport(const std::string& project)
@@ -8506,6 +8587,9 @@ namespace playground::ui
             std::snprintf(line, sizeof line, "EXPORT   TAB THE NEXT FIELD   A PILL TOGGLES   ESCAPE KEEPS THE INFO AND CLOSES");
         else if (name_.isOpen())
             std::snprintf(line, sizeof line, "NAME   RETURN SAVES IT (EMPTY: ITS NUMBER'S)   ESCAPE CANCELS");
+        else if (compare_.isOpen())
+            std::snprintf(line, sizeof line, "COMPARE   ] AND [ THE NEXT AND THE PREVIOUS CHANGE   TAB THE NEXT FILE   "
+                                             "ESCAPE OR A CLICK OUTSIDE CLOSES");
         else if (ab_.isOpen())
             std::snprintf(line, sizeof line, "A/B   A, B OR SPACE SWITCH   UP AND DOWN CHOOSE B, SHIFT A   TAB THE NEXT FILE   "
                                              "RETURN KEEPS THE ONE PLAYING   ESCAPE GOES BACK");
@@ -8600,6 +8684,11 @@ namespace playground::ui
         {
             const funkgui::Canvas::Scope s(c, kNameTag, false);
             name_.draw(c, th, width_, height_, pointer_, hasPointer_);
+        }
+        if (compare_.isOpen())
+        {
+            const funkgui::Canvas::Scope s(c, kCompareTag, false);
+            compare_.draw(c, th, width_, height_, pointer_, hasPointer_);
         }
         if (ab_.isOpen())
         {
@@ -8702,6 +8791,11 @@ namespace playground::ui
                 name_.pointerDown(pointer_, width_, height_);
                 afterName(true);
             }
+            else if (compare_.isOpen())
+            {
+                compare_.pointerDown(pointer_, host_, width_, height_);
+                afterCompare(true);
+            }
             else if (ab_.isOpen())
             {
                 ab_.pointerDown(pointer_, width_, height_);
@@ -8788,10 +8882,12 @@ namespace playground::ui
             return;
         }
         // A card's bar's thumb (Scroll.h: each moves only while its own thumb was pressed).
-        if (settings_.isOpen() || ab_.isOpen() || picker_.isOpen())
+        if (settings_.isOpen() || ab_.isOpen() || picker_.isOpen() || compare_.isOpen())
         {
             if (settings_.isOpen())
                 settings_.pointerDrag(pointer_, width_, height_);
+            else if (compare_.isOpen())
+                compare_.pointerDrag(pointer_, width_, height_);
             else if (ab_.isOpen())
                 ab_.pointerDrag(pointer_, width_, height_);
             else
@@ -8822,6 +8918,7 @@ namespace playground::ui
         }
         settings_.pointerUp();                           // a card's thumb let go (none held: nothing)
         ab_.pointerUp();
+        compare_.pointerUp();
         picker_.pointerUp();
         if (std::exchange(guiBarPress_, false))
         {
@@ -8845,7 +8942,7 @@ namespace playground::ui
             return;
         if (keyOpen_ || settings_.isOpen())
             return;
-        if (export_.isOpen() || ab_.isOpen() || name_.isOpen())
+        if (export_.isOpen() || ab_.isOpen() || name_.isOpen() || compare_.isOpen())
             return;
         if (projects_.isOpen())
         {
@@ -8873,6 +8970,11 @@ namespace playground::ui
         }
         if (export_.isOpen() || name_.isOpen())
             return true;
+        if (compare_.isOpen())
+        {
+            compare_.wheel(e, width_, height_);
+            return true;
+        }
         if (ab_.isOpen())
         {
             ab_.wheel(e, width_, height_);
@@ -8953,6 +9055,16 @@ namespace playground::ui
         {
             name_.key(e, host_, width_, height_);
             afterName(true);
+            return true;
+        }
+        if (compare_.isOpen())
+        {
+            // Every key but Cmd's (RUN, Cmd-S: none of this card's); ] and [ are its own (the next and the previous
+            // change), never the top bar's presets'.
+            if (e.mods.cmd)
+                return false;
+            compare_.key(e, host_, width_, height_);
+            afterCompare(true);
             return true;
         }
         if (ab_.isOpen())
@@ -9089,6 +9201,8 @@ namespace playground::ui
             return export_.cursor(pointer_, width_, height_);
         if (name_.isOpen())
             return name_.cursor(pointer_, width_, height_);
+        if (compare_.isOpen())
+            return compare_.cursor(pointer_, width_, height_);
         if (ab_.isOpen())
             return ab_.cursor(pointer_, width_, height_);
         if (projects_.isOpen())
@@ -9191,6 +9305,11 @@ namespace playground::ui
             name_.accessibility(out, width_, height_);
             return;
         }
+        if (compare_.isOpen())
+        {
+            compare_.accessibility(out, width_, height_);
+            return;
+        }
         if (ab_.isOpen())
         {
             ab_.accessibility(out, width_, height_);
@@ -9230,6 +9349,7 @@ namespace playground::ui
         r ^= (export_.isOpen() ? 0x85EBCA77u : 0u) ^ (export_.revision() * 0xC2B2AE3Du);
         r ^= (name_.isOpen() ? 0x4CF5AD43u : 0u) ^ (name_.revision() * 0x2127599Bu);
         r ^= (ab_.isOpen() ? 0x7FEB352Du : 0u) ^ (ab_.revision() * 0x846CA68Bu);
+        r ^= (compare_.isOpen() ? 0x3C6EF372u : 0u) ^ (compare_.revision() * 0xA54FF53Bu);
         r ^= (settings_.isOpen() ? 0x27D4EB2Du : 0u) ^ (settings_.revision() * 0x9E3779B1u) ^ (mutedShown_ ? 0x165667B1u : 0u);
         r |= (chat_.ready() ? 1u : 0u) << 18;
         static_assert(kMaxDisplays <= 32, "the displays' mask");
@@ -9292,6 +9412,12 @@ namespace playground::ui
         {
             name_.a11yAction(id, a, width_, height_);
             afterName(true);
+            return;
+        }
+        if (compare_.isOpen())
+        {
+            compare_.a11yAction(id, a, host_, width_, height_);
+            afterCompare(true);
             return;
         }
         if (ab_.isOpen())
