@@ -1503,8 +1503,9 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
   row a model (fast mode a row of its own, at fast mode's prices), its provider, requests, tokens in, cached and out,
   its cost and its share, and a total. A cost marked **~** is an estimate at list prices as of the price table's date,
   which the footnote gives; OpenRouter's are its own figures; "no price" for a model with none, left out of the cost
-  total. **Reset…** asks first, in the page, then empties the record for every product on this Mac (your provider's
-  own record is not touched); one that fails loses nothing and says so until the next. **Debug**: what this build is and what it is doing, in sections (the versions, this build's commit
+  total. **Reset…** asks first, in the page, then empties the record of what was counted until then, for every
+  product on this Mac (what is counted after it stays; your provider's own record is not touched); one that fails
+  loses nothing and says so until the next. **Debug**: what this build is and what it is doing, in sections (the versions, this build's commit
   and FMinus's, LLVM's; the graphics: the renderer, its frames, the surface, the shader target; the program, its compile
   and dials; the audio: rate, blocks, load, the synth's voices; the shaders; the stores' folders and counts; Claude
   Desktop's link; the product's `<PREFIX>…` switches), read once a second while the page shows and not at all

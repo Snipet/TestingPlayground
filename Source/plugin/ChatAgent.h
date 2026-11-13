@@ -557,9 +557,10 @@ namespace playground
         // Under mutex_.
         std::string turnCostText() const;
         // The Usage page's reads and its reset (ChatPort::usage, resetUsage), on the job thread: a snapshot of the
-        // range priced and published as the view when it differs from the one held; the reset done (when still
-        // pending: the destructor runs one the job thread never reached), then the view read again for the range last
-        // asked. Under usageMutex_ only while the view and the flags change, never across the file's I/O.
+        // range priced and published as the view when it differs from the one held; a reset owed (usage::resetOwed:
+        // confirmed, its cut made) run, by a read before it lets go too, and the destructor runs one the job thread
+        // never reached before its last flush; then the view read again for the range last asked. Under usageMutex_
+        // only while the view and the flags change, never across the file's I/O.
         void readUsage(usage::Range range);
         void runUsageReset();
         void publishUsage(UsageView view);          // usageMutex_ held
@@ -890,7 +891,6 @@ namespace playground
         usage::Range usageAsked_ = usage::Range::week;              // the range last asked for
         uint64_t usageReadRevision_ = 0;                            // usage::revision() when the last read began
         std::chrono::steady_clock::time_point usageReadAt_{};       // when the last read ended
-        bool usageResetPending_ = false;                            // a reset confirmed and not yet run
         double usageReread_ = kUsageRereadSeconds;
         std::condition_variable usageCv_;                           // holdUsageReadsForTests
         bool usageHold_ = false, usageStopping_ = false;

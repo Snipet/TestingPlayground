@@ -512,6 +512,8 @@ namespace playground::usage
         fs::path file;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
+            if (owed_)
+                return false;                       // after the cut: written once the reset has run
             if (pending_.empty())
                 return true;
             taken.swap(pending_);
@@ -549,14 +551,30 @@ namespace playground::usage
         return ok;
     }
 
+    void Ledger::requestReset()
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        for (const Row& r : pending_)
+            addRows(cut_, r.key, r.counts);
+        pending_.clear();
+        owed_ = true;
+        revision_.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    bool Ledger::resetOwed() const
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return owed_;
+    }
+
     bool Ledger::reset()
     {
         const std::lock_guard<std::mutex> one(flushMutex_);        // one flush or reset at a time
-        std::vector<Row> taken;                                     // what waited: counted before the reset
         fs::path file;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            taken.swap(pending_);
+            if (!owed_)
+                return true;
             file = file_;
         }
         bool ok = false;
@@ -582,15 +600,15 @@ namespace playground::usage
                 }
             }
         }
-        if (ok)
-            revision_.fetch_add(1, std::memory_order_acq_rel);
-        else
         {
-            // Nothing lost: the counts that waited go back, with what came meanwhile.
             const std::lock_guard<std::mutex> lock(mutex_);
-            for (const Row& r : taken)
-                addRows(pending_, r.key, r.counts);
+            if (!ok)
+                for (const Row& r : cut_)              // nothing lost: back with what came meanwhile
+                    addRows(pending_, r.key, r.counts);
+            cut_.clear();
+            owed_ = false;
         }
+        revision_.fetch_add(1, std::memory_order_acq_rel);
         return ok;
     }
 
@@ -602,6 +620,7 @@ namespace playground::usage
             const std::lock_guard<std::mutex> lock(mutex_);
             file = file_;
             rows = pending_;
+            rows.insert(rows.end(), cut_.begin(), cut_.end());   // in the file's place until the reset runs
         }
         if (!file.empty())
             for (Row& r : read(file))
@@ -662,12 +681,18 @@ namespace playground::usage
         return l.flush();
     }
 
+    void requestReset() { processLedger().requestReset(); }
+
     bool reset()
     {
         Ledger& l = processLedger();
+        if (!l.resetOwed())
+            return true;
         l.setFile(processFile());
         return l.reset();
     }
+
+    bool resetOwed() { return processLedger().resetOwed(); }
 
     uint64_t revision() noexcept { return processLedger().revision(); }
 

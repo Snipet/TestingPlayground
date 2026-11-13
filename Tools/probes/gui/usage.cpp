@@ -21,7 +21,8 @@
 //   STACK    the frame's own bar primitives: each bar's pieces bottom up in series order (the most tokens first), in
 //            the series' inks; a day's stacks as seeded (Other on top)
 //   SERIES   the inks: the accent first; the four others neither accent nor the errors' colour, each 3:1 or more
-//            against the card and the chart's ground in both themes
+//            against the card and the chart's ground in both themes, every pair apart under protanopia,
+//            deuteranopia and tritanopia (Machado 2009, CIE76 10 or more)
 //   TABLE    a row a model (fast apart), a total row; an estimate marked ~, OpenRouter's reported figure, "no price"
 //            for a model with none; the fast row priced at fast mode's prices; the footnote's date the table in use
 //   COST     Tokens and Cost: a model with no price has no height in Cost, its readout says "no price known"
@@ -33,8 +34,10 @@
 //   SCROLL   the page is taller than the card's body: the rail and Done inside the card, the body inside the card,
 //            every control within the body at some wheel position and when Tab reaches it
 //   RESET    asked first (pointer and keyboard), the file untouched while asked and after Cancel, empty after Reset;
-//            with a read in flight; with the card closed at once; queued when the agent goes (its destructor runs it);
-//            a failed one keeps the file and the counts not written yet, and says so until the next Reset
+//            with a read in flight (a flush meanwhile waits for it, a count after the confirmation kept); with the card
+//            closed at once; queued when the agent goes (its destructor runs it, then its flush: a count after the
+//            confirmation kept); with the folder's lock held from outside, and with the write refused: the file and
+//            the counts not written yet kept, said until the next Reset
 #include "Probe.h"
 
 #include "editor/ChatStyle.h"
@@ -73,6 +76,12 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+#endif
 
 namespace pg = playground;
 namespace usage = playground::usage;
@@ -127,6 +136,36 @@ namespace
     {
         return std::abs(a.r - b.r) + std::abs(a.g - b.g) + std::abs(a.b - b.b);
     }
+
+    // A colour as one with a colour vision deficiency sees it (Machado, Oliveira and Fernandes 2009, severity 1, on
+    // linear RGB), in CIELAB (D65), and two colours' distance there (CIE76).
+    struct Lab
+    {
+        double l, a, b;
+    };
+    Lab seen(funkgui::Col c, int kind)          // 0 none, 1 protanopia, 2 deuteranopia, 3 tritanopia
+    {
+        static constexpr double m[4][3][3] = {
+            { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } },
+            { { 0.152286, 1.052583, -0.204868 }, { 0.114503, 0.786281, 0.099216 }, { -0.003882, -0.048116, 1.051998 } },
+            { { 0.367322, 0.860646, -0.227968 }, { 0.280085, 0.672501, 0.047413 }, { -0.011820, 0.042940, 0.968881 } },
+            { { 1.255528, -0.076749, -0.178779 }, { -0.078411, 0.930809, 0.147602 }, { 0.004733, 0.691367, 0.303900 } },
+        };
+        const auto lin = [](uint8_t v) {
+            const double s = v / 255.0;
+            return s <= 0.04045 ? s / 12.92 : std::pow((s + 0.055) / 1.055, 2.4);
+        };
+        const double in[3] = { lin(c.r), lin(c.g), lin(c.b) };
+        double rgb[3];
+        for (int i = 0; i < 3; ++i)
+            rgb[i] = std::clamp(m[kind][i][0] * in[0] + m[kind][i][1] * in[1] + m[kind][i][2] * in[2], 0.0, 1.0);
+        const double x = (0.4124 * rgb[0] + 0.3576 * rgb[1] + 0.1805 * rgb[2]) / 0.95047;
+        const double y = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+        const double z = (0.0193 * rgb[0] + 0.1192 * rgb[1] + 0.9505 * rgb[2]) / 1.08883;
+        const auto f = [](double t) { return t > 0.008856 ? std::cbrt(t) : 7.787 * t + 16.0 / 116.0; };
+        return { 116.0 * f(y) - 16.0, 500.0 * (f(x) - f(y)), 200.0 * (f(y) - f(z)) };
+    }
+    double deltaE(const Lab& p, const Lab& q) { return std::sqrt((p.l - q.l) * (p.l - q.l) + (p.a - q.a) * (p.a - q.a) + (p.b - q.b) * (p.b - q.b)); }
 
     // The seeded ledger: rows on days counted back from today, and what each range must total.
     struct Seed
@@ -516,6 +555,14 @@ PROBE(gui, usage)
         std::printf("%s: least contrast %.2f, nearest to the accent or the errors' colour %d\n", t.c_str(), least, nearest);
         P.ge("series." + t + ".contrast", least, 3.0);
         P.ge("series." + t + ".apart_from_accent_and_signal", static_cast<double>(nearest), 120.0);
+        // Every pair of the five (this product's accent and the four) apart for every kind of colour vision.
+        double leastSeen = 1000.0;
+        for (int kind = 0; kind < 4; ++kind)
+            for (int i = 0; i < pg::ui::chat::kSeriesInks; ++i)
+                for (int j = i + 1; j < pg::ui::chat::kSeriesInks; ++j)
+                    leastSeen = std::min(leastSeen, deltaE(seen(pg::ui::chat::seriesInk(th, i), kind), seen(pg::ui::chat::seriesInk(th, j), kind)));
+        std::printf("%s: least distance between two series under any of the four visions: %.1f (CIE76)\n", t.c_str(), leastSeen);
+        P.ge("series." + t + ".apart_for_every_vision", leastSeen, 10.0);
     }
 
     // ---- TABLE ------------------------------------------------------------------------------------------------------------
@@ -742,7 +789,7 @@ PROBE(gui, usage)
         choose(up::kRange, "Last 12 months");
         waitView(before);
         settle();
-        while (card.places(W(), H()).scroll > 0.0f)
+        for (int i = 0; i < 60 && card.places(W(), H()).scroll > 0.0f; ++i)
         {
             host.wheel(10.0f + card.places(W(), H()).body.x, card.places(W(), H()).body.centreY(), 1.0f);
             settle();
@@ -801,10 +848,10 @@ PROBE(gui, usage)
 
     // ---- RESET by pointer: asked first, the file untouched while asked and after Cancel --------------------------------------
     const auto scrollTo = [&](int code) {
-        for (int i = 0; i < 40 && !card.centreOf(Act::item, code, W(), H()); ++i)
+        for (int i = 0; i < 80 && !card.centreOf(Act::item, code, W(), H()); ++i)
         {
             const auto at = card.places(W(), H());
-            host.wheel(at.body.centreX(), at.body.centreY(), -1.0f);
+            host.wheel(at.body.centreX(), at.body.centreY(), i < 40 ? -1.0f : 1.0f);   // down, then back up
             settle();
         }
         return card.centreOf(Act::item, code, W(), H());
@@ -866,15 +913,22 @@ PROBE(gui, usage)
         writeText(file, seedText());
         waitFor([&] { return !view()->rows.empty(); });
         settle();
+        usage::add({ usage::today(), "anthropic", "claude-haiku-4-5", false }, counts(1, 111, 0));   // before the cut
         agent.holdUsageReadsForTests(true);
         (void) port.chat().usage(usage::Range::all);   // a read asked for, held on the job thread
         port.chat().resetUsage();
+        usage::add({ usage::today(), "anthropic", "claude-haiku-4-5", false }, counts(1, 222, 0));   // after the cut
         P.eq("inflight.resetting_said", view()->resetting ? 1 : 0, 1);
         host.tick(5);
         P.eq("inflight.waits_for_read", usage::read(file).empty() ? 0 : 1, 1);
+        P.eq("inflight.flush_waits_for_reset", usage::flush() ? 0 : 1, 1);
         agent.holdUsageReadsForTests(false);
         P.eq("inflight.emptied", waitFor(emptied) ? 1 : 0, 1);
         waitFor([&] { return !view()->resetting; });
+        usage::flush();
+        const std::vector<usage::Row> after = usage::read(file);
+        P.eq("inflight.after_cut_kept", after.size() == 1 && after[0].counts.input == 222 ? 1 : 0, 1);
+        writeText(file, usage::write({}));
 
         writeText(file, seedText());
         waitFor([&] { return !view()->rows.empty(); });
@@ -899,11 +953,40 @@ PROBE(gui, usage)
             a.holdUsageReadsForTests(true);
             (void) a.usage(usage::Range::week);  // the job thread held in a read
             a.resetUsage();                      // queued behind it: the job thread will never reach it
+            usage::add({ usage::today(), "anthropic", "claude-haiku-4-5", false }, counts(1, 333, 0));   // after the cut
             P.eq("destructor.queued", usage::read(file).empty() ? 0 : 1, 1);
-            other.reset();                       // the agent goes: its queued jobs dropped, the reset run
+            other.reset();                       // the agent goes: its queued jobs dropped, the reset run, then its flush
         }
-        P.eq("destructor.emptied", emptied() ? 1 : 0, 1);
+        const std::vector<usage::Row> left = usage::read(file);
+        P.eq("destructor.emptied_then_flushed", left.size() == 1 && left[0].counts.input == 333 ? 1 : 0, 1);
+        writeText(file, usage::write({}));
+        waitFor([&] { return !usage::resetOwed() && !view()->resetting; });
     }
+
+    // ---- RESET with the folder's lock held from outside: it fails, nothing lost ---------------------------------------------
+#if !defined(_WIN32)
+    {
+        panel.openSettings("usage");
+        settle();
+        writeText(file, seedText());
+        waitFor([&] { return !view()->rows.empty(); });
+        const std::string seeded = fileText(file);
+        const int fd = ::open((file.parent_path() / ".lock").c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+        P.eq("locked.held", fd >= 0 && ::flock(fd, LOCK_EX | LOCK_NB) == 0 ? 1 : 0, 1);
+        port.chat().resetUsage();
+        P.eq("locked.said", waitFor([&] { return !view()->resetting && !view()->resetError.empty(); }) ? 1 : 0, 1);
+        P.eq("locked.file_kept", fileText(file) == seeded ? 1 : 0, 1);
+        if (fd >= 0)
+        {
+            ::flock(fd, LOCK_UN);
+            ::close(fd);
+        }
+        port.chat().resetUsage();
+        P.eq("locked.next_reset", waitFor([&] { return !view()->resetting && view()->resetError.empty() && emptied(); }) ? 1 : 0, 1);
+    }
+#else
+    probe::skip(P, "locked", "flock: the folder's lock is held from outside on POSIX; the refused write below covers Windows");
+#endif
 
     // ---- RESET that fails: nothing lost, said until the next Reset -----------------------------------------------------------
     {

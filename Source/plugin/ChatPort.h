@@ -41,9 +41,11 @@
 //                    (usage::revision) or a few seconds passed (another process may have written the file); the
 //                    message thread never reads the file or takes its folder's lock. A read that finds what the view
 //                    already holds publishes nothing: the view and its serial stay as they were
-//   resetUsage()     empties the ledger (the Settings card's Reset, asked first): queued on the job thread, and always
-//                    run once asked (the agent's destructor runs one still queued); the view says it is resetting
-//                    until it is done, and a reset that failed says why until the next reset
+//   resetUsage()     empties the ledger of what was counted until now (the Settings card's Reset, asked first: the
+//                    cut is made at once, usage::requestReset; a count after it stays), the file emptied on the job
+//                    thread, and always run once asked (the agent's destructor runs one still owed, before its last
+//                    flush); the view says it is resetting until it is done, and a reset that failed says why until
+//                    the next reset
 #pragma once
 
 #include "plugin/Usage.h"

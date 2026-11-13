@@ -57,9 +57,10 @@ namespace playground::ui::chat
 
     // The Usage page's series (UsagePage.h): the product's accent first, then four fixed inks that are neither accent
     // (the effect's orange, the instrument's blue) nor the errors' colour (`signal`: the effect's cyan, the
-    // instrument's orange): a violet, a green, a gold and a rose, each its own value in Graphite and in Paper and at
-    // least 3:1 against the card in both (gui.usage SERIES), then "Other" in ink52. Never the only way a series is told
-    // apart: the stack's order, the legend and the readout name each.
+    // instrument's orange): an indigo, a green, a rose and a brown, each its own value in Graphite and in Paper, at
+    // least 3:1 against the card in both, and every pair (the accents too) apart under protanopia, deuteranopia and
+    // tritanopia (gui.usage SERIES), then "Other" in ink52. Never the only way a series is told apart: the stack's
+    // order, the legend and the readout name each.
     inline constexpr int kSeriesInks = 5;          // the accent and the four; past them, Other
     inline funkgui::Col seriesInk(const funkgui::Theme& th, int i)
     {
@@ -67,10 +68,10 @@ namespace playground::ui::chat
         switch (i)
         {
             case 0: return th.accent;
-            case 1: return dark ? funkgui::Col{ 0xA9, 0x8B, 0xFF } : funkgui::Col{ 0x6B, 0x4F, 0xCF };   // violet
-            case 2: return dark ? funkgui::Col{ 0x6C, 0xD4, 0x8A } : funkgui::Col{ 0x23, 0x82, 0x4F };   // green
-            case 3: return dark ? funkgui::Col{ 0xE3, 0xC2, 0x5B } : funkgui::Col{ 0x8A, 0x6D, 0x00 };   // gold
-            case 4: return dark ? funkgui::Col{ 0xF0, 0x7B, 0xB0 } : funkgui::Col{ 0xB3, 0x34, 0x6F };   // rose
+            case 1: return dark ? funkgui::Col{ 0x7C, 0x83, 0xF2 } : funkgui::Col{ 0x3B, 0x43, 0xB8 };   // indigo
+            case 2: return dark ? funkgui::Col{ 0x5D, 0xBB, 0x7A } : funkgui::Col{ 0x2F, 0x8A, 0x4E };   // green
+            case 3: return dark ? funkgui::Col{ 0xF2, 0xA0, 0xB8 } : funkgui::Col{ 0xA3, 0x37, 0x5E };   // rose
+            case 4: return dark ? funkgui::Col{ 0xC0, 0x8A, 0x5A } : funkgui::Col{ 0x7A, 0x4E, 0x28 };   // brown
             default: return th.ink52;                                                                  // Other
         }
     }

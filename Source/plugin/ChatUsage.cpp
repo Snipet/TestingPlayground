@@ -116,15 +116,15 @@ namespace playground
 
     void ChatAgent::resetUsage()
     {
+        usage::requestReset();                  // the cut: what was counted until now goes, what comes after stays
         {
             const std::lock_guard<std::mutex> lock(usageMutex_);
-            usageResetPending_ = true;
             UsageView v = *usageView_;
             v.resetting = true;
             v.resetError.clear();               // said until this reset, which now runs
             publishUsage(std::move(v));
         }
-        queueJob([this] { runUsageReset(); });
+        queueJob([this] { runUsageReset(); });  // dropped when the agent goes: its destructor runs it then
     }
 
     void ChatAgent::setUsageRereadSecondsForTests(double seconds)
@@ -164,36 +164,39 @@ namespace playground
         }
         const uint64_t revision = usage::revision();     // a count added while reading asks for another read
         UsageView v = readView(range);
-        const std::lock_guard<std::mutex> lock(usageMutex_);
-        ++usageReads_;
-        usageReading_ = false;
-        usageReadRevision_ = revision;
-        usageReadAt_ = std::chrono::steady_clock::now();
-        v.resetting = usageResetPending_;
-        v.resetError = usageView_->resetError;
-        publishUsage(std::move(v));
+        {
+            const std::lock_guard<std::mutex> lock(usageMutex_);
+            ++usageReads_;
+            usageReading_ = false;
+            usageReadRevision_ = revision;
+            usageReadAt_ = std::chrono::steady_clock::now();
+            v.resetting = usage::resetOwed();
+            v.resetError = usageView_->resetError;
+            publishUsage(std::move(v));
+        }
+        runUsageReset();                        // one confirmed meanwhile runs before this job lets go
     }
 
     void ChatAgent::runUsageReset()
     {
-        usage::Range range;
+        while (usage::resetOwed())              // a reset confirmed while one ran is owed again: run it too
         {
+            const bool ok = usage::reset();
+            const uint64_t revision = usage::revision();
+            usage::Range range;
+            {
+                const std::lock_guard<std::mutex> lock(usageMutex_);
+                range = usageAsked_;
+            }
+            UsageView v = readView(range);
             const std::lock_guard<std::mutex> lock(usageMutex_);
-            if (!usageResetPending_)
-                return;                         // already run
-            usageResetPending_ = false;
-            range = usageAsked_;
+            usageReadRevision_ = revision;
+            usageReadAt_ = std::chrono::steady_clock::now();
+            v.resetting = usage::resetOwed();
+            v.resetError = ok ? std::string()
+                              : std::string("The usage record could not be emptied (its folder could not be locked or "
+                                            "written). Nothing was lost: try Reset again.");
+            publishUsage(std::move(v));
         }
-        const bool ok = usage::reset();
-        const uint64_t revision = usage::revision();
-        UsageView v = readView(range);
-        const std::lock_guard<std::mutex> lock(usageMutex_);
-        usageReadRevision_ = revision;
-        usageReadAt_ = std::chrono::steady_clock::now();
-        v.resetting = usageResetPending_;       // another reset asked meanwhile
-        v.resetError = ok ? std::string()
-                          : std::string("The usage record could not be emptied (its folder could not be locked or "
-                                        "written). Nothing was lost: try Reset again.");
-        publishUsage(std::move(v));
     }
 }
