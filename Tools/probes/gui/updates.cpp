@@ -303,9 +303,10 @@ PROBE(gui, updates)
 
         // ---- PILL ----
         P.eq("pill.shown", tickUntil(host, [&] { return panel.centreOfUpdatePill().has_value(); }) ? 1 : 0, 1);
+        host.tick(2);
+        P.eq("pill.status_once", panel.statusText() == "VERSION " + newer + " IS OUT" ? 1 : 0, 1);
         settle();
         P.eq("pill.one_request", home.site->count(), 1);
-        P.eq("pill.status_once", panel.statusText() == "VERSION " + newer + " IS OUT" ? 1 : 0, 1);
         P.eq("pill.nothing_opens", card.isOpen() || offer.isOpen() || settings.isOpen() ? 1 : 0, 0);
         {
             bool named = false;
@@ -366,7 +367,7 @@ PROBE(gui, updates)
         {
             const pg::ui::UpdateCard::Places c = card.places(W(), H());
             host.click(c.download.centreX(), c.download.centreY());
-            settle();
+            host.tick(2);
         }
         P.eq("card.download.hook", opened.size() == 1 && opened[0] == std::string(pg::factorystore::kSite) + "/download" ? 1 : 0, 1);
         P.eq("card.download.closed", card.isOpen() ? 1 : 0, 0);
@@ -459,7 +460,7 @@ PROBE(gui, updates)
             writePng(P, host, "gui.updates.offer.paper.png");
             const pg::ui::OfferCard::Places at = offer.places(W(), H());
             host.click(at.notNow.centreX(), at.notNow.centreY());
-            settle();
+            host.tick(2);
             const pg::UpdateState u = port.updateState();
             P.eq("notnow.closed", offer.isOpen() ? 1 : 0, 0);
             P.eq("notnow.answers", u.updatesAnswered && !u.updatesOn && u.factory == 0 ? 1 : 0, 1);
