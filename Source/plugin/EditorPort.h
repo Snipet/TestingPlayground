@@ -169,6 +169,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <string>
 #include <utility>
@@ -666,6 +667,27 @@ namespace playground
         int number = 0;                          // the version's own number (the newest's when 0 was asked)
     };
 
+    // ---- Package 04: panel previews in the Projects card (editor/Preview.h, ProjectBrowser.h) -----------------------
+    // A version's panel as a picture, drawn without compiling anything (EditorPort::previewPolled): `reading` while the
+    // store's Reader reads the version, `drawing` while its shaders are built and the message thread has not drawn it
+    // (one a poll, after a picture for Claude), `ready` with the picture (registered by the Panel under `image`, counted
+    // as the chat's pictures are: Panel::syncPreview), `failed` with why ("panel.gui does not read: ...").
+    struct PreviewState
+    {
+        enum class Status : uint8_t { none, reading, drawing, ready, failed };
+        Status status = Status::none;
+        uint32_t image = 0;                      // its id in FunkGui's image registry (chatimages::nextId's range)
+        int w = 0, h = 0;                        // its pixels
+        std::shared_ptr<const std::vector<uint8_t>> rgba;   // straight RGBA8, w x h
+        bool gpu = false;                        // drawn on the GPU (else SoftRaster, each shader a placeholder)
+        std::string why;                         // failed: why there is none
+        int number = 0;                          // the version's own number (the newest's when 0 was asked)
+        friend bool operator==(const PreviewState& a, const PreviewState& b)
+        {
+            return a.status == b.status && a.image == b.image && a.why == b.why && a.number == b.number;
+        }
+    };
+
     class EditorPort
     {
     public:
@@ -978,6 +1000,21 @@ namespace playground
             v.read = v.editor = true;
             v.files = draft().files;
             return v;
+        }
+
+        // ---- Package 04: panel previews (PreviewState above; plugin/ProcessorPreviews.cpp) ----------------------------
+        // A version of `project` (0: its newest) drawn as its panel in theme `theme` (0 graphite, 1 paper), from a table
+        // of the newest kPreviewsKept pictures; one not in it is read (versionPolled), prepared on a thread of the
+        // processor's own and drawn by its poll() on the message thread. Never a project's file read here.
+        virtual PreviewState previewPolled(const std::string& project, int number, int theme)
+        {
+            (void)project;
+            (void)number;
+            (void)theme;
+            PreviewState p;
+            p.status = PreviewState::Status::failed;
+            p.why = "no previews here";
+            return p;
         }
     };
 
