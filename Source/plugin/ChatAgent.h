@@ -569,7 +569,8 @@ namespace playground
         std::string otherEffort(const ChatProvider& p, const std::string& model) const;
         static std::pair<std::string, std::string> effortKey(const ChatProvider& p, const std::string& model);
         std::string contextBlock();                                 // the plugin's state, when it changed
-        juce::var runTool(const juce::var& toolUse);               // a tool_result block
+        juce::var runTool(const juce::var& toolUse);               // a tool_result block; its rows failed if an error
+        juce::var toolResult(const juce::var& toolUse);            // runTool's work
         juce::var compareTool(const juce::var& toolUse);           // compare's (ChatCompare.cpp)
         juce::var traceTool(const juce::var& toolUse);             // trace's (ChatTrace.cpp)
         juce::var captureTool(const juce::var& toolUse);           // capture's (ChatCapture.cpp)
@@ -687,6 +688,7 @@ namespace playground
         mutable std::mutex mutex_;
         uint64_t revision_ = 1;
         std::vector<ChatEntry> entries_;
+        uint64_t conversation_ = 0;                                 // ChatState::conversation: readState, clearChat
         juce::Array<juce::var> messages_;                           // the API's history
         std::vector<ChatModel> models_;
         bool modelsFetched_ = false;

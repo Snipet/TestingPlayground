@@ -58,7 +58,8 @@ namespace playground::ui
                 case R::h3: return chat::kH3;
                 case R::small:
                 case R::faint:
-                case R::quote: return chat::kSmall;
+                case R::quote:
+                case R::smallCode: return chat::kSmall;
                 case R::smallStrong:
                 case R::accent: return chat::kSmallStrong;
                 case R::body:
@@ -83,6 +84,7 @@ namespace playground::ui
                 case R::body:
                 case R::strong:
                 case R::code:
+                case R::smallCode:
                 case R::h1:
                 case R::h2:
                 case R::h3:
@@ -188,12 +190,40 @@ namespace playground::ui
                 case R::body:
                 case R::strong:
                 case R::code:
+                case R::smallCode:
                 case R::dim:
                 case R::smallStrong:
                 case R::danger: break;
             }
             return R::strong;
         }
+
+        // Inline code in a paragraph of `base`: set at the base's size (a small one's at the small size), so that it
+        // fills the cells it is laid out in.
+        ChatView::Role codeOf(ChatView::Role base)
+        {
+            using R = ChatView::Role;
+            switch (base)
+            {
+                case R::small:
+                case R::smallStrong:
+                case R::faint:
+                case R::quote:
+                case R::accent:
+                case R::smallCode: return R::smallCode;
+                case R::body:
+                case R::strong:
+                case R::code:
+                case R::h1:
+                case R::h2:
+                case R::h3:
+                case R::dim:
+                case R::danger: break;
+            }
+            return R::code;
+        }
+
+        bool isCode(ChatView::Role r) { return r == ChatView::Role::code || r == ChatView::Role::smallCode; }
 
         // Inline markdown: `code` and **strong** (other marks stay as typed).
         std::vector<Piece> inlinePieces(const std::string& s, ChatView::Role base)
@@ -214,7 +244,7 @@ namespace playground::ui
                     if (j != std::string::npos && j > i + 1)
                     {
                         flush();
-                        out.push_back({ s.substr(i + 1, j - i - 1), ChatView::Role::code });
+                        out.push_back({ s.substr(i + 1, j - i - 1), codeOf(base) });
                         i = j;
                         continue;
                     }
@@ -252,11 +282,6 @@ namespace playground::ui
                 s[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(s[0])));
             return s;
         }
-
-        bool failed(const std::string& t)
-        {
-            return t.find("error") != std::string::npos || t.find("did not compile") != std::string::npos;
-        }
     }
 
     ChatView::ChatView(uint32_t a11yBase, Hooks hooks) : base_(a11yBase), hooks_(std::move(hooks)) {}
@@ -273,6 +298,7 @@ namespace playground::ui
             case Role::faint:
             case Role::quote:
             case Role::accent:
+            case Role::smallCode:
                 if (advSmall_ <= 0.0f)
                     advSmall_ = measure(chat::kSmall);
                 return advSmall_;
@@ -323,9 +349,10 @@ namespace playground::ui
     // ---- layout ---------------------------------------------------------------------------------------------------
     // The text of `paragraph` from x0, `w` wide, from y: wrapped at spaces (a word longer than the line broken), the
     // pieces' roles kept; returns the y under its last line.
-    float ChatView::flow(Block& b, const std::string& paragraph, Role base, float x0, float w, float y, float lineH) const
+    float ChatView::flow(Block& b, const std::string& paragraph, Role base, float x0, float w, float y, float lineH,
+                         bool markdown) const
     {
-        const std::vector<Piece> pieces = inlinePieces(paragraph, base);
+        const std::vector<Piece> pieces = markdown ? inlinePieces(paragraph, base) : std::vector<Piece>{ { paragraph, base } };
         // Words: runs of pieces between spaces.
         struct Word
         {
@@ -378,7 +405,7 @@ namespace playground::ui
                 b.spans.back().text += " " + text;   // one span for a run of one role on a line
             else
                 b.spans.push_back({ spaceBefore ? x + a : x, y, lineH, text, role });
-            if (role == Role::code)
+            if (isCode(role))
             {
                 // Inline code's ground: one rounded box over the run, spaces included.
                 if (merge && !b.shapes.empty() && b.shapes.back().kind == ShapeKind::inlineCode)
@@ -435,18 +462,15 @@ namespace playground::ui
         return y + lineH;
     }
 
-    void ChatView::layoutCode(Block& b, const std::string& lang, const std::vector<std::string>& lines, float w,
-                              float& y) const
+    void ChatView::layoutCode(Block& b, const std::string& lang, const std::vector<std::string>& lines,
+                              const std::string& copied, float w, float& y) const
     {
         const float top = y;
         if (advCode_ <= 0.0f)
             advCode_ = funkgui::text::width(funkgui::FontService::get().atlas(), "0000000000", chat::kCodeText) / 10.0f;
         const float a = advCode_;
-        std::string all;
-        for (const std::string& l : lines)
-            all += l + "\n";
         b.spans.push_back({ kCodePad, top + 3.0f, 18.0f, lang.empty() ? std::string("code") : lang, Role::faint });
-        b.actions.push_back({ { w - 64.0f, top + 3.0f, 58.0f, 18.0f }, ActionKind::copyCode, all });
+        b.actions.push_back({ { w - 64.0f, top + 3.0f, 58.0f, 18.0f }, ActionKind::copyCode, copied });
         y = top + kCodeHeader;
         const funkgui::text::KeywordHighlighter hl(fminusRules());
         uint32_t state = 0;
@@ -476,9 +500,12 @@ namespace playground::ui
         b.shapes.push_back({ { 0.0f, top, w, y - top }, ShapeKind::codeCard });
     }
 
-    void ChatView::layoutMarkdown(Block& b, const std::string& text, float w, float& y) const
+    void ChatView::layoutMarkdown(Block& b, const std::string& text, const std::string& raw, float w, float& y) const
     {
         const std::vector<std::string> lines = splitLines(text);
+        // The entry's own lines, line for line (asciiText keeps every line break and makes none): a code block's Copy
+        // copies them, not what is drawn.
+        const std::vector<std::string> rawLines = splitLines(raw);
         std::string para;
         bool first = true;
         const auto space = [&](float gap) {
@@ -504,11 +531,15 @@ namespace playground::ui
                 while (!lang.empty() && lang.back() == ' ')
                     lang.pop_back();
                 std::vector<std::string> code;
+                std::string copied;
                 std::size_t j = i + 1;
                 for (; j < lines.size() && trimLeft(lines[j]).rfind("```", 0) != 0; ++j)
+                {
                     code.push_back(lines[j]);
+                    copied += (j < rawLines.size() ? rawLines[j] : lines[j]) + "\n";
+                }
                 space(10.0f);
-                layoutCode(b, lang, code, w, y);
+                layoutCode(b, lang, code, copied, w, y);
                 i = j;                               // past the closing fence (or the end)
                 continue;
             }
@@ -665,10 +696,8 @@ namespace playground::ui
                         ty += chat::kBodyLine;
                         continue;
                     }
-                    std::string esc;
-                    for (const char ch : line)
-                        esc += ch == '`' || ch == '*' ? ' ' : ch;   // no markdown in the user's own words
-                    ty = flow(tmp, esc, Role::body, 0.0f, maxInner, ty, chat::kBodyLine);
+                    // The user's own words as typed: no markdown read in them.
+                    ty = flow(tmp, line, Role::body, 0.0f, maxInner, ty, chat::kBodyLine, false);
                 }
                 std::size_t widest = 0;
                 for (const Span& s : tmp.spans)
@@ -689,11 +718,11 @@ namespace playground::ui
             case ChatEntry::Kind::assistant:
                 b.label = "Claude";
                 b.value = t;
-                layoutMarkdown(b, t, w, y);
+                layoutMarkdown(b, t, e.text, w, y);
                 if (copyAfter)
                 {
                     y += 2.0f;
-                    b.actions.push_back({ { 0.0f, y, 58.0f, kCopyRow - 2.0f }, ActionKind::copyMessage, t });
+                    b.actions.push_back({ { 0.0f, y, 58.0f, kCopyRow - 2.0f }, ActionKind::copyMessage, e.text });
                     y += kCopyRow - 2.0f;
                 }
                 break;
@@ -732,7 +761,7 @@ namespace playground::ui
                     Block body;
                     float by = 0.0f;
                     constexpr float kIndent = 14.0f;
-                    layoutMarkdown(body, t, w - kIndent, by);
+                    layoutMarkdown(body, t, e.text, w - kIndent, by);
                     for (Span s : body.spans)
                     {
                         s.x += kIndent;
@@ -771,11 +800,12 @@ namespace playground::ui
                 y = 4.0f;
                 for (int k = 0; k < count; ++k)
                 {
-                    std::string line = capitalised(asciiText(entries[static_cast<std::size_t>(b.entry + k)].text));
+                    const ChatEntry& row = entries[static_cast<std::size_t>(b.entry + k)];
+                    std::string line = capitalised(asciiText(row.text));
                     b.value += (b.value.empty() ? "" : "; ") + line;
                     if (line.size() > cols)
                         line = line.substr(0, cols - 3) + "...";
-                    const bool bad = failed(line);
+                    const bool bad = row.failed;          // the tool's result was an error (ChatEntry::failed)
                     b.icons.push_back({ 18.0f, y + kToolRow * 0.5f, bad ? chat::Icon::alert : toolIcon(line),
                                         bad ? Role::danger : Role::dim });
                     b.spans.push_back({ 34.0f, y, kToolRow, line, bad ? Role::danger : Role::small });
@@ -813,6 +843,9 @@ namespace playground::ui
                 b.questions = e.questions;
                 b.answers = e.answers;
                 b.open = e.open;
+                b.chosen.clear();
+                for (std::size_t qi = 0; qi < b.questions.size(); ++qi)
+                    b.chosen.push_back(chosenOf(b.questions[qi], qi < b.answers.size() ? b.answers[qi] : std::string()));
                 const float inner = w - 2.0f * kCardPad;
                 y = 10.0f;
                 b.icons.push_back({ kCardPad + 6.0f, y + chat::kSmallLine * 0.5f, chat::Icon::question, Role::accent });
@@ -984,13 +1017,14 @@ namespace playground::ui
         ready_ = state.ready();
         busy_ = state.busy;
         activity_ = asciiText(state.activity);
-        if (state.entries.size() < entryCount_)
+        if (state.entries.size() < entryCount_ || state.conversation != conversation_)
         {
-            open_.clear();                           // a new chat
-            planClosed_.clear();
+            open_.clear();                           // another conversation: what was opened, folded or picked in the
+            planClosed_.clear();                     // last one (by entry) is not this one's
             picks_.clear();
         }
         entryCount_ = state.entries.size();
+        conversation_ = state.conversation;
         text_ = state.entries.empty() ? std::string() : transcriptText(state.entries);
 
         // The blocks: one an entry, but a run of tool entries is one card.
@@ -1038,7 +1072,8 @@ namespace playground::ui
                             + (desc.kind == ChatEntry::Kind::thinking && open_[desc.entry] ? '1' : '0')
                             + (desc.kind == ChatEntry::Kind::plan && planClosed_[desc.entry] ? 'c' : 'o') + '|';
             for (int k = 0; k < desc.count; ++k)
-                key += state.entries[static_cast<std::size_t>(desc.entry + k)].text + '\x1f';
+                key += state.entries[static_cast<std::size_t>(desc.entry + k)].text
+                     + (state.entries[static_cast<std::size_t>(desc.entry + k)].failed ? "\x1fx" : "\x1f");
             for (int k = 0; k < desc.count; ++k)
                 for (const ChatPicturePtr& pic : state.entries[static_cast<std::size_t>(desc.entry + k)].pictures)
                     key += 'p' + std::to_string(pic->id);
@@ -1317,6 +1352,39 @@ namespace playground::ui
 
     void ChatView::pointerUp(const funkgui::PointerEvent&, funkgui::GestureController&) { bar_.release(); }
 
+    bool ChatView::key(const funkgui::KeyEvent& e, funkgui::GestureController&)
+    {
+        // Tabbed to (the message box keeps every key while it has the caret): the arrows a few lines, Page Up and Down
+        // a view less two lines, Home the start, End the end (which it then follows).
+        if (e.mods.cmd || e.mods.ctrl || e.mods.alt || blocks_.empty())
+            return false;
+        Scroll s = scroller();
+        const float page = std::max(chat::kBodyLine, viewHeight() - 2.0f * chat::kBodyLine);
+        using funkgui::Key;
+        if (e.key == Key::up || e.key == Key::down)
+            s.moveTo(s.offset + (e.key == Key::up ? -2.0f : 2.0f) * chat::kBodyLine);
+        else if (e.key == Key::pageUp || e.key == Key::pageDown)
+            s.moveTo(s.offset + (e.key == Key::pageUp ? -page : page));
+        else if (e.key == Key::home || e.key == Key::end)
+            s.moveTo(e.key == Key::home ? 0.0f : s.max());
+        else
+            return false;
+        scroll_ = s.offset;
+        follow_ = atEnd();
+        return true;
+    }
+
+    void ChatView::reveal(int block)
+    {
+        if (block < 0 || block >= static_cast<int>(blocks_.size()))
+            return;
+        const Block& b = blocks_[static_cast<std::size_t>(block)];
+        Scroll s = scroller();
+        s.reveal(b.y - kPadTop, b.y + b.h + kPadBottom);
+        scroll_ = s.offset;
+        follow_ = atEnd();
+    }
+
     // ---- probes -----------------------------------------------------------------------------------------------------
     std::optional<Point> ChatView::centreOfSuggestion(int i) const
     {
@@ -1345,6 +1413,47 @@ namespace playground::ui
         return n;
     }
 
+    std::string ChatView::shownText() const
+    {
+        std::string out;
+        for (const Block& b : blocks_)
+            for (const Span& sp : b.spans)
+                out += sp.text + '\n';
+        return out;
+    }
+
+    float ChatView::overlap() const
+    {
+        float most = 0.0f;
+        for (const Block& b : blocks_)
+            for (const Span& sp : b.spans)
+            {
+                const float end = sp.x + funkgui::text::width(funkgui::FontService::get().atlas(), sp.text.c_str(), styleOf(sp.role));
+                for (const Span& next : b.spans)
+                    if (next.y == sp.y && next.x > sp.x)
+                        most = std::max(most, end - next.x);
+            }
+        return most;
+    }
+
+    int ChatView::failedRows() const
+    {
+        int n = 0;
+        for (const Block& b : blocks_)
+            if (b.kind == ChatEntry::Kind::tool)
+                for (const IconAt& ic : b.icons)
+                    n += ic.icon == chat::Icon::alert ? 1 : 0;
+        return n;
+    }
+
+    bool ChatView::chosen(int q, int o) const
+    {
+        for (int i = static_cast<int>(blocks_.size()); --i >= 0;)
+            if (blocks_[static_cast<std::size_t>(i)].kind == ChatEntry::Kind::question)
+                return picked(blocks_[static_cast<std::size_t>(i)], q, o);
+        return false;
+    }
+
     // ---- questions --------------------------------------------------------------------------------------------------
     bool ChatView::needsSubmit(const Block& b)
     {
@@ -1363,13 +1472,33 @@ namespace playground::ui
                 && o < static_cast<int>(it->second[static_cast<std::size_t>(q)].size())
                 && it->second[static_cast<std::size_t>(q)][static_cast<std::size_t>(o)];
         }
-        if (q >= static_cast<int>(b.answers.size()))
-            return false;
-        // The answer: the labels chosen, ", " between them.
-        const std::string& a = b.answers[static_cast<std::size_t>(q)];
-        const std::string& l = b.questions[static_cast<std::size_t>(q)].options[static_cast<std::size_t>(o)].label;
-        return a == l || a.rfind(l + ", ", 0) == 0 || a.find(", " + l + ", ") != std::string::npos
-            || (a.size() > l.size() + 2 && a.compare(a.size() - l.size() - 2, std::string::npos, ", " + l) == 0);
+        return q < static_cast<int>(b.chosen.size()) && o < static_cast<int>(b.chosen[static_cast<std::size_t>(q)].size())
+            && b.chosen[static_cast<std::size_t>(q)][static_cast<std::size_t>(o)];
+    }
+
+    std::vector<bool> ChatView::chosenOf(const ChatQuestion& q, const std::string& answer)
+    {
+        // The answer is the labels chosen in the options' order, ", " between them (act()), and a label may hold ", "
+        // itself: the options whose labels, so joined, are the answer whole; of several such sets, the fewest. None
+        // for an answer that is no such join (one typed in a message).
+        const std::size_t n = std::min<std::size_t>(q.options.size(), 16);
+        std::vector<bool> out(q.options.size(), false);
+        int best = -1;
+        for (uint32_t set = 1; set < (1u << n); ++set)
+        {
+            std::string joined;
+            for (std::size_t o = 0; o < n; ++o)
+                if ((set >> o) & 1u)
+                    joined += (joined.empty() ? "" : ", ") + q.options[o].label;
+            const int count = std::popcount(set);
+            if (joined == answer && (best < 0 || count < best))
+            {
+                best = count;
+                for (std::size_t o = 0; o < n; ++o)
+                    out[o] = ((set >> o) & 1u) != 0;
+            }
+        }
+        return out;
     }
 
     bool ChatView::complete(const Block& b) const
@@ -1498,7 +1627,7 @@ namespace playground::ui
     }
 
     // ---- drawing -------------------------------------------------------------------------------------------------------
-    void ChatView::draw(funkgui::Canvas& c, const funkgui::Theme& th, bool) const
+    void ChatView::draw(funkgui::Canvas& c, const funkgui::Theme& th, bool focusRing) const
     {
         const chat::Palette p = chat::palette(th);
         const std::vector<funkgui::text::HighlightStyle> codePalette = funkgui::TextEditor::defaultPalette();
@@ -1739,8 +1868,11 @@ namespace playground::ui
                 text(fitText(c, activity_, chat::kSmall, w - 40.0f), x0 + 36.0f, y, kWorkingRow, Role::small, p.dim);
         }
 
-        // The scroll bar, and the way back to the end.
+        // The scroll bar, and the way back to the end; the focus ring while tabbed to.
         scroller().draw(c, barArea(), th);
+        if (focusRing)
+            c.rrect(bounds_.x + 2.0f, bounds_.y + 2.0f, bounds_.w - 4.0f, bounds_.h - 4.0f, 8.0f, p.card.withAlpha(0.0f), 1.5f,
+                    p.accent);
         if (const auto j = centreOfJump())
         {
             const bool hover = std::hypot(pointer_.x - j->x, pointer_.y - j->y) <= kJump * 0.5f;
@@ -1800,13 +1932,15 @@ namespace playground::ui
             const Block& b = blocks_[static_cast<std::size_t>(bi)];
             const Rect whole = onScreen(b, { 0.0f, 0.0f, contentWidth(), b.h });
             const float y0 = std::max(whole.y, bounds_.y), y1 = std::min(whole.bottom(), bounds_.bottom());
-            if (y1 <= y0)
-                continue;                            // out of view
+            // Every block, in view or not, so a screen reader reaches each: one out of view a line at the view's edge
+            // on its side (inside the panel; its focus scrolls it in: a11yAction), its actions only while in view.
             funkgui::A11yItem item;
             item.id = base_ + 16 + static_cast<uint32_t>(bi) * kA11yStride;
             item.parent = base_;
             item.role = funkgui::A11yRole::listItem;
-            item.bounds = { whole.x, y0, whole.w, y1 - y0 };
+            item.bounds = y1 > y0                   ? Rect{ whole.x, y0, whole.w, y1 - y0 }
+                        : whole.bottom() <= bounds_.y ? Rect{ whole.x, bounds_.y, whole.w, 1.0f }
+                                                      : Rect{ whole.x, bounds_.bottom() - 1.0f, whole.w, 1.0f };
             item.title = b.label;
             item.value = b.value;
             item.readOnly = true;
@@ -1874,7 +2008,7 @@ namespace playground::ui
         }
     }
 
-    bool ChatView::a11yAction(uint32_t id, funkgui::A11yAction, double, funkgui::GestureController&)
+    bool ChatView::a11yAction(uint32_t id, funkgui::A11yAction a, double, funkgui::GestureController&)
     {
         if (id < base_ || id >= base_ + (1u << 24))
             return false;
@@ -1895,6 +2029,8 @@ namespace playground::ui
         }
         if (k >= 16 && (k - 16) % kA11yStride != 0)
             act(static_cast<int>((k - 16) / kA11yStride), static_cast<int>((k - 16) % kA11yStride) - 1);
+        else if (k >= 16 && (a == funkgui::A11yAction::focus || a == funkgui::A11yAction::press))
+            reveal(static_cast<int>((k - 16) / kA11yStride));   // a block: scrolled into view
         return true;
     }
 

@@ -8533,8 +8533,10 @@ namespace playground::ui
         // the focus (and its ring): the keyboard's way.
         if (pressed_ == sendItem_)
             setFocus(inputItem_);
-        else if (pressed_ >= 0 && items_[static_cast<std::size_t>(pressed_)]->focusable() && !isEdge(pressed_))
-            setFocus(pressed_);                          // an edge's drag leaves the focus (the caret) where it was
+        else if (pressed_ >= 0 && items_[static_cast<std::size_t>(pressed_)]->focusable() && !isEdge(pressed_)
+                 && pressed_ != chatViewItem_)
+            setFocus(pressed_);                          // an edge's drag, or a click in the conversation (a Copy, a
+                                                         // thinking row), leaves the focus (the caret) where it was
         else if (pressed_ < 0 && textItem() >= 0)
             setFocus(-1);                                // a press beside everything takes the caret away
         if (pressed_ >= 0 && gestures_ && host_ != nullptr)
@@ -9037,6 +9039,8 @@ namespace playground::ui
         // A netlist's Schematic view: its parts and nets as they come and go (never a pan or a zoom).
         r ^= files().schematicShown() ? 0x7FEB352Du ^ (files().schematic().a11yRevision() * 0x846CA68Bu) : 0u;
         r ^= (dialsBar_ ? 0x5BD1E995u : 0u) ^ (dialsFolded_ ? 0x1B56C4E9u : 0u);
+        // The conversation's scroll, however it moved (the wheel, its keys, its bar, a block revealed): its items move.
+        r ^= std::bit_cast<uint32_t>(chatView().scroll()) * 0x4CF5AD43u;
         return r ^ (files().layoutRevision() * 0x85EBCA77u) ^ (layoutRevision_ * 0xC2B2AE3Du) ^ (chatA11y_ * 2654435761u)
              ^ (explorer().revision() * 0x27220A95u) ^ (explorerShown_ ? 0x1B873593u : 0u)
              ^ (frozenShown_ ? 0x68E31DA4u ^ std::bit_cast<uint32_t>(centreOfFrozen().x) : 0u);   // it moves with the load's text

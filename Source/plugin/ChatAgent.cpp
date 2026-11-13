@@ -1368,6 +1368,7 @@ namespace playground
         s.attaching = attaching_;
         s.activity = activity_;
         s.entries = entries_;
+        s.conversation = conversation_;
         s.models = models_;
         s.model = model_;
         s.effort = effort_;
@@ -1859,6 +1860,7 @@ namespace playground
     {
         messages_.clear();
         entries_.clear();
+        ++conversation_;
         seen_.clear();
         lastSignature_ = 0;                        // the next message sends the files again
         usage_.clear();
@@ -1893,6 +1895,8 @@ namespace playground
                 o->setProperty("o", e.open);
                 o->setProperty("y", e.typed);
             }
+            if (e.failed)
+                entry.getDynamicObject()->setProperty("x", true);
             if (e.kind == ChatEntry::Kind::plan)
             {
                 entry.getDynamicObject()->setProperty("f", juce::String::fromUTF8(e.from.c_str()));
@@ -2042,6 +2046,7 @@ namespace playground
         const std::lock_guard<std::mutex> lock(mutex_);
         messages_.clear();
         entries_.clear();
+        ++conversation_;
         seen_.clear();
         lastSignature_ = 0;                        // the next message sends the files again
         busy_ = mcpWorking_.load();                // a call of Claude Desktop's keeps it busy until it ends (mcpCall)
@@ -2080,6 +2085,7 @@ namespace playground
                 entry.text = str(e, "t");
                 entry.from = str(e, "f");
                 entry.answer = static_cast<bool>(e.getProperty("n", false));
+                entry.failed = static_cast<bool>(e.getProperty("x", false));   // a chat kept before it: none
                 if (const auto* rows = e.getProperty("c", juce::var()).getArray())
                     for (const auto& r : *rows)
                         entry.checks.push_back({ str(r, "l"), str(r, "d"), static_cast<bool>(r.getProperty("m", false)),
@@ -3200,6 +3206,7 @@ namespace playground
                     const std::string what = str(block, "type").rfind("web_fetch", 0) == 0 ? "page" : "search";
                     const std::lock_guard<std::mutex> lock(mutex_);
                     addEntry(ChatEntry::Kind::tool, "The " + what + " failed with an error: " + str(c, "error_code"));
+                    entries_.back().failed = true;
                 };
                 cb.citation = [sources](const juce::var& c) {
                     const std::string url = str(c, "url");
@@ -4417,6 +4424,26 @@ namespace playground
     // ---- the tools ----------------------------------------------------------------------------------------------------
     juce::var ChatAgent::runTool(const juce::var& use)
     {
+        // The rows the tool added are drawn failed when its result is an error (the rows' words never decide it).
+        std::size_t before = 0;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            before = entries_.size();
+        }
+        const juce::var block = toolResult(use);
+        if (static_cast<bool>(block.getProperty("is_error", false)))
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            for (std::size_t i = before; i < entries_.size(); ++i)
+                if (entries_[i].kind == ChatEntry::Kind::tool)
+                    entries_[i].failed = true;
+            touch();
+        }
+        return block;
+    }
+
+    juce::var ChatAgent::toolResult(const juce::var& use)
+    {
         const std::string name = str(use, "name");
         const juce::var input = use.getProperty("input", juce::var());
         if (name == "listen" || name == "get_status")   // a turn's (Live.cpp); MCP's come through mcpCall
@@ -4969,9 +4996,15 @@ namespace playground
                 return fail(why);
             bool cut = false;
             const std::string report = measure::run(files, req, renderCancel("Measuring the sound"), &cut);
-            note(report.rfind("It did not compile", 0) == 0 ? "measured the sound: it did not compile"
-                 : cut                                     ? "measuring the sound was cut short"
-                                                           : "measured the sound");
+            const bool broken = report.rfind("It did not compile", 0) == 0;
+            note(broken ? "measured the sound: it did not compile"
+                 : cut  ? "measuring the sound was cut short"
+                        : "measured the sound");
+            if (broken)
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                entries_.back().failed = true;            // its result is the report, no error: nothing was measured
+            }
             return scenario::trialLine(trials) + scenario::dialsLine(defaults && !req.fromCapture) + report;
         }
         if (name == "set_checks")

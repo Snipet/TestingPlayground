@@ -128,6 +128,8 @@ namespace playground
         std::vector<ChatCheck> checks;        // a checks entry's
         std::string from;                     // a plan's: the model that wrote it ("Claude Fable 5.1")
         bool answer = false;                  // a plan entry that answers ask_planner (else a request's plan)
+        bool failed = false;                  // a tool's: its result was an error (a run that did not compile or
+                                              // stopped, a refusal), drawn so
     };
 
     struct ChatModel
@@ -228,6 +230,8 @@ namespace playground
         int attaching = 0;                    // files still being read
         std::string activity;                 // what it is doing: "THINKING", "WRITING filters.fm", ...
         std::vector<ChatEntry> entries;
+        uint64_t conversation = 0;            // moves when other words replace the conversation shown (another chat
+                                              // opened, a new chat, a session loaded)
         std::vector<ChatModel> models;
         std::string model;                    // the chosen model's id (the builder's)
         std::string planner;                  // the planning model's id ("" for none)

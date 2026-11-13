@@ -74,6 +74,18 @@ Claude Desktop extension: **0.20.0** (was 0.19.0).
   on it until it gives up, and never reads more than its limit.
 - The MCP server answers a batch of requests (a client of protocol 2025-03-26 may send them) and answers JSON that is
   no request as an invalid request.
+- Copy under an answer or a code block copies the text as Claude wrote it (accents, other scripts, symbols such as °
+  and µ), not the plain-letter form the chat draws.
+- Your own message is shown as you typed it: asterisks and backticks (`200*2`, `float* out`) are no longer dropped.
+- Inline code in small text (opened thinking, quotes, an option's description, a check's detail) no longer runs over
+  the word after it.
+- A row of what Claude did is red only when it failed (a run that did not compile or stopped is now red; writing a
+  file named `errors.fm` is not). Chats kept before this show their rows plain.
+- An opened thinking row, a folded plan or an open question's picks no longer carry over to another chat you open.
+- An answered question marks only the option chosen, not also one whose name begins or ends it ("Yes" beside "Yes,
+  but quieter").
+- The conversation scrolls from the keyboard: Shift-Tab from the message box reaches it, then the arrows, Page Up and
+  Down, Home and End scroll it. A screen reader reaches every message, and moving to one out of view scrolls it in.
 
 **Changed**
 - Claude Fable 5.2 is in the model list before your key's list arrives (in place of Fable 5.1), and Fable 5.2 and

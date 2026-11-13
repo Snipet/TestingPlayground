@@ -304,7 +304,8 @@
 //            the message is not taken (send says so: the box keeps it; no entry, no request), the chat stays busy with
 //            the call, and idle after it
 //   STATE    the conversation is in the session: a second processor loading the first's state has the same entries
-//            and the same history
+//            and the same history; a tool's row carries its outcome (a run that did not compile failed, a file named
+//            errors.fm written not), kept too
 //   OLD      what a build from before 2026-10-28 kept of a sign-in to a server (account-token.bin; chat.json's
 //            "account" and "use", the account chosen), the key stored too: a processor made then deletes the token's
 //            file and the two fields, keeps the choice, and the chat uses the key; a session saved by such a build (a
@@ -6040,6 +6041,44 @@ PROBE(plugin, chat)
 
     // ---- STATE ---------------------------------------------------------------------------------------------------------
     {
+        // A tool's row carries its outcome (ChatEntry::failed), never read out of its words: a file named errors.fm
+        // written is no failure, a run that did not compile is one; the session keeps it.
+        const pg::Draft was = processor.editorPort().draft();
+        const std::string first = was.files.empty() ? std::string("program.fm") : was.files[0].name;
+        const std::string firstText = was.files.empty() ? levelProgram() : was.files[0].text;
+        script->add(fake::Response::ok(fake::Sse()
+                                           .start()
+                                           .tool("toolu_x1", "write_file", input({ { "name", "errors.fm" }, { "content", "// notes\n" } }))
+                                           .tool("toolu_x2", "write_file", input({ { "name", juce::String(first) },
+                                                                                   { "content", "this is no program" } }))
+                                           .tool("toolu_x3", "run_program", input({}))
+                                           .tool("toolu_x4", "write_file", input({ { "name", juce::String(first) },
+                                                                                   { "content", juce::String(firstText) } }))
+                                           .tool("toolu_x5", "run_program", input({}))
+                                           .tool("toolu_x6", "delete_file", input({ { "name", "errors.fm" } }))
+                                           .end("tool_use")));
+        script->add(fake::Response::ok(fake::Sse().start().text("Back as it was.").end()));
+        agent.send("show me a run that fails");
+        agent.waitIdle();
+        processor.settle();
+        const pg::ChatState s = agent.chatState();
+        int wroteErrors = -1, failedRuns = 0, runs = 0;
+        for (const pg::ChatEntry& e : s.entries)
+        {
+            if (e.kind != pg::ChatEntry::Kind::tool)
+                continue;
+            if (has(e.text, "errors.fm") && has(e.text, "wrote"))
+                wroteErrors = e.failed ? 1 : 0;
+            if (e.text.rfind("ran it", 0) == 0)
+            {
+                ++runs;
+                failedRuns += e.failed ? 1 : 0;
+            }
+        }
+        P.eq("state.tool_named_error_not_failed", wroteErrors, 0);
+        P.eq("state.tool_failed_run", runs >= 2 && failedRuns >= 1 && !s.entries.empty() ? failedRuns : -1, 1);
+    }
+    {
         juce::MemoryBlock state;
         processor.getStateInformation(state);
         pg::Processor second;
@@ -6049,6 +6088,14 @@ PROBE(plugin, chat)
         for (std::size_t i = 0; same && i < a.entries.size(); ++i)
             same = a.entries[i].kind == b.entries[i].kind && a.entries[i].text == b.entries[i].text;
         P.eq("state.entries", same ? 1 : 0, 1);
+        bool outcomes = a.entries.size() == b.entries.size();
+        int failed = 0;
+        for (std::size_t i = 0; outcomes && i < a.entries.size(); ++i)
+        {
+            outcomes = a.entries[i].failed == b.entries[i].failed;
+            failed += b.entries[i].failed ? 1 : 0;
+        }
+        P.eq("state.tool_outcomes_kept", outcomes && failed >= 1 ? 1 : 0, 1);
         P.ge("state.entry_count", static_cast<double>(b.entries.size()), 20.0);
         const auto history = [](pg::ChatAgent& x) { return claude::toJson(claude::parseJson(x.saveState()).getProperty("messages", {})); };
         P.eq("state.history", history(agent) == history(second.chatAgent()) ? 1 : 0, 1);
