@@ -318,8 +318,16 @@ namespace playground::claude
                 });
                 const auto finish = [&] {
                     done.store(true);
-                    watcher.join();
+                    if (watcher.joinable())
+                        watcher.join();
                 };
+                // On every way out, a throw too (out of memory in a read: fminus/Failure.h): the watcher stopped and
+                // joined before the stream it watches goes; a joinable thread destroyed would end the process.
+                struct Joined
+                {
+                    const decltype(finish)& f;
+                    ~Joined() { f(); }
+                } joined{ finish };
 
                 if (!stream.connect(nullptr))
                 {
