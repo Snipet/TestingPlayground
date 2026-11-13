@@ -60,3 +60,143 @@ namespace playground
         return ", " + usage::costText(c);
     }
 }
+
+// ---- The Settings card's Usage page (ChatPort::usage, resetUsage) ------------------------------------------------------
+namespace playground
+{
+    namespace
+    {
+        // The same thing read again: nothing the page keys on moves.
+        bool sameRead(const UsageView& a, const UsageView& b)
+        {
+            return a.read == b.read && a.range == b.range && a.today == b.today && a.rows == b.rows
+                && a.pricesAsOf == b.pricesAsOf && a.resetting == b.resetting && a.resetError == b.resetError;
+        }
+
+        UsageView readView(usage::Range range)
+        {
+            UsageView v;
+            v.read = true;
+            v.range = range;
+            usage::Snapshot s = usage::snapshot(range);
+            v.today = s.today;
+            v.pricesAsOf = usage::pricesInUse().asOf;
+            v.rows.reserve(s.rows.size());
+            for (usage::Row& r : s.rows)
+            {
+                UsageRow u;
+                u.cost = usage::costOf(r.key, r.counts);   // the listed price, else the table in use
+                u.key = std::move(r.key);
+                u.counts = r.counts;
+                v.rows.push_back(std::move(u));
+            }
+            return v;
+        }
+    }
+
+    std::shared_ptr<const UsageView> ChatAgent::usage(usage::Range range)
+    {
+        bool ask = false;
+        std::shared_ptr<const UsageView> view;
+        {
+            const std::lock_guard<std::mutex> lock(usageMutex_);
+            view = usageView_;
+            usageAsked_ = range;
+            if (!usageReading_)
+            {
+                const auto age = std::chrono::duration<double>(std::chrono::steady_clock::now() - usageReadAt_).count();
+                ask = !view->read || view->range != range || usage::revision() != usageReadRevision_ || age >= usageReread_;
+                usageReading_ = ask;
+            }
+        }
+        if (ask)
+            queueJob([this, range] { readUsage(range); });
+        return view;
+    }
+
+    void ChatAgent::resetUsage()
+    {
+        usage::requestReset();                  // the cut: what was counted until now goes, what comes after stays
+        {
+            const std::lock_guard<std::mutex> lock(usageMutex_);
+            UsageView v = *usageView_;
+            v.resetting = true;
+            v.resetError.clear();               // said until this reset, which now runs
+            publishUsage(std::move(v));
+        }
+        queueJob([this] { runUsageReset(); });  // dropped when the agent goes: its destructor runs it then
+    }
+
+    void ChatAgent::setUsageRereadSecondsForTests(double seconds)
+    {
+        const std::lock_guard<std::mutex> lock(usageMutex_);
+        usageReread_ = seconds;
+    }
+
+    void ChatAgent::publishUsage(UsageView view)
+    {
+        if (sameRead(view, *usageView_))
+            return;
+        view.serial = usageView_->serial + 1;
+        usageView_ = std::make_shared<const UsageView>(std::move(view));
+    }
+
+    void ChatAgent::holdUsageReadsForTests(bool hold)
+    {
+        {
+            const std::lock_guard<std::mutex> lock(usageMutex_);
+            usageHold_ = hold;
+        }
+        usageCv_.notify_all();
+    }
+
+    uint64_t ChatAgent::usageReadsForTests() const
+    {
+        const std::lock_guard<std::mutex> lock(usageMutex_);
+        return usageReads_;
+    }
+
+    void ChatAgent::readUsage(usage::Range range)
+    {
+        {
+            std::unique_lock<std::mutex> lock(usageMutex_);
+            usageCv_.wait(lock, [this] { return !usageHold_ || usageStopping_; });
+        }
+        const uint64_t revision = usage::revision();     // a count added while reading asks for another read
+        UsageView v = readView(range);
+        {
+            const std::lock_guard<std::mutex> lock(usageMutex_);
+            ++usageReads_;
+            usageReading_ = false;
+            usageReadRevision_ = revision;
+            usageReadAt_ = std::chrono::steady_clock::now();
+            v.resetting = usage::resetOwed();
+            v.resetError = usageView_->resetError;
+            publishUsage(std::move(v));
+        }
+        runUsageReset();                        // one confirmed meanwhile runs before this job lets go
+    }
+
+    void ChatAgent::runUsageReset()
+    {
+        while (usage::resetOwed())              // a reset confirmed while one ran is owed again: run it too
+        {
+            const bool ok = usage::reset();
+            const uint64_t revision = usage::revision();
+            usage::Range range;
+            {
+                const std::lock_guard<std::mutex> lock(usageMutex_);
+                range = usageAsked_;
+            }
+            UsageView v = readView(range);
+            const std::lock_guard<std::mutex> lock(usageMutex_);
+            usageReadRevision_ = revision;
+            usageReadAt_ = std::chrono::steady_clock::now();
+            v.resetting = usage::resetOwed();
+            v.resetError = ok ? std::string()
+                              : std::string("The usage record could not be emptied (its folder could not be locked or "
+                                            "written). Nothing was lost: try Reset again.");
+            publishUsage(std::move(v));
+        }
+    }
+}

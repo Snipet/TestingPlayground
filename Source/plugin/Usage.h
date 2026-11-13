@@ -11,6 +11,19 @@
 //                 instances, two products and two hosts add up instead of overwriting); on the agent's worker, never
 //                 under its mutex
 //   snapshot      a copy of the ledger (the file and what is not written yet) for a range of days
+//   requestReset  the user confirmed a Reset (the Settings card's Usage page, asked first): the cut. What this
+//                 process counted until now and has not written is set aside for the reset, which is owed from then
+//                 until it has run; a count added after it is after the reset, kept for the flush after it. In memory
+//                 only, under the ledger's own mutex (never the file or its folder's lock): the message thread's
+//   reset         runs an owed reset (none owed: nothing, true): under the ledger's flush lock and the folder's
+//                 .lock, as a flush, the empty file written beside and renamed in, then the counts set aside dropped.
+//                 One that fails (the lock not had in its few seconds, the write refused) changes nothing: the file is
+//                 as it was and the counts set aside go back with those added meanwhile; it is no longer owed (the
+//                 user asks again). A flush while one is owed writes nothing (its counts are after the cut and would
+//                 be emptied with the file): it waits for the reset, so the owner runs an owed reset before its last
+//                 flush. Another process's counts not yet written are its own: they reach the emptied file later
+//   revision      moves whenever this process's ledger changes (a count added, a flush or a reset done), so a reader
+//                 of snapshots (ChatAgent::usage) knows when to read again; another process's write does not move it
 //   Price, costOf the price of a model (UsagePrices.cpp's table, a provider's listed price) and a row's cost: the
 //                 provider's reported figure where every request reported one, else an estimate at list prices, else
 //                 none
@@ -22,6 +35,7 @@
 //
 // The header is JUCE-free (the editor's page will take a Snapshot); Usage.cpp reads and writes the file with juce_core.
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <mutex>
@@ -151,7 +165,13 @@ namespace playground::usage
         bool flush() { return flush(usage::today()); }
         Snapshot snapshot(Range range, std::string_view today) const;
         Snapshot snapshot(Range range) const { return snapshot(range, usage::today()); }
+        // Above, "requestReset" and "reset": reset true when the emptied file is in place (or none was owed); false (the
+        // file as it was, the counts set aside kept) when the lock or the write failed.
+        void requestReset();
+        bool reset();
+        bool resetOwed() const;
         bool pending() const;
+        uint64_t revision() const noexcept { return revision_.load(std::memory_order_acquire); }
         void setFile(std::filesystem::path file);
         std::filesystem::path file() const;
 
@@ -160,14 +180,24 @@ namespace playground::usage
         std::mutex flushMutex_;                // one flush at a time in this ledger
         std::filesystem::path file_;
         std::vector<Row> pending_;
+        std::vector<Row> cut_;                 // what an owed reset will drop (requestReset)
+        bool owed_ = false;
+        std::atomic<uint64_t> revision_{ 0 };
     };
 
     // The process's ledger, on usage.json in the chat store's folder (chatstore::directory(), looked up at each flush and
     // snapshot, so a probe's own folder takes it).
     void add(const Key& key, const Counts& counts);
     bool flush();
+    void requestReset();
+    bool reset();
+    bool resetOwed();
+    uint64_t revision() noexcept;
     Snapshot snapshot(Range range);
     std::filesystem::path processFile();
+    // Probes only: every write of a ledger's file fails (as a full disk or a folder that may not be written would),
+    // so a flush and a reset can be seen failing; nothing else changes.
+    void setWritesFailForTests(bool fail);
 
     // The file's rows (none when it is missing or no ledger), and the JSON a set of rows is written as.
     std::vector<Row> read(const std::filesystem::path& file, bool* damaged = nullptr);

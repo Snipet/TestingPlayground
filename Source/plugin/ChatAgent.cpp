@@ -1270,9 +1270,16 @@ namespace playground
             attachCv_.notify_all();                // a message waiting for its pictures (takePending) goes now
         }
         joinWorker();
+        {
+            const std::lock_guard<std::mutex> lock(usageMutex_);
+            usageStopping_ = true;                 // a usage read a probe held goes on (holdUsageReadsForTests)
+        }
+        usageCv_.notify_all();
         if (jobThread_.joinable())
             jobThread_.join();
         keep();                                    // the chat stays on this Mac (the plugin closed unsaved)
+        runUsageReset();                           // a reset the user confirmed runs, though the job thread never
+                                                   // reached it (a queued job is dropped above): nothing if none waits
         usage::flush();                            // what the ledger has not written yet
     }
 

@@ -365,8 +365,9 @@ namespace playground::ui::settings
 
     std::span<const Page> pages()
     {
-        // The rail's order. Usage (package 09) and Network (package 08) take their rows here, before Debug.
-        static const std::array<Page, 8> kPages{ kGeneralPage, kEditorPage, kAudioPage, kProjectsPage, kAiPage, kNetworkPage, kDebugPage, kAboutPage };
+        // The rail's order.
+        static const std::array<Page, 9> kPages{ kGeneralPage, kEditorPage, kAudioPage, kProjectsPage, kAiPage, kUsagePage, kNetworkPage,
+                                                 kDebugPage, kAboutPage };
         return kPages;
     }
 }
