@@ -347,7 +347,7 @@ namespace playground::ui
     // port's begin at the press, its writes as it moves, its end at the release (FunkGui's GestureController holds one
     // drag at a time, so the sink brackets its ports itself, the writes of an event in one host batch, as tapMany's).
     // x and y absolute: the place across the rect (left 0, right 1) and up it (bottom 0, top 1), as host values, so a
-    // knob's taper maps them; relative: by the travel, kDragRange px the range, Shift a quarter as fast; spring: their
+    // knob's taper maps them; relative: by the travel, kDragRange px the range, Shift ten times finer (a knob's); spring: their
     // defaults at the release. down: 1 (its highest) while pressed, 0 at the release. A double-click puts x and y back
     // to their defaults; the wheel nudges wheel= as a knob's; a right-click opens the first parameter's dial menu. The
     // keys (a focusable element: x, y or down): the arrows move x and y by 1 % (Shift 10 %), Home puts both back, Space

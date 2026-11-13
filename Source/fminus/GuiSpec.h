@@ -49,7 +49,8 @@
 //   envelope attack decay sustain release   the ADSR shape its four parameters make, drawn (width=, height=)
 //   keyboard from=48 keys=25   an instrument's keys, which play notes (octaves= instead of keys=; color=)
 //   shader "glow.sc" inputs="cutoff env out"   a fragment shader of the program's own files, drawn by the GPU over
-//                           its cell (width=, height= its size, else 200 x 120; it stretches as a scope does), four at most: its inputs (up to
+//                           its cell (width=, height= its size, else 200 x 120; it stretches as a scope does), four
+//                           at most: its inputs (up to
 //                           16: parameters, fields, in, out) are its in0..in15 (fminus/Shaders.h); it may #include
 //                           the library (funk/text.sh, funk/shapes.sh: fminus/ShaderLib.h) and the program's .sh
 //                           files; the compiler builds it, and a shader that does not compile is a note on its own line
@@ -61,7 +62,7 @@
 // name of a parameter it writes:
 //   x=  y=                  a float: the pointer's place across (left 0, right 1) and up (bottom 0, top 1), as a knob's
 //                           turn maps its range and taper; drag=absolute (the default: they jump to the press and
-//                           follow it) or relative (they move by its travel, 200 px the range, Shift a quarter as fast);
+//                           follow it) or relative (they move by its travel, 200 px the range, Shift ten times finer);
 //                           release=keep (the default) or spring (back to their defaults when let go)
 //   down=                   a bool, int or float: its highest value while pressed, its lowest when let go
 //   wheel=                  a float or an int, nudged by the wheel as a knob is
