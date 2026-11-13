@@ -5,14 +5,20 @@
 //   gui.preview.example.png        the prompt's example, previewed (whole: 1280 x 918)
 //   gui.preview.example.view.png   view_panel's picture of it
 //   gui.preview.example.diff.png   where they differ (red), the displays masked (blue)
+//   gui.preview.pointer*.png       the same for the first folder example (its panel.gui's pointer and shader dial)
 //   gui.preview.values.png         VALUES' program at the version's values
 //   gui.preview.rows.*.png         ROWS' programs, previewed and (.view.png) as view_panel draws them
 // and checks:
 //   MATCH    the prompt's example (ChatAgent::promptExample): the preview at its defaults is view_panel's panel picture
 //            of the same files at the same size, pixel for pixel but the displays and live= marks (the sandbox's demo
-//            values against the processor's silence), within plugin.sandbox MATCH's bound; both drawn by SoftRaster
-//            here (picture::forceSoftRasterForTests), so the row is judged on every machine; the card's picture is the
-//            same scaled to 640 px across. A GPU picture where this platform has them (else skipped, saying why)
+//            values against the processor's silence) and the shaders' placeholders (SoftRaster's stand-in: the full
+//            Panel paints over a placeholder's last row, the sandbox's panel does not), within plugin.sandbox MATCH's
+//            bound; both drawn by SoftRaster here (picture::forceSoftRasterForTests), so the row is judged on every
+//            machine; the card's picture is the same scaled to 640 px across. A GPU picture where this platform has
+//            them (else skipped, saying why)
+//   POINTER  MATCH's rows for the first example that is a folder (effect: 7-light-filter, synth: 6-light-saw): a .gui
+//            with pointer properties (a box's x= and y=, a shader's inputs pointer.hover and pointer.down) and a shader
+//            whose width= and height= are its size (96 x 96); its pointer items inert in a preview, as in a picture
 //   VALUES   a version's saved values set its dials by name (case aside; an option's name for an int), the others at
 //            their defaults, a name the program lacks ignored; the level moved changes the picture in one cell, the
 //            wave moved too in another
@@ -35,6 +41,7 @@
 #include "plugin/Processor.h"
 #include "sandbox/SandboxProtocol.h"
 
+#include "Examples.h"
 #include "Product.h"
 
 #include <funkgui/gpu/ShaderLibrary.h>
@@ -224,15 +231,15 @@ PROBE(gui, preview)
     funkgui::UiPreferences::get().setTheme(0);
 
     // ---- MATCH: the prompt's example, previewed and as view_panel draws it playing --------------------------------------
-    {
+    // ---- POINTER: a panel with an area, pointer properties and a 96 x 96 shader dial (the folder example) -------------
+    const auto match = [&](const std::string& key, const pg::Sources& example, const std::string& png) {
         pg::Processor processor;
         processor.compiler().setFreezing(false);
         pg::EditorPort& port = processor.editorPort();
-        const pg::Sources example = pg::ChatAgent::promptExample();
         port.setDraft({ example, 0 });
         port.run(example);
         processor.settle();
-        P.eq("match.compiled", port.status().ok && !port.panel().gui.empty() ? 1 : 0, 1);
+        P.eq(key + ".compiled", port.status().ok && !port.panel().gui.empty() ? 1 : 0, 1);
         pg::picture::forceSoftRasterForTests(true);       // both SoftRaster: the same rasteriser on every machine
         const pg::PanelPicture view = pg::picturePanel(processor.ports(), port, 0, 0, false, "");
         // Where the displays and live= marks are (a Panel of the probe's own, in the PANEL view).
@@ -246,7 +253,10 @@ PROBE(gui, preview)
             const pg::ui::GuiLayout& gl = panel.guiLayout();
             const std::vector<pg::GuiNode>& nodes = panel.panelSpec().gui.nodes;
             for (std::size_t i = 0; i < nodes.size() && i < gl.rects.size(); ++i)
-                if (nodes[i].kind == pg::GuiKind::display || nodes[i].live >= 0)
+                // the displays and live= marks (demo values against silence), and a shader's placeholder (SoftRaster's
+                // stand-in, which only a picture without the GPU draws: the full Panel paints over its last row, the
+                // sandbox's panel does not; the GPU draws the shader itself)
+                if (nodes[i].kind == pg::GuiKind::display || nodes[i].live >= 0 || nodes[i].kind == pg::GuiKind::shader)
                 {
                     const funkgui::Rect& r = gl.rects[i];
                     masks.push_back(pixels(r.x - gl.area.x, r.y - gl.area.y, r.w, r.h, 3));
@@ -261,40 +271,59 @@ PROBE(gui, preview)
             if (const pg::Control& k = controls[static_cast<std::size_t>(c)]; k.used)
                 request.dials.push_back({ k.name, k.def, "" });
         const pg::preview::Prepared prepared = pg::preview::prepare(request, tools(true));
-        P.eq("match.prepared", prepared.ok ? 1 : 0, 1);
+        P.eq(key + ".prepared", prepared.ok ? 1 : 0, 1);
+        int pointered = 0;                               // the elements a pointer drives (area, shader, box, ...)
+        for (const pg::GuiNode& n : prepared.spec.gui.nodes)
+            pointered += n.pointer.any() ? 1 : 0;
+        std::printf("%s: %d element(s) a pointer drives\n", key.c_str(), pointered);
+        if (key == "pointer")
+            P.ge(key + ".pointer_elements", pointered, 1);
         const pg::preview::Picture whole = pg::preview::draw(prepared, 0, 0);
         const juce::Image mine = imageOf(whole.image);
-        writeImage(mine, "gui.preview.example.png");
+        writeImage(mine, ("gui.preview." + png + ".png").c_str());
         {
-            juce::File out(juce::String(probe::outPath("gui.preview.example.view.png")));
+            juce::File out(juce::String(probe::outPath("gui.preview." + png + ".view.png")));
             out.replaceWithData(view.png.data(), view.png.size());
         }
         juce::Image where;
         const Diff d = compare(decode(view.png), mine, masks, 4, &where);
         if (where.isValid())
-            writeImage(where, "gui.preview.example.diff.png");
+            writeImage(where, ("gui.preview." + png + ".diff.png").c_str());
         std::printf("against view_panel (%s; %zu displays and live marks masked): %d of %d pixels differ by more than 4 "
                     "outside them (largest %d), %d inside\n", view.about.c_str(), masks.size(), d.outside, d.total, d.largestOutside, d.inside);
-        P.eq("match.soft", !whole.gpu && !view.gpu ? 1 : 0, 1);
-        P.eq("match.same_size", d.sameSize ? 1 : 0, 1);
-        P.le("match.pixels_off", static_cast<double>(d.outside), 0.002 * d.total);
-        P.le("match.largest", d.largestOutside, 40);
+        P.eq(key + ".soft", !whole.gpu && !view.gpu ? 1 : 0, 1);
+        P.eq(key + ".same_size", d.sameSize ? 1 : 0, 1);
+        P.le(key + ".pixels_off", static_cast<double>(d.outside), 0.002 * d.total);
+        P.le(key + ".largest", d.largestOutside, 40);
         const pg::preview::Picture card = pg::preview::draw(prepared, 0, pg::preview::kMaxWidth);
         std::printf("the card's picture: %d x %d (whole: %d x %d)\n", card.image.w, card.image.h, whole.image.w, whole.image.h);
-        P.eq("match.card_width", card.image.w, pg::preview::kMaxWidth);
-        P.near("match.card_shape", static_cast<double>(card.image.h) / card.image.w, static_cast<double>(whole.image.h) / whole.image.w, 0.01);
+        P.eq(key + ".card_width", card.image.w, pg::preview::kMaxWidth);
+        P.near(key + ".card_shape", static_cast<double>(card.image.h) / card.image.w, static_cast<double>(whole.image.h) / whole.image.w, 0.01);
         pg::picture::forceSoftRasterForTests(false);
         if (const std::string none = probe::noGpuPictures(); none.empty())
         {
             const pg::preview::Picture gpu = pg::preview::draw(prepared, 0, pg::preview::kMaxWidth);
-            P.eq("match.gpu", gpu.gpu && gpu.image.w == pg::preview::kMaxWidth ? 1 : 0, 1);
+            P.eq(key + ".gpu", gpu.gpu && gpu.image.w == pg::preview::kMaxWidth ? 1 : 0, 1);
         }
         else
         {
-            probe::skip(P, "match.gpu", probe::noGpuPicturesSkip());
+            probe::skip(P, key + ".gpu", probe::noGpuPicturesSkip());
             const pg::preview::Picture soft = pg::preview::draw(prepared, 0, pg::preview::kMaxWidth);
-            P.eq("match.soft_said", !soft.gpu && has(soft.why, none) ? 1 : 0, 1);
+            P.eq(key + ".soft_said", !soft.gpu && has(soft.why, none) ? 1 : 0, 1);
         }
+    };
+    match("match", pg::ChatAgent::promptExample(), "example");
+    {
+        // The first example that is a folder (its own panel.gui and shader): pointer properties, an area or a box, and
+        // a shader whose width= and height= are its size. Its pointer items in a preview are inert: nothing hovers or
+        // presses in a picture, so it draws as view_panel's does with no pointer.
+        const pg::Example* folder = nullptr;
+        for (const pg::Example& e : pg::kExamples)
+            if (folder == nullptr && e.count > 0)
+                folder = &e;
+        P.eq("pointer.example", folder != nullptr ? 1 : 0, 1);
+        if (folder != nullptr)
+            match("pointer", pg::exampleSources(*folder), "pointer");
     }
 
     pg::picture::forceSoftRasterForTests(true);

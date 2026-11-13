@@ -1130,7 +1130,7 @@ PROBE(plugin, projects)
             P.eq("preview.reading", asked.status == pg::PreviewState::Status::reading ? 1 : 0, 1);
             (void)waitReader();
             const pg::PreviewState then = pd.previewPolled("Diffs", 1, 0);
-            (void)d.previewsSettle();
+            (void)d.previewsSettle(static_cast<double>(probe::kWorkWait.count()));
             const pg::PreviewState last = pd.previewPolled("Diffs", 1, 0);
             P.eq("preview.answered", then.status != pg::PreviewState::Status::reading
                                          && (last.status == pg::PreviewState::Status::ready || last.status == pg::PreviewState::Status::failed) ? 1 : 0, 1);

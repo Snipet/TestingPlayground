@@ -1183,7 +1183,7 @@ PROBE(gui, projects)
         // The Panel's frames and the processor's polls (a frame a 60th of the Panel's clock), until `done`: a generous
         // deadline, returning as soon as it is done.
         const auto pump = [&](funkgui::HeadlessHost& h, const std::function<bool()>& done) {
-            const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+            const auto until = std::chrono::steady_clock::now() + probe::kWorkWait;
             while (!done() && std::chrono::steady_clock::now() < until)
             {
                 processor.poll();
@@ -1226,7 +1226,7 @@ PROBE(gui, projects)
         writePng(P, host, "gui.projects.preview.png");
         paper("gui.projects.preview.paper.png", [&](Driver& dv) {
             dv.b.chooseProjectNamed("Panel Pad", W, H);
-            const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+            const auto until = std::chrono::steady_clock::now() + probe::kWorkWait;
             while (dv.b.previewShown().status != St::ready && std::chrono::steady_clock::now() < until)
             {
                 processor.poll();
@@ -1263,7 +1263,7 @@ PROBE(gui, projects)
         // One drawn a poll at most, and none in a poll that drew a picture for Claude.
         {
             // Asked until each is read (the store's Reader) and prepared (the processor's thread), no poll between.
-            const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+            const auto until = std::chrono::steady_clock::now() + probe::kWorkWait;
             const auto ask = [&](const char* name, int theme) {
                 while (port.previewPolled(name, 0, theme).status == St::reading && std::chrono::steady_clock::now() < until)
                     std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -1282,7 +1282,7 @@ PROBE(gui, projects)
             // Claude's view_panel waits for this thread's poll: that poll draws it and no preview.
             pg::ChatAgent::McpResult viewed;
             std::thread claude([&] { viewed = processor.chatAgent().mcpCall("view_panel", juce::var(new juce::DynamicObject())); });
-            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+            const auto deadline = std::chrono::steady_clock::now() + probe::kWorkWait;
             while (!processor.pictureWaiting() && std::chrono::steady_clock::now() < deadline)
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             before = processor.previewsDrawn();
@@ -1299,7 +1299,7 @@ PROBE(gui, projects)
                 for (const char* name : { "Panel Pad", "Panel Two", "Panel Three", "Sketch 1", "Sketch 2", "Sketch 3", "Deep Sub" })
                 {
                     (void)port.previewPolled(name, 0, t);
-                    processor.previewsSettle();
+                    processor.previewsSettle(static_cast<double>(probe::kWorkWait.count()));
                 }
             P.eq("preview.twelve_kept", static_cast<int>(processor.previewsKept()), static_cast<int>(pg::Processor::kPreviewsKept));
         }
