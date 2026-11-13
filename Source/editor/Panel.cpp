@@ -5958,6 +5958,7 @@ namespace playground::ui
                 projects_.reread();
                 dirty_ = true;
             }
+        FP_DIRTY_AT("refresh: Claude's notice");
         // The draft, when a host loaded a session while the editor was open, or Claude changed the files. (While the
         // editor is in the code window, that Panel's: this one's hidden copy takes nothing and gives nothing.)
         bool textChanged = std::exchange(pushedFiles_, false);   // a gesture's files, given at once
@@ -5973,6 +5974,7 @@ namespace playground::ui
             (void)pushFiles();
             textChanged = true;
         }
+        FP_DIRTY_AT("refresh: the draft merged or pushed");
         // The editor's check while typing (CodeAssist.h): the files once they have rested, its messages when it is done
         // (the code window's, while the editor is out: this Panel's copy asks for none).
         if (!out_ && files().assist().takeCheckRequest())
@@ -5982,6 +5984,7 @@ namespace playground::ui
             files().assist().checkSent(before);
             dirty_ = true;                               // the status line says Checking...
         }
+        FP_DIRTY_AT("refresh: the check sent");
         if (files().assist().checking())
             if (const CheckStatus c = port_.checkStatus(); files().assist().takeCheckResult(c.revision))
             {
@@ -5989,7 +5992,7 @@ namespace playground::ui
                 files().assist().checkDone();
                 dirty_ = true;
             }
-        FP_DIRTY_AT("refresh: Claude's notice, the draft, the check");
+        FP_DIRTY_AT("refresh: the check's result");
         // A finished compile: its messages, and the dials of the program that plays.
         bool statusChanged = false;
         if (const uint64_t r = port_.statusRevision(); r != seenStatus_)

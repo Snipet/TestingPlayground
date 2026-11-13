@@ -108,6 +108,7 @@
 
 #include "editor/ChatItems.h"
 #include "editor/ChatView.h"
+#include "editor/CodeAssist.h"
 #include "editor/Panel.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/ChatStore.h"
@@ -182,6 +183,21 @@ namespace
     }
 
     pg::ChatState chat(pg::Processor& p) { return p.chatAgent().chatState(); }
+
+    // The editor's check while typing (CodeAssist) landed: a Panel's first is asked once its files have rested (0.6 s
+    // of the host's clock) and answers on the compiler's thread whenever that thread has a core; its outcome takes the
+    // status line's Checking... away, a frame of its own at a moment of the real clock, not idleness (gui.switch RATE,
+    // gui.dump DRAW). A row that counts an idle Panel's frames begins once it has landed.
+    bool checkLanded(pg::ui::Panel& panel, funkgui::HeadlessHost& host, pg::EditorPort& port)
+    {
+        for (const auto by = std::chrono::steady_clock::now() + probe::kWorkWait;
+             (panel.codeAssist().checking() || port.compiling()) && std::chrono::steady_clock::now() < by;)
+        {
+            host.tick(1, 1.0f / 12.0f);                  // a calm editor's cadence
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return !panel.codeAssist().checking() && !port.compiling();
+    }
 
     // The script's answers no request took (a row that failed left them): dropped, so the next turns get their own.
     void dropUnplayed(fake::Script& script)
@@ -803,12 +819,19 @@ PROBE(gui, chat)
         }
         P.eq("draw.chat_answer", answered && panel.needsDraw() ? 1 : 0, 1);
         settleChat(processor, host);
+        P.eq("draw.chat_check_landed", checkLanded(panel, host, processor.editorPort()) ? 1 : 0, 1);
+        host.settle();
         host.draw();
         int asked = 0;
         for (int k = 0; k < 11; ++k)
         {
             host.tick(1, 1.0f / 12.0f);
-            asked += panel.needsDraw() ? 1 : 0;
+            if (panel.needsDraw())
+            {
+                ++asked;
+                std::printf("  a quiet chat's frame asked to draw at %.3f s: %s\n", host.nowSeconds(),
+                            panel.drawReason().c_str());
+            }
         }
         P.eq("draw.chat_quiet", asked, 0);
         const std::string t = panel.transcript();
@@ -1495,7 +1518,8 @@ PROBE(gui, chat)
         }
         {
             // A Panel made while the chat is folded (an editor opened again): idle, it asks for no frame and lays
-            // nothing out, at the frame pump's cadence; unfolded, its message box has its height at once.
+            // nothing out, at the frame pump's cadence; unfolded, its message box has its height at once. Idle from
+            // when its first check while typing has landed (checkLanded): until then it has work of its own.
             pg::ui::Panel again(processor.ports(), processor.editorPort());
             funkgui::HeadlessHost h2(again, 0, 2.0f);
             h2.settle();
@@ -1504,6 +1528,8 @@ PROBE(gui, chat)
                     h2.draw();
                 return again.wantsFullRate();
             });
+            P.eq("collapse.made_folded_check_landed", checkLanded(again, h2, processor.editorPort()) ? 1 : 0, 1);
+            h2.settle();
             h2.draw();
             const uint32_t rev = again.a11yRevision();
             int asked = 0;
