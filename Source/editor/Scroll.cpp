@@ -16,7 +16,7 @@ namespace playground::ui
     {
         if (!shown())
             return false;
-        offset -= delta * pxPerUnit(smooth, row);
+        offset -= funkgui::scroll::wheelPx(delta, smooth, row);
         clamp();
         return true;
     }
@@ -40,6 +40,7 @@ namespace playground::ui
 
     Rect Scroll::track(const Rect& a) const noexcept
     {
+        using namespace funkgui::scroll;
         return horizontal ? Rect{ a.x, a.bottom() - kBarInset - kBarW, a.w, kBarW }
                           : Rect{ a.right() - kBarInset - kBarW, a.y, kBarW, a.h };
     }
@@ -47,11 +48,8 @@ namespace playground::ui
     Rect Scroll::thumb(const Rect& a) const noexcept
     {
         const Rect t = track(a);
-        const float len = horizontal ? t.w : t.h;
-        const float size = std::min(len, std::max(kBarMin, content > 0.0f ? len * view / content : len));
-        const float range = max();
-        const float at = (range > 0.0f ? offset / range : 0.0f) * (len - size);
-        return horizontal ? Rect{ t.x + at, t.y, size, t.h } : Rect{ t.x, t.y + at, t.w, size };
+        const funkgui::scroll::Thumb th = funkgui::scroll::thumb(horizontal ? t.w : t.h, content, view, offset);
+        return horizontal ? Rect{ t.x + th.pos, t.y, th.size, t.h } : Rect{ t.x, t.y + th.pos, t.w, th.size };
     }
 
     bool Scroll::hits(Point p, const Rect& a) const noexcept { return shown() && track(a).expanded(kBarHit).contains(p); }
@@ -88,7 +86,7 @@ namespace playground::ui
         if (!shown())
             return;
         const Rect r = thumb(a);
-        c.rrect(r.x, r.y, r.w, r.h, kBarW * 0.5f, dragging() ? th.ink52 : th.ink32);
+        c.rrect(r.x, r.y, r.w, r.h, funkgui::scroll::kBarW * 0.5f, dragging() ? th.ink52 : th.ink32);
     }
 
     uint64_t Scroll::key() const noexcept

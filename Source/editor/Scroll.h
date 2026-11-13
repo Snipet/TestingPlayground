@@ -1,5 +1,6 @@
-// Source/editor/Scroll.h: one axis of scrolling as FunkGui's TextEditor scrolls (src/widgets/TextEditor.cpp), which
-// every list and scrolling view of the editor takes, so that each scrolls as the code does:
+// Source/editor/Scroll.h: one axis of scrolling as FunkGui's TextEditor scrolls (funkgui/widgets/Scroll.h, the rule and
+// the bar's geometry the TextEditor itself uses), which every list and scrolling view of the editor takes, so that each
+// scrolls as the code does:
 //
 //   the wheel   offset -= delta * (smooth ? 512 : 3 * row / (50 / 256)): a trackpad's point one px, a notched wheel's
 //               notch three of the surface's rows. The delta goes in as JUCE gave it (e.dy, or e.dx): deltaY already
@@ -13,12 +14,14 @@
 //               jumps under the pointer and drags from there
 //
 // The owner sets content, view and row at each layout (or before each use, from its places), and mixes key() into its
-// drawKey(). The constants are FunkGui's TextEditor's, copied until FunkGui exposes them; gui.scroll holds them to it.
+// drawKey(). The wheel's and the bar's constants are FunkGui's (funkgui::scroll, since FunkGui F1: none is copied here);
+// gui.scroll holds this to the TextEditor's behaviour.
 #pragma once
 
 #include <funkgui/canvas/Canvas.h>
 #include <funkgui/core/Geometry.h>
 #include <funkgui/core/Theme.h>
+#include <funkgui/widgets/Scroll.h>
 
 #include <cstdint>
 
@@ -26,21 +29,12 @@ namespace playground::ui
 {
     struct Scroll
     {
-        static constexpr float kWheelPxPerUnit = 512.0f;        // smooth: JUCE's precise device gives 0.5/256 a point
-        static constexpr float kWheelNotch = 50.0f / 256.0f;    // one notch of a notched wheel
-        static constexpr float kRowsPerNotch = 3.0f;
-        static constexpr float kBarW = 4.0f, kBarInset = 2.0f, kBarMin = 12.0f, kBarHit = 2.0f;
+        static constexpr float kBarHit = 2.0f;                  // the bar's hit rect, this much larger (ours)
 
         float offset = 0.0f;                     // 0 .. max(), never rounded here
         float content = 0.0f, view = 0.0f;       // set by the owner at each layout
         float row = 24.0f;                       // the height three of which a notch moves
         bool horizontal = false;                 // the bar along the area's bottom
-
-        // Px a unit of the wheel's delta moves, for a row of `row` px.
-        static constexpr float pxPerUnit(bool smooth, float row) noexcept
-        {
-            return smooth ? kWheelPxPerUnit : kRowsPerNotch * row / kWheelNotch;
-        }
 
         float max() const noexcept { return content > view ? content - view : 0.0f; }
         void clamp() noexcept;

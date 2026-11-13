@@ -3116,7 +3116,7 @@ namespace playground::ui
                 const float rh = rowH();
                 const int first = std::max(0, static_cast<int>(std::floor(list_.offset / rh)));
                 const int last = std::min(static_cast<int>(all_.size()), static_cast<int>(std::ceil((list_.offset + in.h) / rh)) + 1);
-                const float barRoom = list_.shown() ? Scroll::kBarW + 2.0f * Scroll::kBarInset : 0.0f;
+                const float barRoom = list_.shown() ? funkgui::scroll::kBarW + 2.0f * funkgui::scroll::kBarInset : 0.0f;
                 for (int k = first; k < last; ++k)
                 {
                     const FileMatch& m = all_[static_cast<std::size_t>(k)];

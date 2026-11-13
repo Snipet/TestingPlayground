@@ -1350,7 +1350,7 @@ PROBE(gui, chat)
         host.settle();
         P.eq("scroll.wheel_up", view.atEnd() ? 0 : 1, 1);
         {
-            const float notchDy = pg::ui::Scroll::kWheelNotch;
+            const float notchDy = funkgui::scroll::kWheelNotch;
             const pg::ui::Scroll s0 = view.scroller();
             host.wheel(vb.centreX(), vb.centreY(), 1000.0f);  // the top
             host.wheel(vb.centreX(), vb.centreY(), -notchDy);

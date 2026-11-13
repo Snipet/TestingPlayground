@@ -73,7 +73,7 @@ namespace playground::ui
         static constexpr int kPointers = kMaxPointers;     // areas and other elements with pointer properties
         static constexpr float kScrollGutter = 8.0f;       // the scroll bar's room, at the area's right
         static constexpr float kRow = 24.0f;               // the rows three of which a wheel's notch scrolls
-        static constexpr float wheelPx(bool smooth) noexcept { return Scroll::pxPerUnit(smooth, kRow); }
+        static constexpr float wheelPx(bool smooth) noexcept { return funkgui::scroll::wheelPx(1.0f, smooth, kRow); }
 
         struct Hooks
         {

@@ -318,7 +318,7 @@ PROBE(gui, ab)
             const AC::Places at = card.places(W, H);
             const auto offset = [&] { return static_cast<double>(card.diffScroll(card.places(W, H)).offset); };
             const pg::ui::Scroll sc = card.diffScroll(at);
-            const float notchDy = pg::ui::Scroll::kWheelNotch;
+            const float notchDy = funkgui::scroll::kWheelNotch;
             host.wheel(d.centreX(), d.centreY(), -notchDy);
             P.near("scroll.notch_three_lines", offset(), 3.0 * at.lineH, 0.01);
             host.keys("home");
