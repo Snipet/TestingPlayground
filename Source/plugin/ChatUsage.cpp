@@ -141,11 +141,31 @@ namespace playground
         usageView_ = std::make_shared<const UsageView>(std::move(view));
     }
 
+    void ChatAgent::holdUsageReadsForTests(bool hold)
+    {
+        {
+            const std::lock_guard<std::mutex> lock(usageMutex_);
+            usageHold_ = hold;
+        }
+        usageCv_.notify_all();
+    }
+
+    uint64_t ChatAgent::usageReadsForTests() const
+    {
+        const std::lock_guard<std::mutex> lock(usageMutex_);
+        return usageReads_;
+    }
+
     void ChatAgent::readUsage(usage::Range range)
     {
+        {
+            std::unique_lock<std::mutex> lock(usageMutex_);
+            usageCv_.wait(lock, [this] { return !usageHold_ || usageStopping_; });
+        }
         const uint64_t revision = usage::revision();     // a count added while reading asks for another read
         UsageView v = readView(range);
         const std::lock_guard<std::mutex> lock(usageMutex_);
+        ++usageReads_;
         usageReading_ = false;
         usageReadRevision_ = revision;
         usageReadAt_ = std::chrono::steady_clock::now();

@@ -1270,6 +1270,11 @@ namespace playground
             attachCv_.notify_all();                // a message waiting for its pictures (takePending) goes now
         }
         joinWorker();
+        {
+            const std::lock_guard<std::mutex> lock(usageMutex_);
+            usageStopping_ = true;                 // a usage read a probe held goes on (holdUsageReadsForTests)
+        }
+        usageCv_.notify_all();
         if (jobThread_.joinable())
             jobThread_.join();
         keep();                                    // the chat stays on this Mac (the plugin closed unsaved)

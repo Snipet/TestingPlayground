@@ -384,6 +384,10 @@ namespace playground
         // Probes only: how long a view of usage() stands before it is read again with nothing else moved (another
         // process's write: kUsageRereadSeconds by default).
         void setUsageRereadSecondsForTests(double seconds);
+        // Probes only: a read of usage() held before it reads (a read in flight, as long as the probe likes; the agent
+        // going lets it go), and how many reads have run.
+        void holdUsageReadsForTests(bool hold);
+        uint64_t usageReadsForTests() const;
         static constexpr double kUsageRereadSeconds = 3.0;
 
         // The conversation (the API's messages and the view's entries, as JSON), and back. A turn that is running is not
@@ -888,5 +892,8 @@ namespace playground
         std::chrono::steady_clock::time_point usageReadAt_{};       // when the last read ended
         bool usageResetPending_ = false;                            // a reset confirmed and not yet run
         double usageReread_ = kUsageRereadSeconds;
+        std::condition_variable usageCv_;                           // holdUsageReadsForTests
+        bool usageHold_ = false, usageStopping_ = false;
+        uint64_t usageReads_ = 0;
     };
 }
