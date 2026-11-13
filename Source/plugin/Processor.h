@@ -345,6 +345,16 @@ namespace playground
         ExportState exporting() const override;
         void cancelExport() override;
         std::string exportFolder() const override;
+        // Package 05: projects and git (ProcessorGit.cpp).
+        GitLink gitLink(const std::string& project) const override;
+        bool startGit(const GitJob& job, std::string& why) override;
+        GitState gitState() const override;
+        void cancelGit() override;
+        uint64_t gitPolled() const override;
+        bool disconnectGit(const std::string& project, std::string& why) override;
+        std::string gitChosen() const override;
+        bool setGitChosen(const std::string& path, std::string& why) override;
+        std::string gitFolder() const override;
         AbState ab() const override;
         uint64_t abRevision() const override { return ab_.st.revision; }
         bool startAb(const std::string& project, int a, int b, std::string& why) override;
@@ -642,6 +652,18 @@ namespace playground
         std::atomic<bool> exportCancel_{ false };
         bool exportGateShut_ = false;                            // under exportMutex_ (setExportGate)
         std::condition_variable exportGateOpen_;
+        // Package 05: the git job (ProcessorGit.cpp): one at a time on gitThread_, which writes gitState_ under gitMutex_
+        // (and catches whatever its work throws, failing the job in words); poll() joins it once it has ended and opens a
+        // pulled version when the project is open with no change (gitOpen_); the destructor cancels and joins it.
+        void runGit(const GitJob& job);
+        void pollGit();
+        void finishGit();
+        std::thread gitThread_;
+        mutable std::mutex gitMutex_;
+        GitState gitState_;                                      // under gitMutex_
+        std::pair<std::string, int> gitOpen_;                    // under gitMutex_: a pulled version to open
+        std::atomic<bool> gitCancel_{ false };
+        std::atomic<uint64_t> gitRevision_{ 1 };
         bool openProjectAs(const std::string& name, int version, std::optional<Journal::Who> who, std::string& why);
         bool savePresetAs(const std::string& preset, std::optional<Journal::Who> who, std::string& why);
         int programCount() const;
