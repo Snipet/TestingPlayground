@@ -1924,7 +1924,8 @@ PROBE(gui, dump)
             target.getParentDirectory().createDirectory();
             // The export runs on the processor's own thread (EditorPort::startExport): the card says so until it lands.
             const auto landed = [&] {
-                for (int k = 0; k < 2000 && (card.running() || port.exporting().busy); ++k)
+                for (const auto by = std::chrono::steady_clock::now() + probe::kWorkWait;
+                     (card.running() || port.exporting().busy) && std::chrono::steady_clock::now() < by;)
                 {
                     std::this_thread::sleep_for(std::chrono::milliseconds(5));
                     processor.settle();
