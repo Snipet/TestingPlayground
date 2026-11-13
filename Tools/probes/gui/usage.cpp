@@ -10,7 +10,7 @@
 //   gui.usage.hover.png       the bar under the pointer read out
 //   gui.usage.small.png       the least window
 //   gui.usage.reset.png       Reset asked (Reset and Cancel)
-//   gui.usage.paper.png, gui.usage.paper.small.png   a week in PAPER, and at the least window
+//   gui.usage.paper.png, gui.usage.paper.small.png   30 days (a new card's range) in PAPER, and at the least window
 // and checks:
 //   MODEL    buildModel (pure): the series ranked by tokens, the buckets by day (week) and by month (year), the total;
 //            a round axis; an estimate marked ~, none said "no price known"
@@ -29,7 +29,7 @@
 //            every control with an accessible title
 //   RESET    asked first: the file untouched while asked and after Cancel; reached by the wheel and by Tab alone, Return
 //            asks and Return on Reset empties the file, on the chat's job thread (the message thread waits on nothing)
-//   THEMES   a week in both themes and the least window in PAPER; no missing glyph
+//   THEMES   the page in both themes and the least window in PAPER; no missing glyph
 #include "Probe.h"
 
 #include "editor/Panel.h"
