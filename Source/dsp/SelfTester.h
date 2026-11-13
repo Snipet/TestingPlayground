@@ -71,6 +71,7 @@ namespace playground
         bool next(circuits::Job& job, bool any);
         // `job`'s test, its key claimed: stored when it answers; released either way. Under testMutex_, not mutex_.
         void test(const circuits::Job& job);
+        void testOnce(const circuits::Job& job);   // test()'s work, which may throw (test() catches)
 
         mutable std::mutex mutex_;
         std::condition_variable wake_;
