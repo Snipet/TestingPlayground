@@ -3,31 +3,39 @@
 // gui.usage: the settings card's Usage page (editor/UsagePage.h, SettingsPages.h): what the chat's requests used and
 // cost, drawn from a usage ledger (plugin/Usage.h) seeded into the probe's own folder. Headless over a real Processor,
 // whose chat reads the ledger on its job thread (ChatPort::usage), to <build>/probe-out/:
-//   gui.usage.empty.png     the page with no requests (the chart's frame, "No requests yet.")
-//   gui.usage.week.png      7 days, Tokens, a bar a day stacked by model, the legend
-//   gui.usage.week.cost.png 7 days, Cost
-//   gui.usage.year.png      12 months, a bar a month, the bar picked read out
-//   gui.usage.hover.png     the bar under the pointer read out
-//   gui.usage.paper.png     a week in PAPER
-//   gui.usage.small.png     the least window
-//   gui.usage.reset.png     Reset asked (Reset and Cancel)
+//   gui.usage.empty.png       the page with no requests (the chart's frame, "No requests yet.")
+//   gui.usage.week.png        7 days, Tokens, a bar a day stacked by model, the legend
+//   gui.usage.week.cost.png   7 days, Cost
+//   gui.usage.year.png        12 months, a bar a month, the bar the keys picked read out
+//   gui.usage.hover.png       the bar under the pointer read out
+//   gui.usage.small.png       the least window
+//   gui.usage.reset.png       Reset asked (Reset and Cancel)
+//   gui.usage.paper.png, gui.usage.paper.small.png   a week in PAPER, and at the least window
 // and checks:
-//   EMPTY    no file: "No requests yet.", no bars, the footnote's date, Reset disabled
-//   MODEL    buildModel (pure): the series ranked by tokens, the largest kMaxSeries coloured and the rest Other, the
-//            buckets by day (week, month) and by month (year, all), the total; a nice round axis
-//   WEEK     seven bars, each a day; the stacks' order (the largest model at the foot); Tokens and Cost switch
-//   YEAR     twelve bars, each a month
-//   READOUT  the bar under the pointer, and the one the keys pick (Left, Right, Home, End), read out; the footnote date
-//   RESET    Reset asks first (Reset and Cancel); Cancel keeps them; Reset forgets them (the file emptied), asked on the
-//            chat's job thread (the message thread waits on nothing)
-//   THEMES   a week in both themes; no missing glyph
-//   A11Y     the chart a group, a bar an item named by its readout; the table a table, a row a model and the total
-//   PLACES   the default, the least and a large window: the controls inside the card and its body; each titled
+//   MODEL    buildModel (pure): the series ranked by tokens, the buckets by day (week) and by month (year), the total;
+//            a round axis; an estimate marked ~, none said "no price known"
+//   EMPTY    the ledger read (not merely the card open): "No requests yet.", no bar, the footnote's date, Reset disabled
+//   RANGES   7 days 7 bars, 30 days 30, 12 months 12 (the newest this month), All back to the oldest month kept
+//   STACKS   in the frame, each bar's segments bottom up in the chart's order: the model with the most tokens at the foot
+//   SHOW     Tokens and Cost: the chart's name and the bars' readouts in tokens, then in dollars; the table's costs: an
+//            estimate with ~, the provider's own figure without, "no price known", the total ~ and + when partly priced
+//   READOUT  the bar under the pointer; a click picks a bar, kept once the pointer leaves the chart; End, Home and Right
+//            pick by the keys, and a key's pick holds over the pointer's bar until the pointer moves
+//   A11Y     the chart a group named and valued by its readout, a bar an item each; the table a table, a row a model and
+//            the total
+//   PLACES   the default, the least and a large window: the rail and Done inside the card; the body inside the card (its
+//            clip never crosses the card's edge); every page control that shows within the body's width; every one
+//            reachable by scrolling (inside the content, no taller than the body) and by Tab (the body scrolls to it);
+//            every control with an accessible title
+//   RESET    asked first: the file untouched while asked and after Cancel; reached by the wheel and by Tab alone, Return
+//            asks and Return on Reset empties the file, on the chat's job thread (the message thread waits on nothing)
+//   THEMES   a week in both themes and the least window in PAPER; no missing glyph
 #include "Probe.h"
 
 #include "editor/Panel.h"
 #include "editor/SettingsCard.h"
 #include "editor/SettingsPages.h"
+#include "editor/Theme.h"
 #include "editor/UsagePage.h"
 #include "plugin/ChatStore.h"
 #include "plugin/EditorPort.h"
@@ -45,7 +53,10 @@
 
 #include <juce_core/juce_core.h>
 
+#include <algorithm>
 #include <chrono>
+#include <map>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -207,14 +218,74 @@ PROBE(gui, usage)
             host.click(at->x, at->y);
     };
 
-    // ---- EMPTY: no file ------------------------------------------------------------------------------------------------
+    // What a screen reader is given: the chart's group, its bars in order, the table's rows.
+    struct Seen
+    {
+        funkgui::A11yItem chart;
+        std::vector<funkgui::A11yItem> bars, rows;
+        bool table = false;
+    };
+    const auto seen = [&] {
+        Seen out;
+        std::vector<funkgui::A11yItem> items;
+        panel.accessibility(items);
+        for (const funkgui::A11yItem& it : items)
+            if (it.role == funkgui::a11yrole::group && it.title.rfind("Usage chart:", 0) == 0)
+                out.chart = it;
+        for (const funkgui::A11yItem& it : items)
+        {
+            if (out.chart.id != 0 && it.parent == out.chart.id)
+                out.bars.push_back(it);
+            if (it.role == funkgui::a11yrole::table && it.title == "Usage by model")
+                out.table = true;
+            if (it.role == funkgui::a11yrole::row)
+                out.rows.push_back(it);
+        }
+        return out;
+    };
+    const auto fileRows = [&] { return static_cast<int64_t>(pg::usage::read(pg::usage::processFile()).size()); };
+    const auto rowOf = [&](const Seen& w, const std::string& start) {
+        for (const funkgui::A11yItem& it : w.rows)
+            if (it.title.rfind(start, 0) == 0)
+                return it.title;
+        return std::string();
+    };
+    // The range chosen through its menu, and the ledger read for it (its bars named, as many as the range has).
+    const auto chooseRange = [&](const char* label, std::size_t least) {
+        click(Act::item, up::kRange);
+        const bool chosen = host.pendingMenu() != nullptr && host.chooseMenuItem(label);
+        settle();
+        return chosen && waitFor(host, [&] { return seen().bars.size() >= least; });
+    };
+    // The bars' segments as drawn: by column (its left x), each column's colours from its foot up.
+    const auto stacks = [&] {
+        std::map<int, std::vector<std::pair<float, uint32_t>>> cols;
+        for (const funkgui::Prim& p : host.draw().prims)
+            if (p.tag == pg::ui::kUsageBarTag)
+                cols[static_cast<int>(std::lround(p.x0))].push_back({ p.y1, p.c0 });
+        std::vector<std::vector<uint32_t>> out;
+        for (auto& [x, segs] : cols)
+        {
+            std::sort(segs.begin(), segs.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+            std::vector<uint32_t> c;
+            for (const auto& sg : segs)
+                c.push_back(sg.second);
+            out.push_back(std::move(c));
+        }
+        return out;
+    };
+    const auto packed = [](funkgui::Col c) {
+        return static_cast<uint32_t>(c.r) | static_cast<uint32_t>(c.g) << 8 | static_cast<uint32_t>(c.b) << 16 | static_cast<uint32_t>(c.a) << 24;
+    };
+
+    // ---- EMPTY: the ledger read, and nothing in it ----------------------------------------------------------------------
     panel.openSettings("usage");
     settle();
     P.eq("empty.shown", card.pageId() == "usage" ? 1 : 0, 1);
-    waitFor(host, [&] { return card.revision() > 0; });
+    P.eq("empty.read", waitFor(host, [&] { return seen().chart.description == "No requests yet."; }) ? 1 : 0, 1);
     settle();
     P.eq("empty.no_bars", bars(), 0);
-    // Reset is disabled with nothing to forget.
+    P.eq("empty.no_bar_items", static_cast<int64_t>(seen().bars.size()), 0);
     {
         std::vector<funkgui::A11yItem> items;
         panel.accessibility(items);
@@ -223,7 +294,7 @@ PROBE(gui, usage)
         {
             if (it.title.rfind("Reset:", 0) == 0)
                 resetOff = !it.enabled;
-            if (it.title.find("Prices as of ") != std::string::npos)
+            if (it.title.find("Prices as of " + pg::usage::pricesInUse().asOf) != std::string::npos)
                 dated = true;
         }
         P.eq("empty.reset_off", resetOff ? 1 : 0, 1);
@@ -231,161 +302,256 @@ PROBE(gui, usage)
     }
     writePng(P, host, "gui.usage.empty.png");
 
-    // ---- seed a week of requests, then the page fills --------------------------------------------------------------------
-    pg::usage::add({ pg::usage::dayOf(now), "anthropic", opus, false }, counts(120000, 60000, 24000, 12, 2400000));
-    pg::usage::add({ pg::usage::dayOf(now), "anthropic", opus, true }, counts(10000, 0, 2000, 2, 300000));
-    pg::usage::add({ pg::usage::dayOf(now - 1), "anthropic", opus, false }, counts(50000, 0, 10000, 5, 1000000));
-    pg::usage::add({ pg::usage::dayOf(now - 2), "anthropic", sonnet, false }, counts(40000, 0, 8000, 4, 150000));
+    // ---- seed: Anthropic's estimated (no reported figure), OpenRouter's reported, Gemini's and OpenAI's unpriced ------
+    pg::usage::add({ pg::usage::dayOf(now), "anthropic", opus, false }, counts(120000, 60000, 24000, 12));
+    pg::usage::add({ pg::usage::dayOf(now), "anthropic", opus, true }, counts(10000, 0, 2000, 2));
+    pg::usage::add({ pg::usage::dayOf(now), "anthropic", sonnet, false }, counts(20000, 0, 4000, 2));
+    pg::usage::add({ pg::usage::dayOf(now - 1), "anthropic", opus, false }, counts(50000, 0, 10000, 5));
+    pg::usage::add({ pg::usage::dayOf(now - 2), "anthropic", sonnet, false }, counts(40000, 0, 8000, 4));
     pg::usage::add({ pg::usage::dayOf(now - 3), "openrouter", haiku, false }, counts(8000, 0, 1500, 3, 2000));
     pg::usage::add({ pg::usage::dayOf(now - 4), "gemini", "gemini-3-pro", false }, counts(12000, 0, 3000, 2));
-    pg::usage::add({ pg::usage::dayOf(now - 6), "openai", "gpt-5", false }, counts(6000, 0, 1200, 1, 90000));
-    // An older one, for the year view.
-    pg::usage::add({ pg::usage::dayOf(now - 40), "anthropic", opus, false }, counts(30000, 0, 6000, 3, 600000));
+    pg::usage::add({ pg::usage::dayOf(now - 6), "openai", "gpt-5", false }, counts(6000, 0, 1200, 1));
+    pg::usage::add({ pg::usage::dayOf(now - 40), "anthropic", opus, false }, counts(30000, 0, 6000, 3));   // the year's
+    pg::usage::add({ pg::usage::dayOf(now - 500), "anthropic", sonnet, false }, counts(9000, 0, 900, 1));  // All's (folded)
     pg::usage::flush();
+    const auto monthOf = [](const std::string& d) { return std::stoi(d.substr(0, 4)) * 12 + std::stoi(d.substr(5, 2)) - 1; };
+    const int64_t allMonths = monthOf(today) - monthOf(pg::usage::dayOf(now - 500)) + 1;
+    const int64_t seeded = fileRows();
 
-    // ---- WEEK --------------------------------------------------------------------------------------------------------
-    P.eq("week.filled", waitFor(host, [&] { return bars() > 0; }) ? 1 : 0, 1);
-    settle();
-    P.ge("week.bars", static_cast<double>(bars()), 5.0);        // several days, several models
-    // 7 days for the picture (the default is 30).
-    click(Act::item, up::kRange);
-    P.eq("week.range_menu", host.pendingMenu() != nullptr && host.chooseMenuItem("7 days") ? 1 : 0, 1);
-    waitFor(host, [&] { return card.pageId() == "usage" && bars() > 0; });
+    // ---- RANGES ----------------------------------------------------------------------------------------------------------
+    P.eq("ranges.month_filled", waitFor(host, [&] { return bars() > 0 && seen().bars.size() == 30; }) ? 1 : 0, 1);
+    P.eq("ranges.month_bars", static_cast<int64_t>(seen().bars.size()), 30);
+    P.eq("ranges.year", chooseRange("12 months", 12) ? 1 : 0, 1);
+    {
+        const Seen w = seen();
+        P.eq("ranges.year_bars", static_cast<int64_t>(w.bars.size()), 12);
+        static const char* const kNames[] = { "January", "February", "March", "April", "May", "June",
+                                              "July", "August", "September", "October", "November", "December" };
+        const std::string month = std::string(kNames[std::stoi(today.substr(5, 2)) - 1]) + " " + today.substr(0, 4);
+        P.eq("ranges.year_newest_this_month", !w.bars.empty() && w.bars.back().title.rfind(month, 0) == 0 ? 1 : 0, 1);
+    }
+    P.eq("ranges.all", chooseRange("All", static_cast<std::size_t>(allMonths)) ? 1 : 0, 1);
+    P.eq("ranges.all_bars", static_cast<int64_t>(seen().bars.size()), allMonths);   // back to the oldest month kept
+    P.eq("ranges.week", chooseRange("7 days", 7) ? 1 : 0, 1);
+    waitFor(host, [&] { return seen().bars.size() == 7; });
+    P.eq("ranges.week_bars", static_cast<int64_t>(seen().bars.size()), 7);
     settle();
     writePng(P, host, "gui.usage.week.png");
 
-    // Cost.
+    // ---- STACKS: the largest model at each bar's foot, as the chart orders them -------------------------------------------
+    {
+        const up::Model m = up::buildModel(pg::usage::snapshot(usage::week), usage::week);
+        const funkgui::Theme th = pg::ui::productTheme(funkgui::Theme::byIndex(0));
+        std::vector<uint32_t> order;
+        for (const int c : m.chartColours)
+            order.push_back(packed(up::colourOf(c, th)));
+        P.eq("stacks.opus_first", !m.rows.empty() && m.rows.front().model == opus ? 1 : 0, 1);
+        bool inOrder = true;
+        std::size_t stacked = 0;
+        for (const std::vector<uint32_t>& col : stacks())
+        {
+            // Each colour found in the chart's order, each one after the one under it.
+            std::size_t at = 0;
+            for (const uint32_t c : col)
+            {
+                const auto it = std::find(order.begin() + static_cast<std::ptrdiff_t>(at), order.end(), c);
+                inOrder = inOrder && it != order.end();
+                if (it != order.end())
+                    at = static_cast<std::size_t>(it - order.begin()) + 1;
+            }
+            stacked += col.size() > 1 ? 1 : 0;
+        }
+        P.eq("stacks.foot_up_in_order", inOrder ? 1 : 0, 1);
+        P.ge("stacks.today_stacked", static_cast<double>(stacked), 1.0);   // today: opus under sonnet
+    }
+
+    // ---- SHOW: Tokens, then Cost ------------------------------------------------------------------------------------------
+    {
+        const Seen w = seen();
+        P.eq("show.tokens_named", w.chart.title.find("tokens") != std::string::npos ? 1 : 0, 1);
+        P.eq("show.tokens_bar", !w.bars.empty() && w.bars.back().title.find(" tokens") != std::string::npos ? 1 : 0, 1);
+        P.eq("show.estimate_marked", rowOf(w, opus + ",").find("~$") != std::string::npos ? 1 : 0, 1);
+        const std::string hk = rowOf(w, haiku + ",");
+        P.eq("show.reported_plain", hk.find("$") != std::string::npos && hk.find("~") == std::string::npos ? 1 : 0, 1);
+        P.eq("show.no_price", rowOf(w, "gemini-3-pro,").find("no price known") != std::string::npos ? 1 : 0, 1);
+        const std::string total = rowOf(w, "Total");
+        P.eq("show.total_partial", total.find("~$") != std::string::npos && total.find("+") != std::string::npos ? 1 : 0, 1);
+    }
     click(Act::item, up::kShow);
-    P.eq("week.cost_menu", host.pendingMenu() != nullptr && host.chooseMenuItem("Cost") ? 1 : 0, 1);
+    P.eq("show.cost_menu", host.pendingMenu() != nullptr && host.chooseMenuItem("Cost") ? 1 : 0, 1);
     settle();
+    {
+        const Seen w = seen();
+        P.eq("show.cost_named", w.chart.title.find("cost") != std::string::npos ? 1 : 0, 1);
+        P.eq("show.cost_bar", !w.bars.empty() && w.bars.back().title.find("$") != std::string::npos ? 1 : 0, 1);
+    }
     writePng(P, host, "gui.usage.week.cost.png");
     click(Act::item, up::kShow);
     host.chooseMenuItem("Tokens");
     settle();
 
-    // ---- READOUT: the keys pick a bar ---------------------------------------------------------------------------------
+    // ---- READOUT: the pointer, a click, the keys ----------------------------------------------------------------------
     {
-        const auto chart = card.centreOf(Act::item, up::kChart, W(), H());
-        P.eq("readout.chart_there", chart.has_value() ? 1 : 0, 1);
-        // Focus the chart (Tab from the range select is two stops): click it, then keys.
-        if (chart)
-            host.click(chart->x, chart->y);
-        settle();
-        host.keys("end");
-        settle();
-        std::vector<funkgui::A11yItem> items;
-        panel.accessibility(items);
-        bool readout = false;
-        for (const funkgui::A11yItem& it : items)
-            if (it.title.rfind("Usage chart:", 0) == 0 && !it.value.empty())
-                readout = true;   // the picked bar read out (the group's value)
-        P.eq("readout.keyed", readout ? 1 : 0, 1);
-        host.keys("home");
-        settle();
-        host.keys("right");
+        const funkgui::Rect rail = card.places(W(), H()).rail;
+        const auto valueAfter = [&] {
+            host.draw();                                         // what the readout shows is what was drawn
+            return seen().chart.value;
+        };
+        Seen w = seen();
+        P.eq("readout.bars", static_cast<int64_t>(w.bars.size()), 7);
+        if (w.bars.size() == 7)
+        {
+            const auto centre = [&](int i) {
+                const funkgui::Rect r = seen().bars[static_cast<std::size_t>(i)].bounds;
+                return funkgui::Point{ r.centreX(), r.centreY() };
+            };
+            const auto title = [&](int i) { return seen().bars[static_cast<std::size_t>(i)].title; };
+            host.move(centre(2).x, centre(2).y);
+            P.eq("readout.pointer", valueAfter() == title(2) ? 1 : 0, 1);
+            writePng(P, host, "gui.usage.hover.png");
+            host.click(centre(1).x, centre(1).y);                // picks bar 1, and focuses the chart
+            settle();
+            host.move(rail.centreX(), rail.centreY());
+            P.eq("readout.click_picks", valueAfter() == title(1) ? 1 : 0, 1);
+            host.keys("end");
+            P.eq("readout.key_end", valueAfter() == title(6) ? 1 : 0, 1);
+            host.move(centre(3).x, centre(3).y);
+            P.eq("readout.pointer_again", valueAfter() == title(3) ? 1 : 0, 1);
+            host.keys("home");
+            P.eq("readout.key_over_pointer", valueAfter() == title(0) ? 1 : 0, 1);   // the pointer still over bar 3
+            host.keys("right");
+            P.eq("readout.key_right", valueAfter() == title(1) ? 1 : 0, 1);
+            host.move(centre(4).x, centre(4).y);
+            P.eq("readout.pointer_moves_back", valueAfter() == title(4) ? 1 : 0, 1);
+        }
+        host.move(rail.centreX(), rail.centreY());
         settle();
     }
-    writePng(P, host, "gui.usage.hover.png");
 
-    // ---- YEAR --------------------------------------------------------------------------------------------------------
-    click(Act::item, up::kRange);
-    P.eq("year.menu", host.pendingMenu() != nullptr && host.chooseMenuItem("12 months") ? 1 : 0, 1);
-    P.eq("year.filled", waitFor(host, [&] { return bars() > 0 && card.pageId() == "usage"; }) ? 1 : 0, 1);
-    settle();
+    // ---- YEAR's picture: the newest month picked by the keys --------------------------------------------------------------
+    chooseRange("12 months", 12);
     {
         const auto chart = card.centreOf(Act::item, up::kChart, W(), H());
         if (chart)
             host.click(chart->x, chart->y);
         settle();
         host.keys("end");
-        host.move(card.places(W(), H()).rail.centreX(), card.places(W(), H()).rail.centreY());   // off the chart: the keyed bar shows
+        host.move(card.places(W(), H()).rail.centreX(), card.places(W(), H()).rail.centreY());
         settle();
     }
     writePng(P, host, "gui.usage.year.png");
-    click(Act::item, up::kRange);
-    host.chooseMenuItem("7 days");
+    chooseRange("7 days", 7);
+    waitFor(host, [&] { return seen().bars.size() == 7; });
     settle();
 
-    // ---- A11Y --------------------------------------------------------------------------------------------------------
-    waitFor(host, [&] { return bars() > 0; });
-    settle();
+    // ---- A11Y ---------------------------------------------------------------------------------------------------------
     {
-        std::vector<funkgui::A11yItem> items;
-        panel.accessibility(items);
-        int group = 0, barItems = 0, tables = 0, rows = 0;
-        for (const funkgui::A11yItem& it : items)
-        {
-            if (it.title.rfind("Usage chart:", 0) == 0 && it.role == funkgui::a11yrole::group)
-                ++group;
-            if (it.role == funkgui::a11yrole::table && it.title == "Usage by model")
-                ++tables;
-            if (it.role == funkgui::a11yrole::row)
-                ++rows;
-            if (it.role == funkgui::A11yRole::staticText && it.title.find("request") != std::string::npos
-                && it.title.find("tokens") != std::string::npos && it.parent != 0)
-                ++barItems;
-        }
-        P.eq("a11y.group", group, 1);
-        P.eq("a11y.table", tables, 1);
-        P.ge("a11y.rows", static_cast<double>(rows), 5.0);     // four models and the total
-        P.ge("a11y.bars", static_cast<double>(barItems), 5.0);
+        const Seen w = seen();
+        P.eq("a11y.chart_group", w.chart.id != 0 ? 1 : 0, 1);
+        P.eq("a11y.bars", static_cast<int64_t>(w.bars.size()), 7);
+        bool barsNamed = true;
+        for (const funkgui::A11yItem& b : w.bars)
+            barsNamed = barsNamed && b.role == funkgui::A11yRole::staticText && !b.title.empty();
+        P.eq("a11y.bars_named", barsNamed ? 1 : 0, 1);
+        P.eq("a11y.table", w.table ? 1 : 0, 1);
+        P.eq("a11y.rows", static_cast<int64_t>(w.rows.size()), 6);   // five models in the week and the total
     }
 
-    // ---- PLACES ------------------------------------------------------------------------------------------------------
-    for (const auto [w, h] : { std::pair{ pg::ui::kDefaultWidth, pg::ui::kDefaultHeight },
-                               std::pair{ pg::ui::kMinWidth, pg::ui::kMinHeight }, std::pair{ 1600, 1000 } })
+    // ---- PLACES -------------------------------------------------------------------------------------------------------
+    for (const auto& [w, h] : { std::pair{ pg::ui::kDefaultWidth, pg::ui::kDefaultHeight },
+                                std::pair{ pg::ui::kMinWidth, pg::ui::kMinHeight }, std::pair{ 1600, 1000 } })
     {
         host.resize(w, h);
         settle();
+        host.wheel(W() * 0.5f, H() * 0.5f, 1000.0f);            // the body at its top
+        settle();
+        const std::string k = std::to_string(w);
         const pg::ui::SettingsCard::Places at = card.places(W(), H());
         std::vector<funkgui::A11yItem> items;
         panel.accessibility(items);
-        bool inCard = true;
-        int titled = 0;
+        bool fixedIn = true, shownIn = true, reachable = true;
+        int titled = 0, pageControls = 0;
         for (const pg::ui::SettingsCard::Control& c : at.controls)
         {
-            // Inside the card, or scrolled out of the body when the page is taller than it (the chart and the table).
-            inCard = inCard && (inside(c.r, at.box) || (at.maxScroll > 0.0f && !meet(c.r, at.body)));
-            int found = 0;
+            int named = 0;
             for (const funkgui::A11yItem& it : items)
-                found += it.id == c.id && !it.title.empty() ? 1 : 0;
-            titled += found > 0 || c.act == Act::done ? 1 : 0;
+                named += it.id == c.id && !it.title.empty() ? 1 : 0;
+            titled += named > 0 ? 1 : 0;
+            if (c.act == Act::done || c.act == Act::page)
+            {
+                fixedIn = fixedIn && inside(c.r, at.box);
+                continue;
+            }
+            ++pageControls;
+            if (meet(c.r, at.body))
+                shownIn = shownIn && c.r.x >= at.body.x - 0.5f && c.r.right() <= at.body.right() + 0.5f;
+            const float top = c.r.y - at.body.y + at.scroll;   // its place in the content, unscrolled
+            reachable = reachable && top >= -0.5f && top + c.r.h <= at.contentH + 0.5f && c.r.h <= at.body.h;
         }
-        P.eq("places.in_card_" + std::to_string(w), inCard ? 1 : 0, 1);
-        P.eq("places.titled_" + std::to_string(w), titled, static_cast<int64_t>(at.controls.size()));
+        P.eq("places.fixed_in_card_" + k, fixedIn ? 1 : 0, 1);
+        P.eq("places.body_in_card_" + k, inside(at.body, at.box) ? 1 : 0, 1);
+        P.eq("places.shown_in_body_" + k, shownIn ? 1 : 0, 1);
+        P.eq("places.scroll_reaches_" + k, reachable ? 1 : 0, 1);
+        P.eq("places.titled_" + k, titled, static_cast<int64_t>(at.controls.size()));
+        // Tab alone: each page control focused in turn lies wholly in the body (the body scrolled to it).
+        std::set<std::pair<int, int>> reached;
+        for (std::size_t i = 0; i < at.controls.size() + 1; ++i)
+        {
+            host.keys("tab");
+            settle();
+            const auto f = card.focused(W(), H());
+            const auto placed = card.places(W(), H());
+            if (f && f->act != Act::done && f->act != Act::page && inside(f->r, placed.body))
+                reached.insert({ static_cast<int>(f->act), f->index });
+        }
+        P.eq("places.tab_reaches_" + k, static_cast<int64_t>(reached.size()), pageControls);
         if (w == pg::ui::kMinWidth)
+        {
+            host.wheel(W() * 0.5f, H() * 0.5f, 1000.0f);
+            settle();
             writePng(P, host, "gui.usage.small.png");
+        }
     }
     host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
     settle();
 
-    // ---- RESET: asked first ------------------------------------------------------------------------------------------
-    P.eq("reset.reached", reach(Act::item, up::kReset) ? 1 : 0, 1);
-    click(Act::item, up::kReset);
-    settle();
-    {
-        // Reset and Cancel now; Cancel keeps them.
-        reach(Act::item, up::kResetYes);
-        const auto yes = card.centreOf(Act::item, up::kResetYes, W(), H());
-        const auto no = card.centreOf(Act::item, up::kResetNo, W(), H());
-        P.eq("reset.asked", yes.has_value() && no.has_value() ? 1 : 0, 1);
-        writePng(P, host, "gui.usage.reset.png");
-        click(Act::item, up::kResetNo);
-        settle();
-        P.ge("reset.cancel_keeps", static_cast<double>(bars()), 1.0);
-    }
-    // Reset forgets them.
-    reach(Act::item, up::kReset);
+    // ---- RESET: asked first, by the wheel and the pointer, then by the keys alone -----------------------------------------
+    P.eq("reset.reached_wheel", reach(Act::item, up::kReset) ? 1 : 0, 1);
     click(Act::item, up::kReset);
     settle();
     reach(Act::item, up::kResetYes);
-    click(Act::item, up::kResetYes);
-    P.eq("reset.emptied", waitFor(host, [&] { return bars() == 0; }) ? 1 : 0, 1);
+    P.eq("reset.asked", card.centreOf(Act::item, up::kResetYes, W(), H()).has_value()
+                            && card.centreOf(Act::item, up::kResetNo, W(), H()).has_value() ? 1 : 0, 1);
+    P.eq("reset.not_while_asked", fileRows(), seeded);
+    writePng(P, host, "gui.usage.reset.png");
+    click(Act::item, up::kResetNo);
     settle();
+    P.eq("reset.cancel_keeps", fileRows(), seeded);
+    P.eq("reset.cancel_back", card.centreOf(Act::item, up::kReset, W(), H()).has_value() ? 1 : 0, 1);
     {
-        const std::vector<pg::usage::Row> left = pg::usage::read(pg::usage::processFile());
-        P.eq("reset.file_empty", static_cast<int64_t>(left.size()), 0);
+        host.wheel(W() * 0.5f, H() * 0.5f, 1000.0f);            // back to the top: the keys alone from here
+        settle();
+        const auto tabTo = [&](int index) {
+            for (std::size_t i = 0; i < card.places(W(), H()).controls.size() + 1; ++i)
+            {
+                const auto f = card.focused(W(), H());
+                if (f && f->act == Act::item && f->index == index)
+                    return inside(f->r, card.places(W(), H()).body);
+                host.keys("tab");
+                settle();
+            }
+            return false;
+        };
+        P.eq("reset.tab_reaches", tabTo(up::kReset) ? 1 : 0, 1);
+        host.keys("return");
+        settle();
+        P.eq("reset.return_asks", tabTo(up::kResetYes) ? 1 : 0, 1);
+        P.eq("reset.still_kept", fileRows(), seeded);
+        host.keys("return");
     }
+    P.eq("reset.emptied", waitFor(host, [&] { return seen().chart.description == "No requests yet."; }) ? 1 : 0, 1);
+    P.eq("reset.file_empty", fileRows(), 0);
+    settle();
 
     // ---- THEMES ------------------------------------------------------------------------------------------------------
     host.keys("escape");
@@ -396,9 +562,10 @@ PROBE(gui, usage)
         funkgui::HeadlessHost paperHost(paper, 1, 2.0f);
         paperHost.setZoom({ 100, 125, 150, 200 }, 100);
         paperHost.settle();
-        // Seed again (the reset emptied it).
-        pg::usage::add({ pg::usage::dayOf(now), "anthropic", opus, false }, counts(120000, 60000, 24000, 12, 2400000));
-        pg::usage::add({ pg::usage::dayOf(now - 2), "anthropic", sonnet, false }, counts(40000, 0, 8000, 4, 150000));
+        pg::usage::add({ pg::usage::dayOf(now), "anthropic", opus, false }, counts(120000, 60000, 24000, 12));
+        pg::usage::add({ pg::usage::dayOf(now), "anthropic", sonnet, false }, counts(20000, 0, 4000, 2));
+        pg::usage::add({ pg::usage::dayOf(now - 2), "anthropic", sonnet, false }, counts(40000, 0, 8000, 4));
+        pg::usage::add({ pg::usage::dayOf(now - 3), "openrouter", haiku, false }, counts(8000, 0, 1500, 3, 2000));
         pg::usage::add({ pg::usage::dayOf(now - 4), "gemini", "gemini-3-pro", false }, counts(12000, 0, 3000, 2));
         pg::usage::flush();
         paper.openSettings("usage");
@@ -407,10 +574,11 @@ PROBE(gui, usage)
         const auto paperBars = [&] { return tagPrims(paperHost.draw(), pg::ui::kUsageBarTag); };
         P.eq("themes.paper_filled", waitFor(paperHost, [&] { return paperBars() > 0; }) ? 1 : 0, 1);
         paperHost.settle();
-        const std::string path = probe::outPath("gui.usage.paper.png");
-        P.eq("gui.usage.paper.png.written", paperHost.writePng(path.c_str(), 2) ? 1 : 0, 1);
-        P.eq("gui.usage.paper.png.glyphs", static_cast<int64_t>(paperHost.draw().missingGlyphs), 0);
-        std::printf("wrote %s\n", path.c_str());
+        writePng(P, paperHost, "gui.usage.paper.png");
+        paperHost.resize(pg::ui::kMinWidth, pg::ui::kMinHeight);
+        paperHost.tick(2);
+        paperHost.settle();
+        writePng(P, paperHost, "gui.usage.paper.small.png");
         funkgui::UiPreferences::get().setTheme(0);
     }
 
