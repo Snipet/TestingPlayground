@@ -54,7 +54,50 @@ namespace playground::ui
         constexpr int kMaxFind = 200;                    // characters in the find bar's fields
         constexpr int kMaxGoTo = 16;                     // characters in the go-to-line field ("123456:789")
         constexpr float kGoToW = 330.0f;
-        constexpr int kMaxMatches = 10000;
+        constexpr int kMaxMatches = 10000;               // in the tab shown, or in every file
+        constexpr float kFilesExtraW = 60.0f;            // the bar wider with All files on (its counter's words)
+        constexpr int kListRows = 8;                     // the results list's rows shown at once
+        constexpr float kFindIconW = 22.0f;              // the status line's magnifier
+        // The matches in `E`'s lines, appended to `out` until it holds `limit` (a netlist's *@ lines left out with
+        // `skipLayout`: its drawing); false when the cap cut them.
+        bool scanMatches(const funkgui::TextEditor& E, std::string_view needle, bool matchCase, bool wholeWord, bool skipLayout,
+                         std::size_t limit, std::vector<funkgui::TextRange>& out)
+        {
+            const auto low = [&](char c) { return matchCase ? c : static_cast<char>(std::tolower(static_cast<unsigned char>(c))); };
+            for (int l = 0; l < E.lineCount(); ++l)
+            {
+                const std::string& s = E.line(l);
+                if (skipLayout && cir::isLayoutLine(s))
+                    continue;
+                for (std::size_t k = 0; k + needle.size() <= s.size(); ++k)
+                {
+                    bool same = true;
+                    for (std::size_t j = 0; j < needle.size() && same; ++j)
+                        same = low(s[k + j]) == low(needle[j]);
+                    if (!same)
+                        continue;
+                    if (wholeWord && ((k > 0 && lang::isIdentChar(s[k - 1]))
+                                      || (k + needle.size() < s.size() && lang::isIdentChar(s[k + needle.size()]))))
+                        continue;
+                    if (out.size() >= limit)
+                        return false;
+                    out.push_back({ { l, static_cast<int>(k) }, { l, static_cast<int>(k + needle.size()) } });
+                    k += needle.size() - 1;
+                }
+            }
+            return true;
+        }
+        std::string thousands(std::size_t n)             // "10,000"
+        {
+            std::string d = std::to_string(n), out;
+            for (std::size_t i = 0; i < d.size(); ++i)
+            {
+                if (i > 0 && (d.size() - i) % 3 == 0)
+                    out += ',';
+                out += d[i];
+            }
+            return out;
+        }
         // The overlays' measures at 12 px, the default text size: each scales with the size (CodeAssist::sizeScale).
         constexpr float kCardCodePx = 11.5f;             // the signature's and the hover card's code
         constexpr float kCodeLineH = 18.0f;              // ... a line of it
@@ -969,14 +1012,28 @@ namespace playground::ui
             }
             if (cmd && e.mods.alt && f)
             {
-                openFind(true);
+                openFind(true, false);
+                return true;
+            }
+            if (cmd && e.mods.shift && !e.mods.alt && is('f'))
+            {
+                openFind(false, true);                   // find in all files
                 return true;
             }
             if (cmd && !e.mods.alt && is('f'))
             {
-                openFind(false);
+                openFind(false, false);
                 return true;
             }
+#if !defined(__APPLE__)
+            // Ctrl-H, find and replace: Windows' and Linux's key (JUCE's command key is Ctrl there). On a Mac Cmd-H is
+            // the system's Hide, and stays so.
+            if ((cmd || e.mods.ctrl) && !e.mods.alt && !e.mods.shift && is('h'))
+            {
+                openFind(true, false);
+                return true;
+            }
+#endif
             if (cmd && is('g'))
             {
                 findNext(!e.mods.shift);
@@ -1297,6 +1354,8 @@ namespace playground::ui
             return true;
         if (findOpen_ && findBarRect().contains(p))
             return true;
+        if (listShown() && listRect().contains(p))
+            return true;
         if (gotoOpen_ && goToBarRect().contains(p))
             return true;
         if (completion_ && popupGeometry(panelW_, panelH_).box.contains(p))
@@ -1309,7 +1368,7 @@ namespace playground::ui
         if (statusRect().contains(p))
         {
             const StatusParts s = statusParts();
-            return s.formatOnRun.contains(p) || s.panel.contains(p) || s.position.contains(p) || s.size.contains(p)
+            return s.find.contains(p) || s.formatOnRun.contains(p) || s.panel.contains(p) || s.position.contains(p) || s.size.contains(p)
                            || (s.problems.contains(p) && !viewShown())
                        ? funkgui::Cursor::pointingHand
                        : funkgui::Cursor::normal;
@@ -1317,6 +1376,8 @@ namespace playground::ui
         if (gotoOpen_ && goToBarRect().contains(p))
             return funkgui::Cursor::normal;
         if (findOpen_ && findBarRect().contains(p))
+            return funkgui::Cursor::pointingHand;
+        if (listShown() && listRect().contains(p))
             return funkgui::Cursor::pointingHand;
         if (completion_ && popupGeometry(panelW_, panelH_).box.contains(p))
             return funkgui::Cursor::pointingHand;
@@ -1350,6 +1411,11 @@ namespace playground::ui
             if (goToBarRect().contains(p))
                 return true;                             // the field keeps the keys
             closeGoTo();
+        }
+        if (statusParts().find.contains(p))
+        {
+            openFind(true);                              // the bar with its replace row, All files as it was
+            return true;
         }
         if (statusRect().contains(p))
         {
@@ -1424,6 +1490,8 @@ namespace playground::ui
                 wholeWord_ = !wholeWord_;
                 updateMatches();
             }
+            else if (f.filesBtn.contains(p))
+                setAllFiles(!allFiles_);
             else if (f.prev.contains(p))
                 findNext(false);
             else if (f.next.contains(p))
@@ -1440,14 +1508,55 @@ namespace playground::ui
                 findField_ = 0;
             return true;
         }
+        if (listShown() && listRect().contains(p))
+        {
+            // The results list: its bar drags it; a row goes to its match, the bar keeping the keys (Up and Down walk on).
+            findFocus_ = true;
+            findField_ = 0;
+            ed().setFocused(false);
+            layoutList();
+            const Rect r = listRect();
+            if (!e.popup && list_.press(p, r))
+            {
+                listDrag_ = true;
+                return true;
+            }
+            const float y = p.y - (r.y + 4.0f) + list_.offset;
+            const int k = static_cast<int>(std::floor(y / rowH()));
+            if (y >= 0.0f && k >= 0 && k < static_cast<int>(all_.size()) && p.y < r.bottom() - 4.0f)
+                showFileMatch(k);
+            return true;
+        }
         findFocus_ = false;
         if (e.mods.cmd && !e.popup && ed().contains(p) && goToDefinitionAt(p))
             return true;
         return false;
     }
 
+    void CodeAssist::pointerDrag(funkgui::Point p)
+    {
+        if (listDrag_ && listShown())
+        {
+            layoutList();
+            list_.drag(p, listRect());
+        }
+    }
+
+    void CodeAssist::pointerUp()
+    {
+        listDrag_ = false;
+        list_.release();
+    }
+
     bool CodeAssist::wheel(const funkgui::WheelEvent& e)
     {
+        // The results list scrolls as the code does (ui::Scroll: the delta as JUCE gave it, never WheelEvent::reversed).
+        if (listShown() && listRect().contains({ e.x, e.y }) && !e.mods.cmd && !e.mods.ctrl)
+        {
+            layoutList();
+            (void)list_.wheel(e.dy, e.smooth);
+            return true;                                 // over the list: never the text under it
+        }
         hover_.reset();                                  // the text moves under it
         still_ = 0.0f;
         // Cmd-wheel (Ctrl-wheel off the Mac) over the text: the size, a step a notch, the wheel's own way (as the
@@ -1507,7 +1616,7 @@ namespace playground::ui
             updateConditionals();
         }
         // Find's matches follow the text.
-        if (findOpen_ && (E.revision() != matchesRev_ || activeTab() != matchesTab_))
+        if (findOpen_ && (E.revision() != matchesRev_ || activeTab() != matchesTab_ || (allFiles_ && filesRevision() != allRev_)))
             updateMatches();
         // The hover card: the pointer still over a word.
         if (std::fabs(pointer.x - lastPointer_.x) > 0.5f || std::fabs(pointer.y - lastPointer_.y) > 0.5f)
@@ -1597,7 +1706,12 @@ namespace playground::ui
         k.mix(findOpen_).mix(replaceOpen_).mix(findFocus_).mix(findField_).mix(matchCase_).mix(wholeWord_);
         k.mix(findEdit_.buffer).mix(findEdit_.caret).mix(findEdit_.allSelected);
         k.mix(replaceEdit_.buffer).mix(replaceEdit_.caret).mix(replaceEdit_.allSelected);
-        k.mix(matches_.size()).mix(current_);
+        k.mix(matches_.size()).mix(current_).mix(allFiles_).mix(all_.size()).mix(matchFiles_).mix(capped_);
+        if (listShown())
+        {
+            layoutList();
+            k.mix(list_.key()).mix(listRect());
+        }
         k.mix(gotoOpen_).mix(gotoBad_).mix(gotoEdit_.buffer).mix(gotoEdit_.caret).mix(gotoEdit_.allSelected);
         // Format on Run is a machine-wide switch (another window may flip it), the Panel switch the session's.
         k.mix(statusWords_ ? statusWords_() : std::string()).mix(formatOnRun());
@@ -2089,12 +2203,14 @@ namespace playground::ui
     }
 
     // ---- find and replace -------------------------------------------------------------------------------------------
-    void CodeAssist::openFind(bool replace)
+    void CodeAssist::openFind(bool replace, std::optional<bool> allFiles)
     {
         funkgui::TextEditor& E = ed();
         gotoOpen_ = false;
         findOpen_ = true;
         replaceOpen_ = !E.options().readOnly && (replaceOpen_ || replace);   // nothing to replace in a read-only text
+        if (allFiles)
+            allFiles_ = *allFiles;
         findFocus_ = true;
         findField_ = replace && !findEdit_.buffer.empty() && !E.hasSelection() ? 1 : 0;
         const std::string sel = E.selectedText();
@@ -2113,7 +2229,12 @@ namespace playground::ui
         findOpen_ = false;
         findFocus_ = false;
         matches_.clear();
+        all_.clear();
+        matchFiles_ = 0;
+        capped_ = false;
         current_ = -1;
+        listDrag_ = false;
+        list_.release();
         // Every tab's: one shown while the bar was open keeps its matches (one shown again with the bar open has its
         // own set again by updateMatches).
         for (int i = 0; i < tabs_.count(); ++i)
@@ -2123,6 +2244,20 @@ namespace playground::ui
             ed().setFocused(true);
     }
 
+    void CodeAssist::setAllFiles(bool on)
+    {
+        if (allFiles_ == on)
+            return;
+        allFiles_ = on;
+        list_.offset = 0.0f;
+        if (!findOpen_)
+            return;
+        if (!on)                                         // the other tabs' marks go: only the shown one's are found
+            for (int i = 0; i < tabs_.count(); ++i)
+                tabs_.editor(i).setDecorations({}, funkgui::kFindDecorations);
+        updateMatches();
+    }
+
     void CodeAssist::setFindText(const std::string& text)
     {
         if (!findOpen_)
@@ -2130,7 +2265,7 @@ namespace playground::ui
         findEdit_.set(text, kMaxFind);
         findEdit_.allSelected = false;
         updateMatches();
-        if (!matches_.empty())
+        if (findCount() > 0)
             findNext(true);
     }
 
@@ -2147,31 +2282,53 @@ namespace playground::ui
         matchesRev_ = E.revision();
         matchesTab_ = activeTab();
         matches_.clear();
+        all_.clear();
+        matchFiles_ = 0;
+        capped_ = false;
         const std::string& needle = findEdit_.buffer;
         matchesNeedle_ = needle;
-        if (!needle.empty())
-        {
-            const auto low = [&](char c) { return matchCase_ ? c : static_cast<char>(std::tolower(static_cast<unsigned char>(c))); };
-            for (int l = 0; l < E.lineCount() && static_cast<int>(matches_.size()) < kMaxMatches; ++l)
-            {
-                const std::string& s = E.line(l);
-                for (std::size_t k = 0; k + needle.size() <= s.size(); ++k)
-                {
-                    bool same = true;
-                    for (std::size_t j = 0; j < needle.size() && same; ++j)
-                        same = low(s[k + j]) == low(needle[j]);
-                    if (!same)
-                        continue;
-                    if (wholeWord_ && ((k > 0 && lang::isIdentChar(s[k - 1]))
-                                       || (k + needle.size() < s.size() && lang::isIdentChar(s[k + needle.size()]))))
-                        continue;
-                    matches_.push_back({ { l, static_cast<int>(k) }, { l, static_cast<int>(k + needle.size()) } });
-                    k += needle.size() - 1;
-                }
-            }
-        }
-        // The current one: the selection's, else none.
         current_ = -1;
+        if (allFiles_)
+        {
+            // Every file's tab as text, in the tabs' order: never a view (the IR's is past them), never a netlist's *@
+            // lines (its drawing: a replace there would move it). The cap holds across them.
+            allRev_ = filesRevision();
+            const int files = tabs_.count();
+            std::vector<funkgui::TextRange> found;
+            for (int i = 0; i < files; ++i)
+            {
+                found.clear();
+                funkgui::TextEditor& T = tabs_.editor(i);
+                if (!needle.empty() && !capped_)
+                    capped_ = !scanMatches(T, needle, matchCase_, wholeWord_, fileKindOf(tabs_.name(i)) == FileKind::Circuit,
+                                           static_cast<std::size_t>(kMaxMatches) - all_.size(), found);
+                matchFiles_ += found.empty() ? 0 : 1;
+                for (const funkgui::TextRange& r : found)
+                {
+                    if (i == matchesTab_ && E.hasSelection() && r.from == E.selectionStart() && r.to == E.selectionEnd())
+                        current_ = static_cast<int>(all_.size());
+                    all_.push_back({ i, r });
+                    if (i == matchesTab_)
+                        matches_.push_back(r);
+                }
+                std::vector<funkgui::Decoration> decos;
+                decos.reserve(found.size());
+                for (std::size_t k = 0; k < found.size(); ++k)
+                {
+                    const bool cur = current_ >= 0 && all_[static_cast<std::size_t>(current_)].tab == i
+                                     && all_[static_cast<std::size_t>(current_)].range.from == found[k].from;
+                    decos.push_back({ found[k].from, found[k].to, cur ? funkgui::DecorationKind::findCurrent : funkgui::DecorationKind::findMatch });
+                }
+                T.setDecorations(std::move(decos), funkgui::kFindDecorations);
+            }
+            if (matchesTab_ >= files)                    // a view shown: none of its text is found
+                E.setDecorations({}, funkgui::kFindDecorations);
+            layoutList();
+            return;
+        }
+        if (!needle.empty())
+            capped_ = !scanMatches(E, needle, matchCase_, wholeWord_, false, static_cast<std::size_t>(kMaxMatches), matches_);
+        // The current one: the selection's, else none.
         for (std::size_t k = 0; k < matches_.size(); ++k)
             if (E.hasSelection() && matches_[k].from == E.selectionStart() && matches_[k].to == E.selectionEnd())
                 current_ = static_cast<int>(k);
@@ -2184,12 +2341,61 @@ namespace playground::ui
 
     void CodeAssist::showMatch(int k)
     {
+        if (allFiles_)
+        {
+            showFileMatch(k);
+            return;
+        }
         if (k < 0 || k >= static_cast<int>(matches_.size()))
             return;
         funkgui::TextEditor& E = ed();
         E.select(matches_[static_cast<std::size_t>(k)].from, matches_[static_cast<std::size_t>(k)].to);
         E.scrollToCaret();
         updateMatches();
+    }
+
+    void CodeAssist::showFileMatch(int k)
+    {
+        if (k < 0 || k >= static_cast<int>(all_.size()))
+            return;
+        const FileMatch m = all_[static_cast<std::size_t>(k)];
+        if (m.tab != activeTab())
+        {
+            // Its tab shown as the user's click shows it (the strip brings it into view), a netlist in its Netlist view.
+            if (tabs_.showText)
+                tabs_.showText(m.tab);
+            else
+                tabs_.show(m.tab);
+            if (activeTab() != m.tab || !findOpen_)
+                return;
+        }
+        funkgui::TextEditor& E = ed();
+        if (findFocus_)
+            E.setFocused(false);                         // the bar keeps the keys
+        E.select(m.range.from, m.range.to);
+        E.scrollToCaret();
+        updateMatches();
+        if (current_ >= 0 && listShown())
+        {
+            layoutList();
+            const float rh = rowH();
+            list_.reveal(static_cast<float>(current_) * rh, static_cast<float>(current_ + 1) * rh);
+        }
+    }
+
+    bool CodeAssist::currentRange(funkgui::TextRange& out) const
+    {
+        if (allFiles_)
+        {
+            if (current_ < 0 || current_ >= static_cast<int>(all_.size()) || all_[static_cast<std::size_t>(current_)].tab != activeTab())
+                return false;
+            out = all_[static_cast<std::size_t>(current_)].range;
+            return true;
+        }
+        if (current_ < 0 || current_ >= static_cast<int>(matches_.size()))
+            return false;
+        out = matches_[static_cast<std::size_t>(current_)];
+        return true;
     }
 
     bool CodeAssist::findNext(bool forward)
@@ -2200,11 +2406,51 @@ namespace playground::ui
                 openFind(false);
             return false;
         }
-        if (matchesRev_ != ed().revision() || matchesTab_ != activeTab() || matchesNeedle_ != findEdit_.buffer)
+        if (matchesRev_ != ed().revision() || matchesTab_ != activeTab() || matchesNeedle_ != findEdit_.buffer
+            || (allFiles_ && allRev_ != filesRevision()))
             updateMatches();
+        funkgui::TextEditor& E = ed();
+        if (allFiles_)
+        {
+            // Every match in the tabs' order, from the selection in the tab shown (from the first, or the last, while a
+            // view shows), round to the first again.
+            if (all_.empty())
+                return false;
+            const int at = activeTab();
+            const bool view = at >= tabs_.count();
+            const TextPos from = forward ? E.selectionEnd() : E.selectionStart();
+            const auto selected = [&](const FileMatch& m) {
+                return m.tab == at && E.hasSelection() && m.range.from == E.selectionStart();
+            };
+            const int n = static_cast<int>(all_.size());
+            int k = -1;
+            if (forward)
+            {
+                for (int i = 0; i < n && k < 0 && !view; ++i)
+                {
+                    const FileMatch& m = all_[static_cast<std::size_t>(i)];
+                    if ((m.tab > at || (m.tab == at && from <= m.range.from)) && !selected(m))
+                        k = i;
+                }
+                if (k < 0)
+                    k = 0;
+            }
+            else
+            {
+                for (int i = n - 1; i >= 0 && k < 0 && !view; --i)
+                {
+                    const FileMatch& m = all_[static_cast<std::size_t>(i)];
+                    if ((m.tab < at || (m.tab == at && m.range.to <= from)) && !selected(m))
+                        k = i;
+                }
+                if (k < 0)
+                    k = n - 1;
+            }
+            showFileMatch(k);
+            return true;
+        }
         if (matches_.empty())
             return false;
-        funkgui::TextEditor& E = ed();
         const TextPos from = forward ? E.selectionEnd() : E.selectionStart();
         int k = -1;
         if (forward)
@@ -2230,9 +2476,9 @@ namespace playground::ui
     bool CodeAssist::replaceOne()
     {
         funkgui::TextEditor& E = ed();
-        if (current_ < 0 || current_ >= static_cast<int>(matches_.size()))
+        funkgui::TextRange m;
+        if (!currentRange(m))
             return findNext(true);
-        const funkgui::TextRange m = matches_[static_cast<std::size_t>(current_)];
         if (!E.replaceRange(m.from, m.to, replaceEdit_.buffer))
             return false;
         updateMatches();
@@ -2244,6 +2490,37 @@ namespace playground::ui
     {
         funkgui::TextEditor& E = ed();
         updateMatches();
+        if (allFiles_)
+        {
+            // Every file's matches, one applyEdits a tab, tied into one undo step across them (Tabs::editAcross).
+            std::vector<std::pair<int, std::vector<funkgui::TextEdit>>> edits;
+            for (const FileMatch& m : all_)
+            {
+                if (tabs_.editor(m.tab).options().readOnly)
+                    continue;
+                if (edits.empty() || edits.back().first != m.tab)
+                    edits.push_back({ m.tab, {} });
+                edits.back().second.push_back({ m.range.from, m.range.to, replaceEdit_.buffer });
+            }
+            int n = 0;
+            for (const auto& e : edits)
+                n += static_cast<int>(e.second.size());
+            const int files = static_cast<int>(edits.size());
+            if (n == 0)
+                return 0;
+            bool done = false;
+            if (tabs_.editAcross)
+                done = tabs_.editAcross(std::move(edits));
+            else
+                for (auto& e : edits)
+                    done = tabs_.editor(e.first).applyEdits(std::move(e.second)) || done;
+            if (!done)
+                return 0;
+            updateMatches();
+            tabs_.notice("REPLACED " + thousands(static_cast<std::size_t>(n)) + " IN " + std::to_string(files)
+                         + (files == 1 ? " FILE" : " FILES"));
+            return n;
+        }
         std::vector<funkgui::TextEdit> edits;
         for (const funkgui::TextRange& m : matches_)
             edits.push_back({ m.from, m.to, replaceEdit_.buffer });
@@ -2253,6 +2530,70 @@ namespace playground::ui
         updateMatches();
         tabs_.notice("REPLACED " + std::to_string(n));
         return n;
+    }
+
+    std::string CodeAssist::findCountText() const
+    {
+        if (findEdit_.buffer.empty())
+            return {};
+        const std::size_t n = allFiles_ ? all_.size() : matches_.size();
+        if (n == 0)
+            return "No results";
+        const std::string total = thousands(n) + (capped_ ? "+" : "");
+        std::string t = current_ >= 0 ? std::to_string(current_ + 1) + " of " + total
+                                      : total + (allFiles_ ? "" : " found");
+        if (allFiles_)
+            t += " in " + std::to_string(matchFiles_) + (matchFiles_ == 1 ? " file" : " files");
+        return t;
+    }
+
+    int CodeAssist::findMatchTab(int k) const
+    {
+        return k >= 0 && k < static_cast<int>(all_.size()) ? all_[static_cast<std::size_t>(k)].tab : -1;
+    }
+
+    funkgui::TextRange CodeAssist::findMatchRange(int k) const
+    {
+        return k >= 0 && k < static_cast<int>(all_.size()) ? all_[static_cast<std::size_t>(k)].range : funkgui::TextRange{};
+    }
+
+    // ---- the results list (all files) ---------------------------------------------------------------------------
+    bool CodeAssist::listShown() const { return findOpen_ && allFiles_ && !all_.empty() && !listRect().isEmpty(); }
+
+    funkgui::Rect CodeAssist::listRect() const
+    {
+        // Under the bar, as wide; kListRows rows of the text size at most, as many as the editor leaves room for.
+        const Rect b = findBarRect();
+        const Rect e = editorRect();
+        const float rh = rowH();
+        const float top = b.bottom() + 4.0f;
+        const int room = static_cast<int>(std::floor((e.bottom() - 8.0f - top - 8.0f) / rh));
+        const int rows = std::min({ kListRows, static_cast<int>(all_.size()), room });
+        if (rows < 1)
+            return {};
+        return { b.x, top, b.w, static_cast<float>(rows) * rh + 8.0f };
+    }
+
+    void CodeAssist::layoutList() const
+    {
+        const Rect r = listRect();
+        list_.row = rowH();
+        list_.view = std::max(0.0f, r.h - 8.0f);
+        list_.content = static_cast<float>(all_.size()) * rowH();
+        list_.clamp();
+    }
+
+    funkgui::Rect CodeAssist::findListRow(int k) const
+    {
+        if (!listShown() || k < 0 || k >= static_cast<int>(all_.size()))
+            return {};
+        layoutList();
+        const Rect r = listRect();
+        const float rh = rowH();
+        const float y = r.y + 4.0f + static_cast<float>(k) * rh - list_.offset;
+        if (y < r.y + 4.0f - 0.5f || y + rh > r.bottom() - 4.0f + 0.5f)
+            return {};
+        return { r.x + 4.0f, y, r.w - 8.0f, rh };
     }
 
     bool CodeAssist::findKey(const funkgui::KeyEvent& e)
@@ -2298,6 +2639,8 @@ namespace playground::ui
                         replaceOpen_ = true;
                         findField_ = 1;
                     }
+                    else if ((c == 'f' || c == 'F') && e.mods.shift)
+                        setAllFiles(true);               // Shift-Cmd-F: find in all files
                     else if (c == 'f' || c == 'F' || c == 'a' || c == 'A')
                         f.allSelected = !f.buffer.empty();
                     if (findField_ == 0)
@@ -2320,11 +2663,24 @@ namespace playground::ui
         f.key(e, kMaxFind);
         if (findField_ == 0 && f.buffer != before)
         {
-            // Incremental: the first match from the selection's start.
+            // Incremental: the first match from the selection's start (all files: in the tab shown, else the next tab's).
             funkgui::TextEditor& E = ed();
             const TextPos from = E.selectionStart();
             E.setCaret(from);
             updateMatches();
+            if (allFiles_)
+            {
+                const int at = activeTab();
+                for (std::size_t k = 0; k < all_.size(); ++k)
+                    if (all_[k].tab > at || (all_[k].tab == at && from <= all_[k].range.from))
+                    {
+                        showFileMatch(static_cast<int>(k));
+                        return true;
+                    }
+                if (!all_.empty())
+                    showFileMatch(0);
+                return true;
+            }
             for (std::size_t k = 0; k < matches_.size(); ++k)
                 if (from <= matches_[k].from)
                 {
@@ -2489,7 +2845,7 @@ namespace playground::ui
     funkgui::Rect CodeAssist::findBarRect() const
     {
         const Rect e = editorRect();
-        const float w = std::min(kFindW * std::max(1.0f, sizeScale()), e.w - 100.0f);
+        const float w = std::min((kFindW + (allFiles_ ? kFilesExtraW : 0.0f)) * std::max(1.0f, sizeScale()), e.w - 100.0f);
         const float rh = findRowH();
         const float h = replaceOpen_ ? 2.0f * rh + 6.0f : rh + 4.0f;
         const float minimap = 72.0f + 18.0f;
@@ -2507,8 +2863,12 @@ namespace playground::ui
         f.close = { right - 22.0f, y + 2.0f, 22.0f, h - 4.0f };
         f.next = { f.close.x - 24.0f, y + 2.0f, 22.0f, h - 4.0f };
         f.prev = { f.next.x - 24.0f, y + 2.0f, 22.0f, h - 4.0f };
-        f.count = { f.prev.x - 70.0f, y, 66.0f, h };
-        f.wordBtn = { f.count.x - 26.0f, y + 3.0f, 24.0f, h - 6.0f };
+        // The counter as wide as its words (66 px at least), leaving the field 80 px: all files' are longer.
+        const float roomLeft = f.prev.x - 4.0f - (f.toggle.right() + 4.0f) - 3.0f * 26.0f - 4.0f - 80.0f;
+        const float countW = std::clamp(widthOf(findCountText(), chat::kSmall) + 10.0f, 66.0f, std::max(66.0f, roomLeft));
+        f.count = { f.prev.x - 4.0f - countW, y, countW, h };
+        f.filesBtn = { f.count.x - 26.0f, y + 3.0f, 24.0f, h - 6.0f };
+        f.wordBtn = { f.filesBtn.x - 26.0f, y + 3.0f, 24.0f, h - 6.0f };
         f.caseBtn = { f.wordBtn.x - 26.0f, y + 3.0f, 24.0f, h - 6.0f };
         f.field = { f.toggle.right() + 4.0f, y, std::max(40.0f, f.caseBtn.x - 4.0f - f.toggle.right() - 4.0f), h };
         const float y2 = y + rh;
@@ -2540,7 +2900,10 @@ namespace playground::ui
         char buf[64];
         std::snprintf(buf, sizeof buf, "Ln %d, Col %d", E.caret().line + 1, E.caret().col + 1);
         s.position = take(buf, E.hasSelection() ? widthOf(" (999 selected)", st) : 0.0f);
-        s.problems = { r.x + 4.0f, r.y, std::max(0.0f, std::min(200.0f, s.position.x - r.x - 8.0f)), r.h };
+        // The magnifier at the line's left: find and replace (a click; Cmd-F, Cmd-Alt-F, Shift-Cmd-F).
+        s.find = { r.x + 2.0f, r.y, kFindIconW, r.h };
+        const float left = s.find.right();
+        s.problems = { left, r.y, std::max(0.0f, std::min(200.0f, s.position.x - left - 4.0f)), r.h };
         return s;
     }
 
@@ -2549,6 +2912,7 @@ namespace playground::ui
         // The line's parts at their widest but the Panel switch and the size: Format on Run, the IR's name, the indent,
         // a long place with a selection's count. The word stays put as the caret moves.
         const funkgui::TextStyle& st = chat::kSmall;
+        // (The magnifier at the line's left is inside the problems' room, kProblemsRoom, as their own icon is.)
         return widthOf("Format on Run", st) + 16.0f + 14.0f                       // Format on Run
              + widthOf("LLVM IR", st) + 16.0f                                     // the language
              + widthOf("Spaces: 4", st) + 16.0f                                   // the indent
@@ -2601,9 +2965,11 @@ namespace playground::ui
             const StatusParts parts = statusParts();
             const float mid = r.centreY();
             const float top = c.capCentreTop(mid, st);
+            // The magnifier: find and replace (lit while the bar is open).
+            chat::drawIcon(c, chat::Icon::search, parts.find.centreX(), mid, 11.0f, findOpen_ ? p.accent : p.dim);
             // The problems' count; a view's (the IR's) place says it is read only, and its size.
             const int errors = errorCount(), warnings = warningCount();
-            float x = parts.problems.x + 6.0f;
+            float x = parts.problems.x + 2.0f;
             constexpr Col kRed{ 0xE5, 0x48, 0x4D, 0xFF }, kAmber{ 0xE2, 0xA3, 0x36, 0xFF };
             if (viewShown())
             {
@@ -2712,17 +3078,20 @@ namespace playground::ui
             };
             toggle(f.caseBtn, "Aa", matchCase_);
             toggle(f.wordBtn, "ab", wholeWord_);
-            char count[32];
-            if (findEdit_.buffer.empty())
-                count[0] = '\0';
-            else if (matches_.empty())
-                std::snprintf(count, sizeof count, "No results");
-            else if (current_ >= 0)
-                std::snprintf(count, sizeof count, "%d of %zu", current_ + 1, matches_.size());
-            else
-                std::snprintf(count, sizeof count, "%zu found", matches_.size());
-            c.text(count, f.count.centreX(), c.capCentreTop(f.count.centreY(), st), st,
-                   !findEdit_.buffer.empty() && matches_.empty() ? Col{ 0xE5, 0x48, 0x4D, 0xFF } : p.soft, funkgui::Align::centre);
+            // All files: two pages, one over the other.
+            toggle(f.filesBtn, "", allFiles_);
+            {
+                const Col ink = allFiles_ ? p.text : p.soft;
+                const float cx = std::round(f.filesBtn.centreX()), cy = std::round(f.filesBtn.centreY());
+                c.rrect(cx - 3.0f, cy - 6.0f, 8.0f, 10.0f, 1.5f, ink.withAlpha(0.0f), 1.1f, ink);
+                c.rrect(cx - 6.0f, cy - 3.0f, 8.0f, 10.0f, 1.5f, allFiles_ ? th.accentDim : p.raised, 1.1f, ink);
+            }
+            {
+                const std::string count = findCountText();
+                const funkgui::Canvas::ClipScope clip(c, f.count);
+                c.text(count.c_str(), f.count.centreX(), c.capCentreTop(f.count.centreY(), st), st,
+                       !findEdit_.buffer.empty() && findCount() == 0 ? Col{ 0xE5, 0x48, 0x4D, 0xFF } : p.soft, funkgui::Align::centre);
+            }
             chat::drawIcon(c, chat::Icon::chevronUp, f.prev.centreX(), f.prev.centreY(), 10.0f, p.soft);
             chat::drawIcon(c, chat::Icon::chevronDown, f.next.centreX(), f.next.centreY(), 10.0f, p.soft);
             chat::drawIcon(c, chat::Icon::cross, f.close.centreX(), f.close.centreY(), 9.0f, p.soft);
@@ -2733,6 +3102,58 @@ namespace playground::ui
                 c.text("Replace", f.replaceBtn.centreX(), c.capCentreTop(f.replaceBtn.centreY(), st), st, p.text, funkgui::Align::centre);
                 c.rrect(f.allBtn.x, f.allBtn.y, f.allBtn.w, f.allBtn.h, 4.0f, p.hover);
                 c.text("All", f.allBtn.centreX(), c.capCentreTop(f.allBtn.centreY(), st), st, p.text, funkgui::Align::centre);
+            }
+            // All files: the results list under the bar, a row a match (file:line, then the line from its first
+            // character, the match marked), in the code's font and rows at the text size; the current one lit.
+            if (listShown())
+            {
+                layoutList();
+                const Rect L = listRect();
+                c.rrect(L.x + 1.0f, L.y + 2.0f, L.w, L.h, 6.0f, Col{ 0, 0, 0, static_cast<uint8_t>(dark ? 90 : 30) });
+                c.rrect(L.x, L.y, L.w, L.h, 6.0f, p.raised, 1.0f, p.composerEdge);
+                const Rect in{ L.x + 4.0f, L.y + 4.0f, L.w - 8.0f, L.h - 8.0f };
+                const funkgui::Canvas::ClipScope clip(c, in);
+                const float rh = rowH();
+                const int first = std::max(0, static_cast<int>(std::floor(list_.offset / rh)));
+                const int last = std::min(static_cast<int>(all_.size()), static_cast<int>(std::ceil((list_.offset + in.h) / rh)) + 1);
+                const float barRoom = list_.shown() ? Scroll::kBarW + 2.0f * Scroll::kBarInset : 0.0f;
+                for (int k = first; k < last; ++k)
+                {
+                    const FileMatch& m = all_[static_cast<std::size_t>(k)];
+                    const float y = in.y + static_cast<float>(k) * rh - list_.offset;
+                    if (k == current_)                   // the current one: lit, an accent bar at its left
+                    {
+                        c.rrect(in.x, y, in.w - barRoom, rh, 4.0f, p.hover);
+                        c.rrect(in.x, y + 3.0f, 2.5f, rh - 6.0f, 1.0f, p.accent);
+                    }
+                    const float t = c.capCentreTop(y + rh * 0.5f, code);
+                    const std::string place = tabs_.name(m.tab) + ":" + std::to_string(m.range.from.line + 1);
+                    c.text(place.c_str(), in.x + 6.0f, t, code, k == current_ ? p.soft : p.faint);
+                    float x = in.x + 6.0f + widthOf(place, code) + widthOf("  ", code);
+                    // The line from its first character; a match far in, from a little before it ("...").
+                    const std::string& line = tabs_.editor(m.tab).line(m.range.from.line);
+                    std::size_t from = line.find_first_not_of(" 	");
+                    if (from == std::string::npos || from > static_cast<std::size_t>(m.range.from.col))
+                        from = static_cast<std::size_t>(m.range.from.col);
+                    std::string lead;
+                    if (static_cast<std::size_t>(m.range.from.col) > from + 48)
+                    {
+                        from = static_cast<std::size_t>(m.range.from.col) - 24;
+                        while (from > 0 && (static_cast<unsigned char>(line[from]) & 0xC0) == 0x80)
+                            --from;                      // a whole character
+                        lead = "...";
+                    }
+                    const std::string before = lead + line.substr(from, static_cast<std::size_t>(m.range.from.col) - from);
+                    const std::string hit = line.substr(static_cast<std::size_t>(m.range.from.col),
+                                                        static_cast<std::size_t>(m.range.to.col - m.range.from.col));
+                    const std::string after = line.substr(static_cast<std::size_t>(m.range.to.col));
+                    const float hx = x + widthOf(before, code), hw = widthOf(hit, code);
+                    c.rrect(hx - 1.0f, y + 3.0f, hw + 2.0f, rh - 6.0f, 2.0f, th.accentDim);
+                    c.text(before.c_str(), x, t, code, p.soft);
+                    c.text(hit.c_str(), hx, t, code, p.text);
+                    c.text(after.c_str(), hx + hw, t, code, p.soft);
+                }
+                list_.draw(c, in, th);
             }
         }
         // The go-to-line bar: one field, where the find bar sits.
@@ -3010,7 +3431,19 @@ namespace playground::ui
         if (statusRect().contains(pointer))
         {
             const StatusParts s = statusParts();
-            if (s.formatOnRun.contains(pointer))
+            const auto upper = [&](std::string words) {
+                words = shortcutText(words);
+                for (char& ch : words)
+                    ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+                std::snprintf(out, n, "%s", words.c_str());
+            };
+            if (s.find.contains(pointer))
+                upper(std::string("Find and replace   a click opens it   Cmd-F finds   Cmd-Alt-F")
+#if !defined(__APPLE__)
+                      + " (or Ctrl-H)"
+#endif
+                      + " replaces   Cmd-Shift-F in all files");
+            else if (s.formatOnRun.contains(pointer))
                 std::snprintf(out, n, "FORMAT ON RUN   %s   A CLICK TURNS IT %s   SHIFT-ALT-F FORMATS THE FILE NOW",
                               formatOnRun() ? "ON: RUN FORMATS EVERY FMINUS FILE FIRST" : "OFF", formatOnRun() ? "OFF" : "ON");
             else if (s.panel.contains(pointer))
@@ -3042,7 +3475,29 @@ namespace playground::ui
         }
         if (findOpen_ && findBarRect().contains(pointer))
         {
-            std::snprintf(out, n, "FIND   RETURN THE NEXT   SHIFT-RETURN THE ONE BEFORE   TAB THE OTHER FIELD   ESCAPE CLOSES");
+            const FindParts f = findParts();
+            std::string words;
+            if (f.caseBtn.contains(pointer))
+                words = std::string("Match case   ") + (matchCase_ ? "on" : "off") + "   a click turns it " + (matchCase_ ? "off" : "on");
+            else if (f.wordBtn.contains(pointer))
+                words = std::string("Whole word   ") + (wholeWord_ ? "on" : "off") + "   a click turns it " + (wholeWord_ ? "off" : "on");
+            else if (f.filesBtn.contains(pointer))
+                words = std::string("All files   ") + (allFiles_ ? "on: every file's tab" : "off: the tab shown")
+                      + "   a click turns it " + (allFiles_ ? "off" : "on") + "   Cmd-Shift-F opens find with it on";
+            else
+                words = "Find   Return the next   Shift-Return the one before   Tab the other field   Escape closes";
+            words = shortcutText(words);
+            for (char& ch : words)
+                ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+            std::snprintf(out, n, "%s", words.c_str());
+            return true;
+        }
+        if (listShown() && listRect().contains(pointer))
+        {
+            std::snprintf(out, n, "FIND IN ALL FILES   %s   A CLICK GOES TO A MATCH   UP AND DOWN WALK THEM",
+                          findCountText().c_str());
+            for (char* q = out; *q != '\0'; ++q)
+                *q = static_cast<char>(std::toupper(static_cast<unsigned char>(*q)));
             return true;
         }
         if (gotoOpen_ && goToBarRect().contains(pointer))

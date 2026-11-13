@@ -498,7 +498,7 @@ PROBE(gui, ir)
             P.eq("language.no_squiggles", squiggles, 0);
             char line[256] = {};
             const funkgui::Rect sr = code.statusRect();
-            const bool spoke = code.specLine(line, sizeof line, { sr.x + 20.0f, sr.centreY() });
+            const bool spoke = code.specLine(line, sizeof line, { code.findButtonRect().right() + 20.0f, sr.centreY() });   // past the magnifier
             P.eq("language.status_llvm_ir_read_only", spoke && std::string(line).rfind("LLVM IR   READ ONLY", 0) == 0 ? 1 : 0, 1);
             host.move(10.0f, 10.0f);
             host.settle();

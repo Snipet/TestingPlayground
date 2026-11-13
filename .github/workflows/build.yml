@@ -19,13 +19,24 @@
 #             tools/shaderc-<FP_BGFX_TAG>/shaderc (shaderc.exe) and its shaderc.stamp, in a deps folder outside the
 #             checkout given to Configure as FP_DEPS_DIR (nothing else is there, so the rest is fetched as before). Key
 #             shaderc-<platform>-<FP_BGFX_SHA>; a run that missed saves the one its build made, on any ref (it is small).
-#   ccache    the compilers' objects, on macOS and Linux (Windows' clang-cl is still to come): CCACHE_DIR outside the
-#             checkout, at most 2 GB, the compiler told apart by its --version. Key ccache-<platform>-<hash of
-#             cmake/Deps.cmake>-<commit>, restored from the newest with the same pins, else the newest of the
-#             platform; the Build step's log ends with the run's hit rate (ccache -s).
+#   compiler  the compilers' objects, through CMake's compiler launchers, in a folder outside the checkout of at most
+#             2 GB: ccache on macOS and Linux (CCACHE_DIR, the compiler told apart by its --version), sccache on
+#             Windows (SCCACHE_DIR; its entries hash the compiler's own file). Windows takes sccache because ccache
+#             since 4.14.1 refuses clang-cl's /clang: options as uncacheable, and cmake/Flags.cmake's fp_flags (on
+#             nearly every target of ours) passes five; sccache reads them as clang's own, and with clang-cl (whose /Zi
+#             is /Z7: the debug information in each object, the PDB made at link as before) caches /Zi too, so the
+#             build's flags are a developer's. sccache is pinned: its release's archive checked against the SHA-256
+#             written below. Key ccache-<platform>-<hash of cmake/Deps.cmake>-<commit> (sccache-... on Windows),
+#             restored from the newest with the same pins, else the newest of the platform; the Build step's log ends
+#             with the run's hit rate and the cache's size (ccache -s, sccache --show-stats).
 #
-# Saving keeps the repository's 10 GB of caches for main: the ccache folder is saved after a build that succeeded
+# Saving keeps the repository's 10 GB of caches for main: the compiler's cache is saved after a build that succeeded
 # only on main, or when nothing at all was restored (a pull request then bootstraps its own, which a re-run uses).
+#
+# Run by hand (Actions, Build, Run workflow; or gh workflow run build.yml --ref <branch> -f platforms=windows-x64),
+# `platforms` builds only the platforms named (macos-arm64, windows-x64, linux-x64; spaces or commas between them;
+# "all", the default, every one): a branch's Windows build can be tried without a macOS runner. Pull requests and
+# pushes build all three, as the matrix in the job `changes` lists them.
 #
 # A pull request that changes only docs/** and the root's *.md files builds nothing (the job `changes` reads its
 # files; on any doubt it builds): each platform's job still starts and succeeds in seconds, every step skipped, so the
@@ -39,6 +50,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: "The platforms to build: all, or some of macos-arm64 windows-x64 linux-x64"
+        type: string
+        default: all
 
 # nothing by default; each job asks for what it needs
 permissions: {}
@@ -50,7 +66,7 @@ concurrency:
 
 jobs:
   # code: whether anything but docs changed (true on a push, by hand, and whenever the pull request's files cannot be
-  # read whole)
+  # read whole); matrix: the platforms to build, every one but by hand with `platforms`
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -58,7 +74,35 @@ jobs:
       pull-requests: read
     outputs:
       code: ${{ steps.files.outputs.code }}
+      matrix: ${{ steps.platforms.outputs.matrix }}
     steps:
+      # jobs: the build's at once; tests: the tests' (the Mac's 3 cores run two, so a test's own threads have one)
+      - id: platforms
+        shell: bash
+        env:
+          ONLY: ${{ inputs.platforms || 'all' }}
+          ALL: >-
+            [
+              {"platform": "macos-arm64", "os": "macos-latest", "preset": "dev", "jobs": 3, "tests": 2},
+              {"platform": "windows-x64", "os": "windows-latest", "preset": "windows-dev", "jobs": 4, "tests": 4},
+              {"platform": "linux-x64", "os": "ubuntu-latest", "preset": "linux-dev", "jobs": 4, "tests": 4,
+               "container": "archlinux:base-devel"}
+            ]
+        run: |
+          names=$(printf '%s\n' "$ONLY" | tr ', ' '\n\n' | sed '/^$/d' | sort -u)
+          if [ -z "$names" ] || [ "$names" = all ]; then
+            matrix=$(jq -c . <<< "$ALL")
+          else
+            for n in $names; do
+              jq -e --arg n "$n" 'any(.[]; .platform == $n)' <<< "$ALL" > /dev/null || {
+                echo "::error::no platform $n: platforms takes all, or some of $(jq -r 'map(.platform) | join(" ")' <<< "$ALL")"
+                exit 1; }
+            done
+            matrix=$(jq -c --arg names "$names" '($names | split("\n")) as $n | map(select(.platform as $p | any($n[]; . == $p)))' <<< "$ALL")
+          fi
+          echo "building: $(jq -r 'map(.platform) | join(" ")' <<< "$matrix")"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
       - id: files
         shell: bash
         env:
@@ -103,11 +147,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # jobs: the build's at once; tests: the tests' (the Mac's 3 cores run two, so a test's own threads have one)
-          - { platform: macos-arm64, os: macos-latest, preset: dev, jobs: 3, tests: 2 }
-          - { platform: windows-x64, os: windows-latest, preset: windows-dev, jobs: 4, tests: 4 }
-          - { platform: linux-x64, os: ubuntu-latest, preset: linux-dev, jobs: 4, tests: 4, container: "archlinux:base-devel" }
+        # the platforms, listed in the job `changes`
+        include: ${{ fromJSON(needs.changes.outputs.matrix) }}
     defaults:
       run:
         shell: bash
@@ -134,6 +175,23 @@ jobs:
       - name: ccache (macOS)
         if: needs.changes.outputs.code == 'true' && runner.os == 'macOS'
         run: command -v ccache || HOMEBREW_NO_AUTO_UPDATE=1 brew install ccache
+
+      # sccache's release, checked against the SHA-256 its release published (the archive's .sha256), written here so
+      # that a replaced archive fails the run; a new version changes all three lines
+      - name: sccache (Windows)
+        if: needs.changes.outputs.code == 'true' && runner.os == 'Windows'
+        env:
+          VERSION: v0.19.0
+          SHA256: 130e4f8eb672e76590e9993c2ab890c4763b88238577bb11d8062158c7698353
+        run: |
+          name="sccache-${VERSION}-x86_64-pc-windows-msvc"
+          cd "$RUNNER_TEMP"   # relative names below: Git Bash's tar takes D:\... for a remote host
+          curl -fsSL --retry 3 -o "$name.tar.gz" "https://github.com/mozilla/sccache/releases/download/${VERSION}/$name.tar.gz"
+          echo "$SHA256  $name.tar.gz" | sha256sum -c
+          tar -xzf "$name.tar.gz"
+          exe=$(cygpath -m "$RUNNER_TEMP/$name/sccache.exe")
+          "$exe" --version
+          echo "FP_SCCACHE=$exe" >> "$GITHUB_ENV"
 
       - name: Visual Studio's environment and its clang-cl (Windows)
         if: needs.changes.outputs.code == 'true' && runner.os == 'Windows'
@@ -170,9 +228,25 @@ jobs:
           if [ "$RUNNER_OS" = Windows ]; then deps=$(cygpath -m "$deps"); fi
           mkdir -p "$deps/tools"
           echo "FP_CI_DEPS=$deps" >> "$GITHUB_ENV"
-          if [ "$RUNNER_OS" != Windows ]; then
-            mkdir -p "$RUNNER_TEMP/ccache"
+          # the compiler's cache: its folder (FP_CI_CACHE, which restore and save keep) and its tool's settings
+          if [ "$RUNNER_OS" = Windows ]; then
+            dir=$(cygpath -m "$RUNNER_TEMP/sccache")
+            mkdir -p "$dir"
+            echo "cache=sccache" >> "$GITHUB_OUTPUT"
             {
+              echo "FP_CI_CACHE=$dir"
+              echo "SCCACHE_DIR=$dir"
+              echo "SCCACHE_CACHE_SIZE=2G"
+              # one server for the whole Build step (its statistics are the run's), stopped at its end; a server
+              # that fails leaves the compile to clang-cl, uncached, rather than failing the build
+              echo "SCCACHE_IDLE_TIMEOUT=0"
+              echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1"
+            } >> "$GITHUB_ENV"
+          else
+            mkdir -p "$RUNNER_TEMP/ccache"
+            echo "cache=ccache" >> "$GITHUB_OUTPUT"
+            {
+              echo "FP_CI_CACHE=$RUNNER_TEMP/ccache"
               echo "CCACHE_DIR=$RUNNER_TEMP/ccache"
               echo "CCACHE_MAXSIZE=2G"
               # the compiler by what it says it is, not by its file's time (Apple's clang is a shim)
@@ -188,16 +262,16 @@ jobs:
           path: ${{ env.FP_CI_DEPS }}/tools/shaderc-${{ steps.keys.outputs.bgfx_tag }}
           key: shaderc-${{ matrix.platform }}-${{ steps.keys.outputs.bgfx_sha }}
 
-      - name: Restore ccache (macOS, Linux)
-        id: ccache
-        if: needs.changes.outputs.code == 'true' && runner.os != 'Windows'
+      - name: Restore the compiler's cache
+        id: cache
+        if: needs.changes.outputs.code == 'true'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ matrix.platform }}-${{ hashFiles('cmake/Deps.cmake') }}-${{ github.sha }}
+          path: ${{ env.FP_CI_CACHE }}
+          key: ${{ steps.keys.outputs.cache }}-${{ matrix.platform }}-${{ hashFiles('cmake/Deps.cmake') }}-${{ github.sha }}
           restore-keys: |
-            ccache-${{ matrix.platform }}-${{ hashFiles('cmake/Deps.cmake') }}-
-            ccache-${{ matrix.platform }}-
+            ${{ steps.keys.outputs.cache }}-${{ matrix.platform }}-${{ hashFiles('cmake/Deps.cmake') }}-
+            ${{ steps.keys.outputs.cache }}-${{ matrix.platform }}-
 
       - name: FMinus's LLVM, Bison and Flex (prebuilt)
         if: needs.changes.outputs.code == 'true'
@@ -224,7 +298,9 @@ jobs:
         run: |
           cmd=(cmake --preset ${{ matrix.preset }}
                -DFP_FMINUS_DEPS_DIR="$FP_FMINUS_DEPS_DIR" -DFP_DEPS_DIR="$FP_CI_DEPS" -DFP_PROBE_TIMEOUT_SCALE=3)
-          if [ "$RUNNER_OS" != Windows ]; then
+          if [ "$RUNNER_OS" = Windows ]; then
+            cmd+=(-DCMAKE_C_COMPILER_LAUNCHER="$FP_SCCACHE" -DCMAKE_CXX_COMPILER_LAUNCHER="$FP_SCCACHE")
+          else
             cmd+=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
           fi
           if [ "$RUNNER_OS" = macOS ]; then
@@ -232,14 +308,23 @@ jobs:
           fi
           if [ "$RUNNER_OS" = Linux ]; then runuser -u ci -- "${cmd[@]}"; else "${cmd[@]}"; fi
 
-      # ccache's statistics zeroed before and printed after, whatever the build's outcome: the run's hit rate
+      # the compiler cache's statistics zeroed before and printed after, whatever the build's outcome: the run's hit
+      # rate and the cache's size (sccache's server, started by the zeroing, is stopped after, so that its folder is
+      # whole when it is saved)
       - name: Build
         if: needs.changes.outputs.code == 'true'
         run: |
           cmd=(cmake --build --preset ${{ matrix.preset }} --parallel ${{ matrix.jobs }})
+          if [ "$RUNNER_OS" = Windows ]; then
+            "$FP_SCCACHE" --zero-stats || true
+            rc=0; "${cmd[@]}" || rc=$?
+            "$FP_SCCACHE" --show-stats || true
+            "$FP_SCCACHE" --stop-server > /dev/null || true
+            du -sh "$SCCACHE_DIR" || true
+            exit $rc
+          fi
           as=()
           if [ "$RUNNER_OS" = Linux ]; then as=(runuser -u ci --); fi
-          if [ "$RUNNER_OS" = Windows ]; then "${cmd[@]}"; exit; fi
           "${as[@]}" ccache -z
           rc=0; "${as[@]}" "${cmd[@]}" || rc=$?
           "${as[@]}" ccache -s
@@ -274,14 +359,14 @@ jobs:
           key: ${{ steps.shaderc.outputs.cache-primary-key }}
 
       # main keeps the cache fresh; elsewhere only a run that restored nothing saves (a first one to start from)
-      - name: Save ccache (macOS, Linux)
+      - name: Save the compiler's cache
         if: >-
-          success() && needs.changes.outputs.code == 'true' && runner.os != 'Windows' &&
-          (github.ref == 'refs/heads/main' || steps.ccache.outputs.cache-matched-key == '')
+          success() && needs.changes.outputs.code == 'true' &&
+          (github.ref == 'refs/heads/main' || steps.cache.outputs.cache-matched-key == '')
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ${{ steps.ccache.outputs.cache-primary-key }}
+          path: ${{ env.FP_CI_CACHE }}
+          key: ${{ steps.cache.outputs.cache-primary-key }}
 
       - name: Test
         if: needs.changes.outputs.code == 'true'
