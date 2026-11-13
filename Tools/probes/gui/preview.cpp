@@ -11,11 +11,12 @@
 // and checks:
 //   MATCH    the prompt's example (ChatAgent::promptExample): the preview at its defaults is view_panel's panel picture
 //            of the same files at the same size, pixel for pixel but the displays and live= marks (the sandbox's demo
-//            values against the processor's silence) and the shaders' placeholders (SoftRaster's stand-in: the full
-//            Panel paints over a placeholder's last row, the sandbox's panel does not), within plugin.sandbox MATCH's
-//            bound; both drawn by SoftRaster here (picture::forceSoftRasterForTests), so the row is judged on every
-//            machine; the card's picture is the same scaled to 640 px across. A GPU picture where this platform has
-//            them (else skipped, saying why)
+//            values against the processor's silence) and each shader placeholder's last device row, counted apart
+//            (SoftRaster's stand-in: its border's float test answers by the absolute place on a shader whose bottom
+//            ends on a whole device px, so the Panel draws that row as fill), within plugin.sandbox MATCH's bound;
+//            both drawn by SoftRaster here (picture::forceSoftRasterForTests), so the row is judged on every machine;
+//            the card's picture is the same scaled to 640 px across. A GPU picture where this platform has them (else
+//            skipped, saying why)
 //   POINTER  MATCH's rows for the first example that is a folder (effect: 7-light-filter, synth: 6-light-saw): a .gui
 //            with pointer properties (a box's x= and y=, a shader's inputs pointer.hover and pointer.down) and a shader
 //            whose width= and height= are its size (96 x 96); its pointer items inert in a preview, as in a picture
@@ -244,6 +245,7 @@ PROBE(gui, preview)
         const pg::PanelPicture view = pg::picturePanel(processor.ports(), port, 0, 0, false, "");
         // Where the displays and live= marks are (a Panel of the probe's own, in the PANEL view).
         std::vector<juce::Rectangle<int>> masks;
+        std::vector<juce::Rectangle<int>> edges;         // each shader placeholder's last device row (below)
         {
             pg::ui::Panel panel(processor.ports(), port);
             funkgui::HeadlessHost host(panel, 0, pg::sandbox::kDpi);
@@ -253,14 +255,24 @@ PROBE(gui, preview)
             const pg::ui::GuiLayout& gl = panel.guiLayout();
             const std::vector<pg::GuiNode>& nodes = panel.panelSpec().gui.nodes;
             for (std::size_t i = 0; i < nodes.size() && i < gl.rects.size(); ++i)
-                // the displays and live= marks (demo values against silence), and a shader's placeholder (SoftRaster's
-                // stand-in, which only a picture without the GPU draws: the full Panel paints over its last row, the
-                // sandbox's panel does not; the GPU draws the shader itself)
-                if (nodes[i].kind == pg::GuiKind::display || nodes[i].live >= 0 || nodes[i].kind == pg::GuiKind::shader)
-                {
-                    const funkgui::Rect& r = gl.rects[i];
+            {
+                const funkgui::Rect& r = gl.rects[i];
+                // the displays and live= marks: demo values against silence
+                if (nodes[i].kind == pg::GuiKind::display || nodes[i].live >= 0)
                     masks.push_back(pixels(r.x - gl.area.x, r.y - gl.area.y, r.w, r.h, 3));
+                // A shader's placeholder (SoftRaster's stand-in; these pictures are SoftRaster's here, forced: on the
+                // GPU the cell holds the shader itself, compared whole) draws a 1 device px border by a float test,
+                // ly < h - 1 / dpi, on each sample's centre. A shader whose bottom ends on a whole device px (96 px at
+                // 1.5: 144) puts its last row's centre exactly on that bound, where float32 answers by the absolute
+                // place: the Panel's gui area starts at y 98 (ly 95.3333282: fill), the preview's and the sandbox's
+                // at 0 (ly 95.3333359: border). That one row is compared apart (edgeOff, below), nothing else of it.
+                if (nodes[i].kind == pg::GuiKind::shader)
+                {
+                    const float k = pg::sandbox::kDpi, y1 = (r.y - gl.area.y + r.h) * k;
+                    const int x0 = static_cast<int>(std::ceil((r.x - gl.area.x) * k)), x1 = static_cast<int>(std::floor((r.x - gl.area.x + r.w) * k));
+                    edges.push_back({ x0, static_cast<int>(std::ceil(y1 - 0.5f)) - 1, x1 - x0, 1 });
                 }
+            }
             port.setPanelView(false);
         }
         pg::preview::Request request;
@@ -286,7 +298,24 @@ PROBE(gui, preview)
             out.replaceWithData(view.png.data(), view.png.size());
         }
         juce::Image where;
-        const Diff d = compare(decode(view.png), mine, masks, 4, &where);
+        std::vector<juce::Rectangle<int>> masked = masks;
+        masked.insert(masked.end(), edges.begin(), edges.end());
+        const juce::Image theirs = decode(view.png);
+        const Diff d = compare(theirs, mine, masked, 4, &where);
+        // The placeholders' last rows: what differs there is that row's border or not, never more than the row.
+        int edgeOff = 0, edgePixels = 0;
+        for (const juce::Rectangle<int>& e : edges)
+            for (int x = e.getX(); x < e.getRight(); ++x)
+                if (theirs.isValid() && x < theirs.getWidth() && x < mine.getWidth() && e.getY() < theirs.getHeight() && e.getY() < mine.getHeight())
+                {
+                    ++edgePixels;
+                    const juce::Colour ca = theirs.getPixelAt(x, e.getY()), cb = mine.getPixelAt(x, e.getY());
+                    edgeOff += std::max({ std::abs(ca.getRed() - cb.getRed()), std::abs(ca.getGreen() - cb.getGreen()),
+                                          std::abs(ca.getBlue() - cb.getBlue()) }) > 4 ? 1 : 0;
+                }
+        std::printf("%s: %zu shader placeholder(s), their last device rows %d pixels, %d of them differ\n", key.c_str(), edges.size(),
+                    edgePixels, edgeOff);
+        P.le(key + ".placeholder_last_row_off", edgeOff, edgePixels);
         if (where.isValid())
             writeImage(where, ("gui.preview." + png + ".diff.png").c_str());
         std::printf("against view_panel (%s; %zu displays and live marks masked): %d of %d pixels differ by more than 4 "
