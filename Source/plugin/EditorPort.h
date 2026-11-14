@@ -1117,7 +1117,9 @@ namespace playground
 
         // ---- Package 05: projects and git ---------------------------------------------------------------------------
         //   gitLink()       a project's link (GitLink): the links file and the store's cache, never a repository
-        //   startGit()      a job (GitJob) on the processor's git thread; false, with why, when one runs or it cannot
+        //   startGit()      a job (GitJob) on the processor's git thread; false, with why, when one runs or it cannot;
+        //                   `endsAt` (when given) the GitState::ended its job will end at, set under the lock that starts
+        //                   it, so that a job that ends before the caller looks is still known as its own
         //   gitState()      the job under way or the last one's outcome; gitPolled() moves with it and with the links
         //   cancelGit()     the running git killed (what a Connect or an Add made is removed again)
         //   disconnectGit() the link removed, the project and its folder kept (no git runs)
@@ -1128,9 +1130,10 @@ namespace playground
             (void)project;
             return {};
         }
-        virtual bool startGit(const GitJob& job, std::string& why)
+        virtual bool startGit(const GitJob& job, std::string& why, uint64_t* endsAt = nullptr)
         {
             (void)job;
+            (void)endsAt;
             why = "no git here";
             return false;
         }

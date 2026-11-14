@@ -66,7 +66,7 @@ namespace playground
         return out;
     }
 
-    bool Processor::startGit(const GitJob& job, std::string& why)
+    bool Processor::startGit(const GitJob& job, std::string& why, uint64_t* endsAt)
     {
         {
             const std::lock_guard<std::mutex> lock(gitMutex_);
@@ -97,10 +97,16 @@ namespace playground
             gitState_.ok = gitState_.cancelled = gitState_.behind = gitState_.diverged = false;
             gitState_.words.clear();
             gitState_.added.clear();
+            if (endsAt != nullptr)
+                *endsAt = gitState_.ended + 1;                   // under the lock: the count this job ends at
         }
         gitCancel_.store(false);
         gitRevision_.fetch_add(1);
         gitThread_ = std::thread([this, job] { runGit(job); });
+#if defined(FP_PROBES)
+        if (gitJoinForTests_)
+            gitThread_.join();                                   // ended before the caller looks (setGitJoinForTests)
+#endif
         return true;
     }
 

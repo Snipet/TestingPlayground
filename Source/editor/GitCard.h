@@ -100,6 +100,7 @@ namespace playground::ui
         bool fields() const noexcept { return mode_ == Mode::add || !link_.linked; }
         void focusOn(Field f);
         void read();                                     // the link and the job, from the port
+        void takeEnded();                                // the job this card started, once it has ended: its outcome, once
         void press(Button b);
         void start(const GitJob& job, const std::string& doing);
         std::string stateText() const;                   // "3 versions to push", "Up to date, checked 14:02"
@@ -112,7 +113,8 @@ namespace playground::ui
         GitLink link_;
         GitState state_;
         uint64_t polled_ = 0;                            // EditorPort::gitPolled as last read
-        uint64_t mine_ = 0;                              // the GitState::ended a job this card started will end at
+        uint64_t mine_ = 0;                              // the GitState::ended a job this card started will end at (from
+                                                         // startGit, under the lock that started it)
         bool watching_ = false;                          // a job this card started runs
         funkgui::text::LineEdit remote_, branch_;
         Field focus_ = Field::remote;

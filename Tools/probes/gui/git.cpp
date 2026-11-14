@@ -34,6 +34,9 @@
 //   KEYS     Tab moves between the fields; the card's accessibility: the fields, the buttons, its ids its own
 //   NOGIT    a chosen git that is no git: the card says so, nothing else changes
 //   WHATSNEW What's new never opens over the card, nor the card over What's new; while it is up a click is its own
+//   ENDED    a job that has ended before the card first looks (the processor joins it inside startGit, probes only):
+//            a Check with a git that cannot run says so and is failed, a Check that works says its outcome, at once;
+//            neither keeps the doing line or Cancel
 #include "Probe.h"
 
 #include "editor/DiffCard.h"
@@ -394,6 +397,23 @@ PROBE(gui, git)
         P.eq(row + "nogit.said", card.failed() && (has(card.line(), "not git") || has(card.line(), "could not be run")) && card.link().linked ? 1 : 0, 1);
         writePng(P, host, "gui.git.nogit" + sfx + ".png");
         port.setGitChosen({}, why);
+
+        // ---- ENDED: a job that ends before the card first looks (the processor joins its thread inside startGit, as a
+        // loaded machine's scheduling can make it end): taken at once, no frame, no poll, no move of gitPolled after ---
+        processor.setGitJoinForTests(true);
+        port.setGitChosen(notGit.string(), why);
+        press(GC::Button::check);
+        std::printf("ended: no git \"%s\"\n", card.line().c_str());
+        P.eq(row + "ended.nogit_said", card.failed() && !has(card.line(), "Checking")
+                                           && (has(card.line(), "not git") || has(card.line(), "could not be run")) ? 1 : 0, 1);
+        P.eq(row + "ended.nogit_cancel_gone", card.label(GC::Button::close) == "Close" ? 1 : 0, 1);
+        port.setGitChosen({}, why);
+        press(GC::Button::check);
+        std::printf("ended: check \"%s\"\n", card.line().c_str());
+        P.eq(row + "ended.check_said", !card.failed() && !card.line().empty() && !has(card.line(), "Checking")
+                                           && card.label(GC::Button::close) == "Close" ? 1 : 0, 1);
+        processor.setGitJoinForTests(false);
+        settled();
 
         // ---- A11Y ----------------------------------------------------------------------------------------------------------
         {
