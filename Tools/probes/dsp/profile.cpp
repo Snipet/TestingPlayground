@@ -26,7 +26,8 @@
 //            the time (80 % or more), most of it in its calls (Share::calls 50 % or more), outside the program's code
 //            under 20 %, and the line says so ("in its calls out of the program's code ...: FMinus's runtime (an FFT,
 //            a called math function, the threads' pool) ..."); elsewhere the time is outside the program's code; the
-//            shares judged on a render with at least kFewSamples samples (held longer as HEAVY's is: calls.samples)
+//            shares judged on a render with at least kFewSamples samples (held longer as HEAVY's is, as long as the
+//            count asks, up to kMaxLongSeconds: calls.samples)
 //   PARALLEL a program whose process has a parallel { }: its region's code listed (CodeRange::parallel), and the line
 //            says that only this thread is sampled; the heavy program's (no region) says nothing of it
 //   CODE     Patch::codeRanges: sorted, none overlapping, each named; a program with a module Shared names its init
@@ -325,7 +326,10 @@ module Effect
     // times, 8 times the first and the longest a render may be: a busy machine's sampler keeps no one rate (a hosted
     // runner's took 156 samples of 1 s, then 136 of the 2 s that the first count asked for), so one longer render sized
     // from the first is not always enough. HEAVY's and CALLS' rule: a share of 17 samples moves 6 % a sample.
-    ms::Result withSamples(ms::Session& session, const ms::Request& request, ms::Result first, const char* what)
+    // `eightTimes`: the hold at most 8 times the first (HEAVY's); without it (CALLS'), as long as the count asks, up to
+    // the request's `longest`.
+    ms::Result withSamples(ms::Session& session, const ms::Request& request, ms::Result first, const char* what,
+                           bool eightTimes = true)
     {
         ms::Result run = std::move(first);
         double heldFor = static_cast<double>(request.holdSeconds);
@@ -335,7 +339,9 @@ module Effect
             const std::size_t had = run.profileSamples;
             const double times = std::ceil(1.5 * static_cast<double>(pg::profile::kFewSamples) / static_cast<double>(had));
             ms::Request held = request;
-            const double next = std::min({ heldFor * times, 8.0 * static_cast<double>(request.holdSeconds), held.longest });
+            const double most = eightTimes ? std::min(8.0 * static_cast<double>(request.holdSeconds), held.longest)
+                                           : held.longest;
+            const double next = std::min(heldFor * times, most);
             if (!(next > heldFor))
                 break;                                   // held as long as a render may be already
             held.holdSeconds = static_cast<float>(next);
@@ -536,7 +542,15 @@ PROBE(dsp, profile)
             std::printf("does not compile:\n%s\n", fft.errors().c_str());
         else
         {
-            const ms::Result c = withSamples(fft, withProfile, fft.measure(withProfile), "calls");
+            // Held as long as the count asks (a render that returns numbers may be kMaxLongSeconds), with no 8-times
+            // cap: the instrument's fftProgram(4) is light. macOS CI's starved sampler took 17 samples of its 2 s hold
+            // ("about every 3.41 ms of its time": about 58 ms of the thread's time, 8.5 samples a held second); the rule
+            // asks ceil(1.5 * 200 / 17) = 18 times the hold, 36 s, about 306 samples at that rate against kFewSamples'
+            // 200 (and about 1 s of the thread's time: the probe's timeout keeps its room). Capped at 10 s (the
+            // Request's default longest) or 16 s (8 times), it had 85 or 136, under 200 every time.
+            ms::Request calls = withProfile;
+            calls.longest = ms::kMaxLongSeconds;
+            const ms::Result c = withSamples(fft, calls, fft.measure(calls), "calls", false);
             const std::string cl = profileLine(c.report);
             std::printf("%s\n", cl.c_str());
             const auto* called = shareOf(c.profile, process);
