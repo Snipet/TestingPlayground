@@ -14,6 +14,95 @@ Each pull request's entry waits in its own file in `docs/changelog/` until `scri
 
 Claude Desktop extension: **0.21.0** (was 0.17.0).
 
+### Projects in git: when both sides changed ([#70](https://github.com/Snipet/TestingPlayground/pull/70))
+
+**Added**
+- **Pull** on a project whose remote and this computer both have new versions merges them when they changed different
+  things (different files, or different lines), saving the merge as a new version to push. When both changed the same
+  lines, the Git card offers three ways, and nothing is lost by any of them: **Keep mine** (their side saved as a
+  version, yours again on top), **Take theirs** (their side the newest version, yours the one before) and
+  **Compare...**, which shows yours against theirs in the Compare card before you choose.
+
+### Projects in git: Connect, Push, Pull, Check and Add from Git ([#66](https://github.com/Snipet/TestingPlayground/pull/66))
+
+**Added**
+- **Git...** in the Projects card (and the project pill's right-click menu) keeps a project in a git repository of
+  yours, through the git on your computer and its own sign-in (an SSH agent, a credential helper): the plugin asks for
+  and keeps no password. **Connect** commits every version to an empty repository and pushes them; **Push** commits and
+  pushes the versions saved since, never forcing; **Pull** brings what another machine pushed as a new version, and
+  opens it when the project is open and unchanged; **Check** counts what there is to push and to pull; **Disconnect**
+  removes the link and keeps the project and its folder.
+- **Add from Git...** clones a repository and adds its newest commit as a new project, linked.
+- A linked project has a branch mark after its name in the Projects card, the explorer and the top bar's pill, with
+  arrows and counts for what there is to push and to pull.
+- The Settings card's Projects page says which git runs (**Look for git**, **Choose git...**) and where the working
+  folders are.
+
+### What's new ([#69](https://github.com/Snipet/TestingPlayground/pull/69))
+
+**Added**
+- What's new: the first time an editor opens on a version you have not seen (after the website's offer is answered,
+  never over another card), a card shows that version's part of the changelog, built into the plugin: nothing is
+  fetched. Versions you skipped show each under its own heading, the newest first. It scrolls, and its links open in
+  your browser, only pages of the plugins' repository or of testingplayground.seanfunk.xyz. It shows once a version on
+  your computer, whichever product opens first; Settings, General, What's new shows it again.
+- `<PREFIX>WHATSNEW=off` never shows What's new by itself.
+- The changelog by release: each release has a heading of its own over the days it holds, starting with Version 0.1.0
+  (2026-11-10).
+
+**Changed**
+- A tag is released only once the changelog has its version's heading and no entry waits to be folded in.
+
+### The website, asked once: the factory projects and a note when a new version is out ([#67](https://github.com/Snipet/TestingPlayground/pull/67))
+
+**Added**
+- The first time an editor opens, a card asks **Use the website?**: the factory projects, kept up to date, and a note
+  when a new version is out, both ticked. **Allow** says yes to what is ticked; **Not now** is remembered and the card
+  is not shown again by itself. It stops nothing: the plugin plays and the editor works behind it.
+- A pill in the top bar when a new version is out ("0.2.0 is out"), and the status line says it once. A click opens a
+  card with the release's summary, **Download** (the website's download page, in the browser), **Skip this version**
+  and **Later**. Nothing opens by itself.
+- Settings has a **Network** page: **Check for updates** with what the last check found, **Check now**, and **Get the
+  factory projects**, each saying what a request sends: the plugin's name and version, nothing else.
+- `<PREFIX>UPDATES=off` never checks and never shows the card.
+
+**Changed**
+- Besides the chat, the plugin now reaches testingplayground.seanfunk.xyz, only after a yes and only once an editor has
+  opened: never while a host scans its plugins or a session plays with no editor open.
+
+**Fixed**
+- On Windows, with both plugins open (or two instances in two hosts), Settings' Reset of the usage record could say it
+  failed, and a count or an answer to the website's offer could go unwritten, when the other was reading the same file
+  at that moment. The write now waits for the reader, half a second at most.
+
+### The plugin's own failures no longer take the host down ([#65](https://github.com/Snipet/TestingPlayground/pull/65))
+
+**Fixed**
+- A shader file whose code nests very deeply (`vec2(` inside `vec2(` thousands of times) no longer crashes the host, and
+  a very long shader file no longer takes minutes to build: the plugin reads a shader's text in one pass, whatever its
+  depth.
+- When the plugin itself fails while compiling a program (out of memory, say), RUN now fails with an error that says the
+  plugin failed, not your program, and what plays keeps playing; before, the host could crash. The same holds for the
+  check while typing, the frozen copy of the dials, the circuits' self-test and a panel's shaders.
+- An unexpected failure inside the plugin while Claude works (a turn of the chat, a tool, a call from Claude Desktop),
+  while a project is read, saved, exported or previewed, or while A/B listening matches the loudness, now ends that
+  piece of work with a message instead of crashing the host; the chat, the projects and Claude Desktop's link carry on.
+- Moving quickly through many projects in the Projects card, or closing and reopening it, while a panel's preview was
+  still being prepared could crash the plugin; it no longer does.
+
+### Settings: the Usage page ([#64](https://github.com/Snipet/TestingPlayground/pull/64))
+
+**Added**
+- Settings has a **Usage** page: what the chat's requests used and cost, for every product on this Mac. Choose a range
+  (Last 7 days, Last 30 days, Last 12 months, All time) and **Tokens** or **Cost**; a bar a day (a month in the longer
+  views) is stacked by model, the largest a colour each and the rest as Other. Point at a bar, click it, or use Left,
+  Right, Home and End with the chart focused to see that day's models under the chart, each with its tokens and cost.
+- A table gives a row a model (fast mode a row of its own), its provider, requests, tokens in, cached and out, its cost
+  and its share, and a total. Costs marked ~ are estimates at list prices as of the price table's date, which the page
+  gives; OpenRouter's are its own figures; a model with no known price shows its tokens alone. Your provider's invoice
+  is the record.
+- **Reset…** empties the usage record, after asking in the page. A reset that fails changes nothing and says so.
+
 ### The Projects card shows a preview of a project's panel ([#61](https://github.com/Snipet/TestingPlayground/pull/61))
 
 **Added**
