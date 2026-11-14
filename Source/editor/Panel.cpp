@@ -3275,6 +3275,7 @@ namespace playground::ui
                                [] { return TB::Look::outlined; }, [this] { openProjects(); }, "Projects",
                                "PROJECTS   SAVE THE PROGRAM ON THIS MAC, A VERSION EACH SAVE (CMD-S); OPEN AN OLDER ONE; ITS PRESETS");
         static_cast<TB*>(items_[static_cast<std::size_t>(projectsItem_)].get())->setMenu([this] { projectMenu(); });
+        static_cast<TB*>(items_[static_cast<std::size_t>(projectsItem_)].get())->setBranch([this] { return projectBranch(); });
         // The project open's presets, right of the pill: the one before, its name (a click: their list), the next.
         {
             const auto any = [this] { return !cycle_.presets.empty(); };
@@ -4964,7 +4965,9 @@ namespace playground::ui
             factorySeen_ = generation;
             factoryRead_ = true;
         }
-        if (projectsAt_ < 0.0 || now - projectsAt_ > kProjectsPoll || presetsOf_ != st.name || read != projectsReadSeen_)
+        const uint64_t gitNow = port_.gitPolled();       // package 05: a git job or a link changed
+        if (projectsAt_ < 0.0 || now - projectsAt_ > kProjectsPoll || presetsOf_ != st.name || read != projectsReadSeen_
+            || gitNow != gitSeen_)
         {
             // The two lists of one state of the store's cache: a Reader's read that lands between them (the listing as
             // it was, the presets as it is) would make the rows twice, so a poll that saw the revision move is made
@@ -4989,6 +4992,7 @@ namespace playground::ui
             projectsView_ = std::move(view);
             presetsOf_ = st.name;
             projectsAt_ = now;
+            gitSeen_ = gitNow;
         }
         const auto erred = [this](const std::string& file) {
             return std::any_of(problems_.begin(), problems_.end(), [&](const Problem& p) { return p.error && p.file == file; });
@@ -5301,6 +5305,10 @@ namespace playground::ui
                     r.icon = chat::Icon::list;
                     r.active = e.name == st.name;
                     r.key = e.name;
+                    r.git = e.git;                       // package 05: the git mark
+                    r.ahead = e.ahead;
+                    r.behind = e.behind;
+                    r.remote = e.remote;
                     g.rows.push_back(std::move(r));
                 }
             }
@@ -6019,6 +6027,8 @@ namespace playground::ui
         if (export_.poll())
             dirty_ = true;
         FP_DIRTY_AT("refresh: PROJECTS' and EXPORT's polls");
+        syncGit();                                       // package 05: the git card, and a job's outcome
+        FP_DIRTY_AT("refresh: syncGit");
         // What Claude's projects tool did (a save, an open, a preset): said once in the status, the lists read again.
         if (role_ == Role::editor)
             if (const ClaudeNotice n = port_.claudeNotice(); n.count != claudeSeen_)
@@ -7830,7 +7840,8 @@ namespace playground::ui
         const std::vector<std::string> exportIt = projects_.takeExport();
         const std::pair<std::string, int> abIt = projects_.takeAb();
         const auto [compareIt, compareLeft, compareRight] = projects_.takeCompare();
-        if (wasOpen && !projects_.isOpen() && exportIt.empty() && abIt.first.empty() && compareIt.empty())
+        const std::pair<bool, std::string> gitIt = projects_.takeGit();   // package 05
+        if (wasOpen && !projects_.isOpen() && exportIt.empty() && abIt.first.empty() && compareIt.empty() && !gitIt.first)
         {
             setFocus(focusBeforeProjects_ >= 0 ? focusBeforeProjects_ : editorItem_);
             focusBeforeProjects_ = -1;
@@ -7855,6 +7866,8 @@ namespace playground::ui
         }
         if (!compareIt.empty())
             openCompare(compareIt, compareLeft, compareRight);
+        if (gitIt.first)
+            openGit(gitIt.second);
         dirty_ = true;
     }
 
@@ -7946,6 +7959,7 @@ namespace playground::ui
             request.items.push_back(dropdown::header(ownName(st.name)));
         request.items.push_back({ 1, "Projects..." });
         request.items.push_back({ 2, "Compare with the saved version", compare });
+        request.items.push_back({ 3, "Git...", !st.name.empty() && !isFactoryName(st.name) });   // package 05
         request.anchor = triggerRect(projectsItem_);
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
         host_->showMenu(request, [this, st](int chosen) {
@@ -7953,8 +7967,60 @@ namespace playground::ui
                 openProjects();
             else if (chosen == 2)
                 openCompare(st.name, st.version, DiffCard::kEditor);
+            else if (chosen == 3)
+                openGit(st.name);
             dirty_ = true;
         });
+    }
+
+    // ---- Package 05: GIT (GitCard.h) --------------------------------------------------------------------------------
+    void Panel::openGit(const std::string& project)
+    {
+        if (dialogOpen())
+            return;
+        files().endRename();
+        if (focusBeforeProjects_ < 0)
+            focusBeforeProjects_ = focus_;
+        git_.open(project);
+        setFocus(-1);
+        ring_ = false;
+        dirty_ = true;
+    }
+
+    // Each frame: the card reads the link and the job again when EditorPort::gitPolled moved; a job that ended while
+    // the card was closed (or one it did not start) says its outcome in the status, once.
+    void Panel::syncGit()
+    {
+        const bool wasOpen = git_.isOpen();
+        if (git_.poll())
+            dirty_ = true;
+        if (const std::string n = git_.takeNotice(); !n.empty())
+        {
+            notice(n);
+            projectsAt_ = -100.0;                        // the explorer's marks, a pulled version
+            projects_.reread();
+        }
+        if (wasOpen && !git_.isOpen())
+        {
+            setFocus(focusBeforeProjects_ >= 0 ? focusBeforeProjects_ : editorItem_);
+            focusBeforeProjects_ = -1;
+        }
+    }
+
+    chat::BranchMark Panel::projectBranch() const
+    {
+        chat::BranchMark b;
+        if (presetsOf_.empty())
+            return b;
+        for (const ProjectEntry& e : projectList_)
+            if (e.name == presetsOf_ && e.git)
+            {
+                b.on = true;
+                b.ahead = e.ahead;
+                b.behind = e.behind;
+                b.remote = e.remote;
+            }
+        return b;
     }
 
     void Panel::openExport(const std::string& project)
@@ -8963,7 +9029,7 @@ namespace playground::ui
             .mix(recordShownText_).mix(compiling_).mix(lastOk_).mix(edited_).mix(chatOpen_).mix(explorerShown_).mix(panelView_).mix(dropActive_)
             .mix(dropHover_).mix(keyOpen_).mix(renaming_).mix(keyWhy_).mix(keyEdit_.buffer).mix(keyEdit_.caret).mix(keyEdit_.allSelected)
             .mix(dialogField_).mix(dialogControl_).mix(baseEdit_.caret).mix(baseEdit_.allSelected).mix(modelEdit_.caret)
-            .mix(projects_.isOpen()).mix(export_.isOpen()).mix(settings_.isOpen()).mix(settings_.revision())
+            .mix(projects_.isOpen()).mix(export_.isOpen()).mix(git_.isOpen()).mix(settings_.isOpen()).mix(settings_.revision())
             .mix(name_.isOpen()).mix(name_.revision()).mix(desktopBadge_).mix(picker_.isOpen()).mix(picker_.revision())
             .mix(focus_).mix(ring_).mix(pressed_).mix(touched_).mix(hasPointer_).mix(pointer_).mix(width_).mix(height_)
             .mix(layoutRevision_).mix(buttonsRoom_).mix(offer_.isOpen()).mix(offer_.revision()).mix(update_.isOpen())
@@ -9370,6 +9436,9 @@ namespace playground::ui
             std::snprintf(line, sizeof line, "EXPORT   A FACTORY PROJECT: ITS INFO AS IT IS   ESCAPE CLOSES");
         else if (export_.isOpen())
             std::snprintf(line, sizeof line, "EXPORT   TAB THE NEXT FIELD   A PILL TOGGLES   ESCAPE KEEPS THE INFO AND CLOSES");
+        else if (git_.isOpen())                          // package 05
+            std::snprintf(line, sizeof line, git_.running() ? "GIT   CANCEL STOPS IT   ESCAPE CLOSES (IT GOES ON)"
+                                                            : "GIT   TAB THE NEXT FIELD   RETURN PRESSES THE FIRST BUTTON   ESCAPE CLOSES");
         else if (name_.isOpen())
             std::snprintf(line, sizeof line, "NAME   RETURN SAVES IT (EMPTY: ITS NUMBER'S)   ESCAPE CANCELS");
         else if (update_.isOpen())
@@ -9485,6 +9554,11 @@ namespace playground::ui
             const funkgui::Canvas::Scope s(c, kExportTag, false);
             export_.draw(c, th, width_, height_, pointer_, hasPointer_);
         }
+        if (git_.isOpen())
+        {
+            const funkgui::Canvas::Scope s(c, kGitTag, false);
+            git_.draw(c, th, width_, height_, pointer_, hasPointer_);
+        }
         if (name_.isOpen())
         {
             const funkgui::Canvas::Scope s(c, kNameTag, false);
@@ -9587,6 +9661,9 @@ namespace playground::ui
             else if (export_.isOpen())
                 pressCard([this] { return export_.isOpen(); }, [this] { export_.pointerDown(pointer_, width_, height_); },
                           [this] { afterExport(true); });
+            else if (git_.isOpen())
+                pressCard([this] { return git_.isOpen(); }, [this] { git_.pointerDown(pointer_, width_, height_); },
+                          [this] { syncGit(); });
             else if (name_.isOpen())
                 pressCard([this] { return name_.isOpen(); }, [this] { name_.pointerDown(pointer_, width_, height_); },
                           [this] { afterName(true); });
@@ -9766,7 +9843,7 @@ namespace playground::ui
             return;
         if (keyOpen_ || settings_.isOpen())
             return;
-        if (export_.isOpen() || ab_.isOpen() || name_.isOpen() || compare_.isOpen())
+        if (export_.isOpen() || ab_.isOpen() || name_.isOpen() || compare_.isOpen() || git_.isOpen())
             return;
         if (projects_.isOpen())
         {
@@ -9797,7 +9874,7 @@ namespace playground::ui
             whatsNew_.wheel(e, width_, height_);
             return true;
         }
-        if (export_.isOpen() || name_.isOpen() || keyOpen_ || update_.isOpen())
+        if (export_.isOpen() || name_.isOpen() || keyOpen_ || update_.isOpen() || git_.isOpen())
             return true;                                 // nothing behind a dialog scrolls
         if (compare_.isOpen())
         {
@@ -9878,6 +9955,13 @@ namespace playground::ui
         {
             export_.key(e, host_, width_, height_);
             afterExport(true);
+            return true;
+        }
+        if (git_.isOpen())
+        {
+            git_.key(e, host_, width_, height_);
+            syncGit();
+            dirty_ = true;
             return true;
         }
         if (name_.isOpen())
@@ -10063,6 +10147,8 @@ namespace playground::ui
         }
         if (export_.isOpen())
             return export_.cursor(pointer_, width_, height_);
+        if (git_.isOpen())
+            return git_.cursor(pointer_, width_, height_);
         if (name_.isOpen())
             return name_.cursor(pointer_, width_, height_);
         if (compare_.isOpen())
@@ -10172,6 +10258,11 @@ namespace playground::ui
             export_.accessibility(out, width_, height_);
             return;
         }
+        if (git_.isOpen())
+        {
+            git_.accessibility(out, width_, height_);
+            return;
+        }
         if (name_.isOpen())
         {
             name_.accessibility(out, width_, height_);
@@ -10231,6 +10322,7 @@ namespace playground::ui
         r ^= (projects_.isOpen() ? 0x9E3779B1u : 0u) ^ (projects_.revision() * 0x165667B1u);
         r ^= (picker_.isOpen() ? 0x2545F491u : 0u) ^ (picker_.revision() * 0x61C88647u);
         r ^= (export_.isOpen() ? 0x85EBCA77u : 0u) ^ (export_.revision() * 0xC2B2AE3Du);
+        r ^= (git_.isOpen() ? 0x68E31DA4u : 0u) ^ (git_.revision() * 0xB5297A4Du);
         r ^= (name_.isOpen() ? 0x4CF5AD43u : 0u) ^ (name_.revision() * 0x2127599Bu);
         r ^= (offer_.isOpen() ? 0x3C6EF372u : 0u) ^ (offer_.revision() * 0x9E3779B9u);
         r ^= (update_.isOpen() ? 0xA54FF53Au : 0u) ^ (update_.revision() * 0x510E527Fu);
@@ -10295,6 +10387,13 @@ namespace playground::ui
         {
             export_.a11yAction(id, a, width_, height_);
             afterExport(true);
+            return;
+        }
+        if (git_.isOpen())
+        {
+            git_.a11yAction(id, a, width_, height_);
+            syncGit();
+            dirty_ = true;
             return;
         }
         if (name_.isOpen())

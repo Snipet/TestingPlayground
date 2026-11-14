@@ -300,16 +300,19 @@ namespace playground::ui::settings
             b.notes(std::string("Each project is a file there, its versions and presets in it. ") + product::kName
                         + " keeps its own folder; nothing in it leaves " + kThisMachine + ".",
                     b.ctrlX, b.ctrlW);
+            gitRows(b);                                  // package 05: SettingsGit.cpp
         }
 
         void actProjects(const Control& c, Context& ctx)
         {
             std::string why;
+            if (gitAct(c, ctx))                          // package 05: SettingsGit.cpp
+                return;
             if (c.act == Act::item && c.index == kShowProjects)
                 ctx.port.showPath(ctx.port.projectFolder(), why);
         }
 
-        uint64_t keyProjects(const Context& ctx) { return mix(0, ctx.port.projectFolder()); }
+        uint64_t keyProjects(const Context& ctx) { return mix(mix(0, ctx.port.projectFolder()), gitKey(ctx)); }
 
         // ---- AI: the provider, its model, its key, in words -------------------------------------------------------------
         SettingsCard::Ai aiOf(const Context& ctx)
@@ -371,7 +374,7 @@ namespace playground::ui::settings
 
     const Page kGeneralPage{ "general", "General", "How every editor looks, and this version.", nullptr, buildGeneral, actGeneral, keyGeneral };
     const Page kEditorPage{ "editor", "Editor", "How the code editor works.", nullptr, buildEditor, actEditor, keyEditor };
-    const Page kProjectsPage{ "projects", "Projects", "Where the projects are kept.", nullptr, buildProjects, actProjects, keyProjects };
+    const Page kProjectsPage{ "projects", "Projects", "Where the projects are kept, and git.", nullptr, buildProjects, actProjects, keyProjects };
     const Page kAiPage{ "ai", "AI", "The model the chat talks to.", nullptr, buildAi, actAi, keyAi };
     const Page kAboutPage{ "about", "About", "This plugin, and what it is made with.", nullptr, buildAbout, nullptr, nullptr };
 

@@ -44,6 +44,8 @@
 //               every one of them as one bundle (the context menu's Export too)
 //   A/B...      the editor's files against the chosen version (the newest, unless one is chosen), played in turn while
 //               the host plays, with what changed between them (the Panel's A/B card, AbCard.h)
+//   Git...      (on the versions' caption line) the chosen project's git card (editor/GitCard.h: its remote, Push, Pull, Check; Connect when it has none);
+//               with none chosen, Add from Git (package 05)
 //   Compare...  what changed between two of the chosen project's versions, or a version and the editor (the Panel's
 //               COMPARE card, DiffCard.h): the chosen version (the newest, unless one is chosen) against the one before
 //               it (the first version: against the editor); the project open with the editor's changes, the chosen
@@ -140,6 +142,7 @@ namespace playground::ui
         {
             funkgui::Rect box, projects, versions, presets, mode, field, save, open, remove, close, importIt, exportIt, ab;
             funkgui::Rect compare;                       // Compare..., after A/B...
+            funkgui::Rect git;                           // Git..., on the versions' caption line (package 05)
             funkgui::Rect search, clear, tag, sort;      // the top's: the search field, its clear (x), the tag, the order
             funkgui::Rect preview;                       // the chosen version's panel, over the versions (w 0: none, a
                                                          // window too short for it and four rows of each list)
@@ -174,6 +177,8 @@ namespace playground::ui
         std::vector<std::string> takeExport();           // every project to export (several: a bundle); none: {}
         std::pair<std::string, int> takeAb();
         std::tuple<std::string, int, int> takeCompare(); // COMPARE of that project's sides (left, right; 0 the editor)
+        // Package 05: Git... pressed: the git card for that project ("" none chosen: Add from Git), once.
+        std::pair<bool, std::string> takeGit();
         void chooseProjectNamed(const std::string& name, float width, float height);
         // The name a factory project's copy takes: its own, else "<own> 2", ... (case aside, as the store's add()).
         std::string copyName(const std::string& factory) const;
@@ -304,6 +309,7 @@ namespace playground::ui
         std::vector<std::string> export_;
         std::pair<std::string, int> ab_;
         std::tuple<std::string, int, int> compare_{ "", 0, 0 };
+        std::pair<bool, std::string> git_{ false, "" };   // takeGit
         // Compare...'s sides for the chosen project: `how` 0 as the button does (DiffCard.h), 1 a version row's "with
         // the version before", 2 its "with the editor"; `row` the version row (-1: the chosen one).
         void compareChosen(int how, int row = -1);

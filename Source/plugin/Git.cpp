@@ -1,6 +1,8 @@
 // Source/plugin/Git.cpp: see Git.h. CLAUDE.md, "Git", gives the rules each run keeps.
 #include "plugin/Git.h"
 
+#include "plugin/FileReplace.h"
+
 #include "Product.h"
 
 #include <algorithm>
@@ -46,7 +48,7 @@ namespace playground::git
             static std::string made;
             const std::lock_guard<std::mutex> lock(mutex);
             std::error_code ec;
-            if (!made.empty() && fs::is_directory(made, ec) && fs::is_empty(made, ec) && !ec)
+            if (const fs::path m = files::pathOf(made); !made.empty() && fs::is_directory(m, ec) && fs::is_empty(m, ec) && !ec)
                 return made;
             made.clear();
             const fs::path tmp = fs::temp_directory_path(ec);
@@ -64,7 +66,7 @@ namespace playground::git
 #if !defined(_WIN32)
                     fs::permissions(folder, fs::perms::owner_all, fs::perm_options::replace, ec);
 #endif
-                    made = folder.string();
+                    made = files::utf8Of(folder);                // run::run reads it as UTF-8
                     return made;
                 }
             }
@@ -95,6 +97,7 @@ namespace playground::git
             o.ended = r.ended;
             o.code = r.code;
             o.out = r.out;
+            o.outCut = r.outCut;
             o.ok = r.ok();
             if (o.ok)
                 return o;
@@ -156,6 +159,7 @@ namespace playground::git
             }
             r.timeoutMs = network ? c.networkMs : c.localMs;
             r.cancel = c.cancel;
+            r.outLimit = c.outLimit;
             return outcomeOf(run::run(r), args.empty() ? std::string() : args.front(), r.timeoutMs);
         }
 
@@ -240,8 +244,15 @@ namespace playground::git
         if (!given.empty())
             return tryGit(given);
         const std::string var = std::string(product::kEnvPrefix) + "GIT";
+#if defined(_WIN32)
+        // The variable as Windows holds it (wide), given on as UTF-8 (FileReplace.h's pathOf, utf8Of).
+        const std::wstring wvar(var.begin(), var.end());
+        if (const wchar_t* v = _wgetenv(wvar.c_str()); v != nullptr && *v != L'\0')
+            return tryGit(files::utf8Of(fs::path(v)));
+#else
         if (const char* v = std::getenv(var.c_str()); v != nullptr && *v != '\0')
             return tryGit(v);
+#endif
         std::vector<std::string> places;
 #if defined(__APPLE__)
         places = { "/opt/homebrew/bin/git", "/usr/local/bin/git" };
@@ -257,12 +268,13 @@ namespace playground::git
         if (const std::string onPath = run::resolve("git.exe"); !onPath.empty())
             if (Found f = tryGit(onPath); f.found())
                 return f;
-        if (const char* pf = std::getenv("ProgramFiles"); pf != nullptr && *pf != '\0')
+        if (const wchar_t* pf = _wgetenv(L"ProgramFiles"); pf != nullptr && *pf != L'\0')
         {
-            const std::string p = std::string(pf) + "\\Git\\cmd\\git.exe";
+            // The variable as Windows holds it (wide), the path given on as UTF-8, as run::run reads it.
+            const fs::path p = fs::path(pf) / L"Git" / L"cmd" / L"git.exe";
             std::error_code ec;
-            if (fs::is_regular_file(fs::path(p), ec))
-                if (Found f = tryGit(p); f.found())
+            if (fs::is_regular_file(p, ec))
+                if (Found f = tryGit(files::utf8Of(p)); f.found())
                     return f;
         }
 #else
@@ -344,7 +356,7 @@ namespace playground::git
         if (c.git.empty())
             return refused(notFoundWords());   // nothing made
         std::error_code ec;
-        fs::create_directories(fs::path(c.folder), ec);
+        fs::create_directories(files::pathOf(c.folder), ec);
         if (Outcome o = call(c, { "init", "-q" }); !o.ok)
             return o;
         // `init -b` needs git 2.28; HEAD pointed at the branch does the same on any.
@@ -545,7 +557,15 @@ namespace playground::git
             Outcome none = call(c, { "rev-parse", "--git-dir" });   // a repository with no commit yet: ok, nothing
             return none;
         }
-        Outcome o = call(c, { "log", "-n", std::to_string(std::max(1, n)), "--format=%H%x1f%at%x1f%s%x1e", "HEAD", "--" });
+        return log(c, n, commits, "HEAD");
+    }
+
+    Outcome log(const Context& c, int n, std::vector<Commit>& commits, const std::string& range)
+    {
+        commits.clear();
+        if (range.empty() || range.front() == '-')
+            return refused("A log needs a range.");
+        Outcome o = call(c, { "log", "-n", std::to_string(std::max(1, n)), "--format=%H%x1f%at%x1f%s%x1e", range, "--" });
         if (!o.ok)
             return o;
         std::size_t from = 0;
@@ -567,6 +587,60 @@ namespace playground::git
             commits.push_back(std::move(commit));
         }
         return o;
+    }
+
+    Outcome show(const Context& c, const std::string& rev, const std::string& path, std::string& bytes)
+    {
+        bytes.clear();
+        if (rev.empty() || rev.front() == '-' || path.empty() || path.front() == '-' || path.find(':') != std::string::npos)
+            return refused("A file \"" + path + "\" at \"" + rev + "\" cannot be read.");
+        Outcome o = call(c, { "cat-file", "blob", rev + ":" + path });
+        if (o.ok && o.outCut)
+        {
+            o.ok = false;
+            o.why = path + " is larger than " + std::to_string(c.outLimit >> 20) + " MB.";
+            return o;
+        }
+        if (o.ok)
+            bytes = std::move(o.out);
+        o.out.clear();
+        return o;
+    }
+
+    Outcome files(const Context& c, const std::string& rev, std::vector<std::string>& paths)
+    {
+        paths.clear();
+        if (rev.empty() || rev.front() == '-')
+            return refused("A tree needs a commit.");
+        Outcome o = call(c, { "ls-tree", "-r", "-z", "--name-only", rev, "--" });
+        if (!o.ok)
+            return o;
+        std::size_t from = 0;
+        while (from < o.out.size())
+        {
+            const std::size_t end = o.out.find('\0', from);
+            const std::string path = o.out.substr(from, (end == std::string::npos ? o.out.size() : end) - from);
+            if (!path.empty())
+                paths.push_back(path);
+            if (end == std::string::npos)
+                break;
+            from = end + 1;
+        }
+        return o;
+    }
+
+    std::string resolve(const Context& c, const std::string& rev)
+    {
+        std::string sha;
+        if (rev.empty() || rev.front() == '-' || !resolves(c, rev, &sha))
+            return {};
+        return sha;
+    }
+
+    std::string currentBranch(const Context& c)
+    {
+        const Outcome o = call(c, { "symbolic-ref", "-q", "--short", "HEAD" });
+        return o.ok ? trimmed(o.out) : std::string();
     }
 
     Outcome head(const Context& c, std::string& sha)

@@ -1,4 +1,4 @@
-// PROBE name=plugin.git timeout=180
+// PROBE name=plugin.git timeout=300
 //
 // plugin.git: the user's git run over a folder (plugin/Git.h) and the runner under it (plugin/Run.h). Everything
 // happens in the probe's sandbox (<prefix>PREFS_DIR/git): the remotes are bare repositories there, reached as file://
@@ -28,12 +28,47 @@
 //   NOGIT    find() of a path that is not there, of a file that is no git and of a program that is no git: none
 //            found, said; with no git the helpers refuse in words and make nothing; find() of the probe's git: its
 //            version
+// Package 05's projects in git (plugin/ProjectTree.h, GitProjects.h, ProcessorGit.cpp; the store's links), with two store
+// folders standing for two machines (projectstore::setDirectoryForTests):
+//   TREE     a version's tree read back the same (files, the tab, dials with labels, presets, MIDI, answers, samples,
+//            info); README.md and .gitattributes written once; one item a line in project.json; a second write removes
+//            what the first listed and the second has not, never a file it did not write nor one the list leaves out;
+//            a path that is a link refused, nothing written
+//   LINKS    the links file round-trips; a project renamed on disk keeps its link (by its id)
+//   CONNECT  a commit a version, in order, with its note, its date and its trailer; the link; linked twice refused; a
+//            remote that is not empty refused and the folder it made gone; a folder there already left as it was (a
+//            new one beside it); a remote that cannot be reached and a cancel each leave nothing made; the Git folder
+//            a link: refused, nothing made through it
+//   PROJECT_PUSH  only the new versions; nothing new is fine; a file in the working folder the plugin did not write left;
+//            a remote that moved: behind, nothing forced, the remote's head kept
+//   CLONE    Add from Git: a project of its own (its own id) with the remote's files, linked; the other kind's and a
+//            repository with no project refused, the folder each made gone; a clone that fails leaves no folder
+//   PROJECT_PULL  nothing new; a fast-forward saved as a new version ("Pulled ..."); both sides moved: diverged, nothing
+//            changed
+//   UTF8     a store folder (and its remote) named in Greek and CJK, outside ASCII and Windows-1252: Connect, Push,
+//            the links file written and read back, Add from Git on a second store, Pull; each working folder and file
+//            where a UTF-8 path says (project and sample names are ASCII: validFileName, tidyName)
+//   JOB      through a Processor: the job connects, links and marks (projectsPolled, gitLink); the listing and the card's
+//            link run no git (a git that leaves a marker); a pull opens the new version when the project is open and
+//            unedited, and leaves it in the list when it is edited; a chosen git that is no git: the job says so; an
+//            exception planted in the job (fminus/Failure.h): failed in its words, and the next press runs
 #include "Probe.h"
 
+#include "fminus/Failure.h"
+
+#include "plugin/FileReplace.h"
 #include "plugin/Git.h"
+#include "plugin/GitProjects.h"
+#include "plugin/Processor.h"
+#include "plugin/ProjectStore.h"
+#include "plugin/ProjectTree.h"
 #include "plugin/Run.h"
 
 #include "Product.h"
+
+#include <funkgui/panel/HeadlessGuiScope.h>
+
+#include <juce_core/juce_core.h>
 
 #include <atomic>
 #include <chrono>
@@ -75,6 +110,513 @@ namespace
     {
         std::error_code ec;
         return fs::exists(p, ec);
+    }
+    // ---- Package 05: projects in git -----------------------------------------------------------------------------------
+    pg::Sources programOf(const std::string& text)
+    {
+        return { { "program.fm", text }, { "lib.fm", "// lib.fm: a helper\n" } };
+    }
+
+    int childFolders(const fs::path& p)
+    {
+        std::error_code ec;
+        int n = 0;
+        if (fs::is_directory(p, ec))
+            for (const auto& e : fs::directory_iterator(p, ec))
+                n += e.is_directory(ec) ? 1 : 0;
+        return n;
+    }
+
+    void projectRows(funkgui::test::Probe& P, const fs::path& root, const pg::git::Found& found)
+    {
+        namespace ps = pg::projectstore;
+        namespace gp = pg::gitprojects;
+        namespace pt = pg::projecttree;
+        std::error_code ec;
+        const auto fileUrl = [](const fs::path& p) {
+            std::string s = p.generic_string();
+            return "file://" + std::string(s.front() == '/' ? "" : "/") + s;
+        };
+        const auto context = [&](const fs::path& folder) {
+            pg::git::Context c;
+            c.git = found.path;
+            c.folder = folder.string();
+            c.allowFile = true;
+            return c;
+        };
+        const auto bareRemote = [&](const std::string& name) {
+            const fs::path bare = root / "remotes" / name;
+            fs::create_directories(bare, ec);
+            pg::git::call(context(bare), { "init", "--bare", "-q" });
+            pg::git::call(context(bare), { "symbolic-ref", "HEAD", "refs/heads/main" });
+            return bare;
+        };
+        const auto countOf = [&](const fs::path& repo, const std::string& ref) {
+            const pg::git::Outcome o = pg::git::call(context(repo), { "rev-list", "--count", ref });
+            return o.ok ? std::atoi(o.out.c_str()) : -1;
+        };
+        const auto use = [](const fs::path& store) { ps::setDirectoryForTests(juce::File(store.string())); };
+        gp::Env env;
+        env.git = found.path;
+        env.allowFile = true;
+        const std::vector<ps::Dial> dials{ { "cutoff", 900.5f, "" }, { "mode", 2.0f, "PITCH" } };
+
+        // ---- TREE --------------------------------------------------------------------------------------------------------
+        {
+            ps::Project p;
+            p.name = "Tree";
+            p.info = { "A pad.", "Probe", "Pad", { "warm" }, { "Ambient" } };
+            p.presets = { { "Bright", 0, 1, { { "cutoff", 4000.0f, "" } }, "Leads" } };
+            ps::Version v;
+            v.number = 1;
+            v.files = { { "program.fm", "// Tree\nmodule Effect {}\n" }, { "panel.gui", "// panel\n" } };
+            v.active = 1;
+            v.dials = dials;
+            v.midi = { { "cutoff", 1, 74, false } };
+            v.circuits = { { "0123456789abcdef", "fminus-circuit-choice 1 probe" } };
+            const std::string kick = std::string("RIFF\0\0\0\0WAVEfmt probe bytes \x01\x02\xff", 33);
+            v.samples = { { "kick.wav", pg::assets::hashOf(kick) } };
+            p.samples = { { pg::assets::hashOf(kick), kick } };
+            p.versions = { v };
+            const fs::path folder = root / "tree";
+            fs::create_directories(folder, ec);
+            std::vector<std::string> written, why0;
+            std::string why;
+            const bool wrote = pt::write(p, v, folder.string(), {}, written, &why);
+            const std::optional<pt::Tree> t = pt::read(pt::folderGetter(folder.string()), &why);
+            std::printf("tree: wrote %d read %d (%s)\n", wrote ? 1 : 0, t ? 1 : 0, why.c_str());
+            const bool same = t && t->version.files == v.files && t->version.active == 1 && t->version.dials == v.dials
+                           && t->version.midi == v.midi && t->version.circuits == v.circuits && t->version.samples == v.samples
+                           && t->samples.size() == 1 && t->samples[0].bytes == kick && t->presets.size() == 1
+                           && t->presets[0].name == "Bright" && t->presets[0].category == "Leads" && t->presets[0].dials == p.presets[0].dials
+                           && t->info == p.info && t->name == "Tree";
+            P.eq("tree.reads_back", wrote && same ? 1 : 0, 1);
+            P.eq("tree.once_files", there(folder / "README.md") && readFile(folder / ".gitattributes").find("samples/* binary") != std::string::npos ? 1 : 0, 1);
+            const std::string manifest = readFile(folder / "project.json");
+            const bool lineEach = manifest.find("{ \"name\": \"cutoff\", \"value\": 900.5 },\n") != std::string::npos
+                               && manifest.find("{ \"name\": \"mode\", \"value\": 2, \"label\": \"PITCH\" }\n") != std::string::npos
+                               && manifest.find("\"saved\"") == std::string::npos && manifest.find("\"note\"") == std::string::npos;
+            P.eq("tree.one_item_a_line", lineEach ? 1 : 0, 1);
+            // The second write: panel.gui gone (the first listed it), notes.txt (the user's) and README.md left.
+            writeFile(folder / "notes.txt", "mine\n");
+            ps::Version v2 = v;
+            v2.files = { v.files[0] };
+            v2.active = 0;
+            std::vector<std::string> written2;
+            pt::write(p, v2, folder.string(), written, written2, &why);
+            P.eq("tree.removes_its_own", !there(folder / "panel.gui") && there(folder / "notes.txt") && there(folder / "README.md") ? 1 : 0, 1);
+            // A file the last write did not list is left, though the new version has none of that name.
+            pt::write(p, v, folder.string(), written2, written, &why);
+            pt::write(p, v2, folder.string(), { "project.json", "program.fm" }, written2, &why);
+            P.eq("tree.only_listed", there(folder / "panel.gui") ? 1 : 0, 1);
+#if !defined(_WIN32)
+            const fs::path outside = root / "outside.txt";
+            writeFile(outside, "outside\n");
+            fs::remove(folder / "program.fm", ec);
+            fs::create_symlink(outside, folder / "program.fm", ec);
+            std::vector<std::string> w3;
+            const bool linked = pt::write(p, v2, folder.string(), written2, w3, &why);
+            std::printf("tree: through a link: %d (%s)\n", linked ? 1 : 0, why.c_str());
+            P.eq("tree.link_refused", !linked && readFile(outside) == "outside\n" ? 1 : 0, 1);
+#else
+            probe::skip(P, "tree.link_refused", "a symbolic link needs a privilege on Windows");
+#endif
+        }
+
+        // ---- LINKS -------------------------------------------------------------------------------------------------------
+        const fs::path storeA = root / "store-a", storeB = root / "store-b";
+        use(storeA);
+        {
+            ps::saveVersion("Linked One", programOf("// one\n"), 0, dials);
+            const std::string id = ps::idOf("Linked One");
+            ps::Link l;
+            l.id = id;
+            l.folder = "Linked One-" + id.substr(0, 8);
+            l.remote = "https://example.invalid/me/one.git";
+            l.committed = 1;
+            l.commit = "0123456789abcdef0123456789abcdef01234567";
+            l.ahead = 0;
+            l.behind = 2;
+            l.written = { "project.json", "program.fm" };
+            l.recent = { { "0123456", "Version 1: first save", 1700000000000 } };
+            const bool set = ps::setLink(l);
+            const std::optional<ps::Link> back = ps::linkOf(id);
+            P.eq("links.round_trip", set && back && *back == l && there(storeA / ps::kLinksFile) ? 1 : 0, 1);
+            fs::rename(storeA / "Linked One.fmproject", storeA / "Renamed.fmproject", ec);
+            std::string seen;
+            for (const ps::Entry& e : ps::list())
+                if (e.name == "Renamed")
+                    seen = e.id;
+            P.eq("links.rename_keeps", !seen.empty() && ps::linkOf(seen).has_value() ? 1 : 0, 1);
+            ps::removeLink(id);
+            P.eq("links.removed", ps::linkOf(id).has_value() ? 0 : 1, 1);
+        }
+
+        // ---- CONNECT -----------------------------------------------------------------------------------------------------
+        const fs::path glass = bareRemote("glass.git");
+        const fs::path gitDir = storeA / ps::kGitFolderName;
+        std::string glassFolder;
+        {
+            for (int k = 1; k <= 3; ++k)
+                ps::saveVersion("Glass Bloom", programOf("// glass " + std::to_string(k) + "\n"), 0, dials);
+            const std::optional<ps::Project> p = ps::load("Glass Bloom");
+            const gp::Outcome o = gp::connect(env, "Glass Bloom", fileUrl(glass), "main");
+            std::printf("connect: %d \"%s\"\n", o.ok ? 1 : 0, o.words.c_str());
+            P.eq("connect.ok", o.ok && countOf(glass, "main") == 3 ? 1 : 0, 1);
+            const pg::git::Outcome lg = pg::git::call(context(glass), { "log", "--reverse", "--format=%at|%s|%(trailers:key=Playground-Version,valueonly)%x1e", "main" });
+            bool inOrder = p.has_value() && lg.ok;
+            std::size_t from = 0;
+            for (int k = 0; inOrder && k < 3; ++k)
+            {
+                const std::size_t end = lg.out.find('\x1e', from);
+                std::string rec = lg.out.substr(from, end - from);
+                from = end + 1;
+                while (!rec.empty() && (rec.front() == '\n' || rec.front() == ' '))
+                    rec.erase(rec.begin());
+                const ps::Version& v = p->versions[static_cast<std::size_t>(k)];
+                const std::string wanted = std::to_string(v.savedMs / 1000) + "|Version " + std::to_string(v.number) + ": " + v.note + "|"
+                                         + std::to_string(v.number);
+                std::printf("connect: commit %d \"%s\" (wanted \"%s\")\n", k, rec.c_str(), wanted.c_str());
+                inOrder = rec.rfind(wanted, 0) == 0;
+            }
+            P.eq("connect.commit_a_version", inOrder ? 1 : 0, 1);
+            const std::optional<ps::Link> l = p ? ps::linkOf(p->id) : std::nullopt;
+            glassFolder = l ? gp::folderOf(*l) : std::string();
+            P.eq("connect.linked", l && l->committed == 3 && l->branch == "main" && there(fs::path(glassFolder) / "project.json") ? 1 : 0, 1);
+            P.eq("connect.twice_refused", gp::connect(env, "Glass Bloom", fileUrl(glass), "main").ok ? 0 : 1, 1);
+
+            ps::saveVersion("Other", programOf("// other\n"), 0, dials);
+            const int before = childFolders(gitDir);
+            const gp::Outcome full = gp::connect(env, "Other", fileUrl(glass), "main");
+            std::printf("connect: not empty \"%s\"\n", full.words.c_str());
+            P.eq("connect.not_empty_refused", !full.ok && full.words.find("not empty") != std::string::npos && childFolders(gitDir) == before ? 1 : 0, 1);
+
+            // A folder of the name Connect would take, there already: left as it was, a new one beside it.
+            ps::saveVersion("Third", programOf("// third\n"), 0, dials);
+            const std::string thirdId = ps::idOf("Third");
+            const fs::path existing = gitDir / ("Third-" + thirdId.substr(0, 8));
+            writeFile(existing / "keep.txt", "the user's\n");
+            const gp::Outcome third = gp::connect(env, "Third", fileUrl(bareRemote("third.git")), "main");
+            const std::optional<ps::Link> tl = ps::linkOf(thirdId);
+            P.eq("connect.existing_left", third.ok && tl && tl->folder == existing.filename().string() + "-2"
+                                              && readFile(existing / "keep.txt") == "the user's\n" && !there(existing / ".git") ? 1 : 0, 1);
+
+            // A remote that cannot be reached, and a cancel: nothing made stays.
+            ps::saveVersion("Fourth", programOf("// fourth\n"), 0, dials);
+            const int before4 = childFolders(gitDir);
+            const gp::Outcome gone = gp::connect(env, "Fourth", fileUrl(root / "remotes" / "no-such.git"), "main");
+            std::printf("connect: unreachable \"%s\"\n", gone.words.c_str());
+            P.eq("connect.unreachable_nothing_left", !gone.ok && childFolders(gitDir) == before4 && !ps::linkOf(ps::idOf("Fourth")) ? 1 : 0, 1);
+            std::atomic<bool> stop{ true };
+            gp::Env stopped = env;
+            stopped.cancel = &stop;
+            const gp::Outcome cancelled = gp::connect(stopped, "Fourth", fileUrl(bareRemote("fourth.git")), "main");
+            P.eq("connect.cancel_nothing_left", !cancelled.ok && cancelled.cancelled && childFolders(gitDir) == before4 ? 1 : 0, 1);
+#if !defined(_WIN32)
+            // The Git folder a link: refused, nothing made through it.
+            const fs::path elsewhere = root / "elsewhere";
+            fs::create_directories(elsewhere, ec);
+            fs::rename(gitDir, storeA / "Git.real", ec);
+            fs::create_directory_symlink(elsewhere, gitDir, ec);
+            const gp::Outcome viaLink = gp::connect(env, "Fourth", fileUrl(bareRemote("fourth.git")), "main");
+            std::printf("connect: through a link \"%s\"\n", viaLink.words.c_str());
+            P.eq("connect.link_refused", !viaLink.ok && childFolders(elsewhere) == 0 ? 1 : 0, 1);
+            fs::remove(gitDir, ec);
+            fs::rename(storeA / "Git.real", gitDir, ec);
+#else
+            probe::skip(P, "connect.link_refused", "a symbolic link needs a privilege on Windows");
+#endif
+        }
+
+        // ---- PUSH --------------------------------------------------------------------------------------------------------
+        {
+            ps::saveVersion("Glass Bloom", programOf("// glass 4\n"), 0, dials);
+            const gp::Outcome o = gp::push(env, "Glass Bloom");
+            std::printf("push: \"%s\"\n", o.words.c_str());
+            P.eq("project_push.only_new", o.ok && countOf(glass, "main") == 4 ? 1 : 0, 1);
+            const gp::Outcome again = gp::push(env, "Glass Bloom");
+            P.eq("project_push.nothing_new", again.ok && countOf(glass, "main") == 4 ? 1 : 0, 1);
+            writeFile(fs::path(glassFolder) / "mine.txt", "the user's own\n");
+            ps::saveVersion("Glass Bloom", programOf("// glass 5\n"), 0, dials);
+            const gp::Outcome kept = gp::push(env, "Glass Bloom");
+            P.eq("project_push.foreign_left", kept.ok && readFile(fs::path(glassFolder) / "mine.txt") == "the user's own\n" ? 1 : 0, 1);
+            // Another machine pushes first: this one is behind, nothing forced.
+            const fs::path other = root / "other-glass";
+            pg::git::clone(context(root), fileUrl(glass), other.string(), "main");
+            writeFile(other / "program.fm", "// from elsewhere\n");
+            pg::git::commitAll(context(other), "From elsewhere", 0, {});
+            pg::git::push(context(other), "origin", "main");
+            std::string theirs;
+            pg::git::head(context(other), theirs);
+            ps::saveVersion("Glass Bloom", programOf("// glass 6\n"), 0, dials);
+            const gp::Outcome behind = gp::push(env, "Glass Bloom");
+            std::printf("push: behind \"%s\"\n", behind.words.c_str());
+            P.eq("project_push.behind_not_forced", !behind.ok && behind.behind && pg::git::resolve(context(glass), "main") == theirs ? 1 : 0, 1);
+        }
+
+        // ---- CLONE and PULL: a second machine ----------------------------------------------------------------------------
+        const fs::path padRemote = bareRemote("pad-project.git");
+        {
+            ps::saveVersion("Pad", programOf("// pad 1\n"), 0, dials);
+            ps::saveVersion("Pad", programOf("// pad 2\n"), 0, dials);
+            gp::connect(env, "Pad", fileUrl(padRemote), "main");
+            const std::string idA = ps::idOf("Pad");
+            use(storeB);
+            const gp::Outcome added = gp::add(env, fileUrl(padRemote), "");
+            std::printf("clone: \"%s\"\n", added.words.c_str());
+            const std::optional<ps::Project> b = ps::load(added.project);
+            P.eq("clone.own_project", added.ok && b && b->id != idA && b->versions.size() == 1
+                                          && b->latest().files == programOf("// pad 2\n") && b->latest().dials == dials && ps::linkOf(b->id) ? 1 : 0, 1);
+            const fs::path gitB = storeB / ps::kGitFolderName;
+            const int beforeB = childFolders(gitB);
+            // The other kind's project, and a repository with no project: refused, the folder each made gone.
+            const fs::path otherKind = root / "other-kind";
+            pg::git::init(context(otherKind), "main");
+            writeFile(otherKind / "project.json", std::string("{ \"format\": \"funk-playground-git\", \"version\": 1, \"kind\": \"")
+                                                     + (pg::product::kIsInstrument ? "effect" : "instrument")
+                                                     + "\", \"name\": \"X\", \"files\": [ \"program.fm\" ] }\n");
+            writeFile(otherKind / "program.fm", "// x\n");
+            pg::git::commitAll(context(otherKind), "Another kind's", 0, {});
+            const fs::path kindRemote = bareRemote("kind.git");
+            pg::git::addRemote(context(otherKind), "origin", fileUrl(kindRemote));
+            pg::git::push(context(otherKind), "origin", "main");
+            const gp::Outcome kind = gp::add(env, fileUrl(kindRemote), "");
+            std::printf("clone: other kind \"%s\"\n", kind.words.c_str());
+            P.eq("clone.other_kind_refused", !kind.ok && kind.words.find("playground") != std::string::npos && childFolders(gitB) == beforeB ? 1 : 0, 1);
+            const fs::path plain = root / "plain";
+            pg::git::init(context(plain), "main");
+            writeFile(plain / "README.md", "# not a project\n");
+            pg::git::commitAll(context(plain), "Just a readme", 0, {});
+            const fs::path plainRemote = bareRemote("plain.git");
+            pg::git::addRemote(context(plain), "origin", fileUrl(plainRemote));
+            pg::git::push(context(plain), "origin", "main");
+            const gp::Outcome none = gp::add(env, fileUrl(plainRemote), "");
+            P.eq("clone.no_project_refused", !none.ok && childFolders(gitB) == beforeB ? 1 : 0, 1);
+            const gp::Outcome failed = gp::add(env, fileUrl(root / "remotes" / "no-such.git"), "");
+            P.eq("clone.failed_no_folder", !failed.ok && childFolders(gitB) == beforeB ? 1 : 0, 1);
+
+            const gp::Outcome nothing = gp::pull(env, added.project);
+            P.eq("project_pull.nothing_new", nothing.ok && nothing.version == 0 && nothing.words.find("Nothing new") != std::string::npos ? 1 : 0, 1);
+            use(storeA);
+            ps::saveVersion("Pad", programOf("// pad 3\n"), 0, dials);
+            gp::push(env, "Pad");
+            use(storeB);
+            const gp::Outcome pulled = gp::pull(env, added.project);
+            const std::optional<ps::Project> b2 = ps::load(added.project);
+            std::printf("pull: \"%s\" -> v%d \"%s\"\n", pulled.words.c_str(), pulled.version, b2 ? b2->latest().note.c_str() : "");
+            P.eq("project_pull.fast_forward", pulled.ok && pulled.version == 2 && b2 && b2->latest().files == programOf("// pad 3\n")
+                                          && b2->latest().note.rfind("Pulled ", 0) == 0 ? 1 : 0, 1);
+            // Both sides move: diverged, nothing changed here.
+            ps::saveVersion(added.project, programOf("// pad 3, here\n"), 0, dials);
+            use(storeA);
+            ps::saveVersion("Pad", programOf("// pad 4, there\n"), 0, dials);
+            gp::push(env, "Pad");
+            use(storeB);
+            const int versionsBefore = ps::load(added.project) ? ps::load(added.project)->latest().number : -1;
+            const gp::Outcome diverged = gp::pull(env, added.project);
+            std::printf("pull: diverged \"%s\"\n", diverged.words.c_str());
+            P.eq("project_pull.diverged", !diverged.ok && diverged.diverged && ps::load(added.project)->latest().number == versionsBefore ? 1 : 0, 1);
+        }
+
+        // ---- UTF8: a store folder named outside ASCII and outside Windows-1252 (Greek and CJK: as a Documents folder
+        // under a Windows account's own name), its remotes there too. Every path here is made from UTF-8 text and given
+        // back as UTF-8 (FileReplace.h's pathOf, utf8Of), as the plugin's are: on Windows the old conversions through
+        // the ANSI code page made another folder, or threw; on POSIX it holds that git's output is read as it is ------
+        {
+            const std::string greek = "\xCE\xA0\xCF\x81\xCF\x8C\xCE\xB2\xCE\xB1";       // "Proba" in Greek letters
+            const std::string cjk = "\xE6\x97\xA5\xE6\x9C\xAC";                          // two CJK characters
+            const fs::path uroot = root / pg::files::pathOf(greek + "-" + cjk);
+            const fs::path uA = uroot / pg::files::pathOf("A-" + greek), uB = uroot / pg::files::pathOf("B-" + cjk);
+            const auto useU = [](const fs::path& store) {
+                ps::setDirectoryForTests(juce::File(juce::String::fromUTF8(pg::files::utf8Of(store).c_str())));
+            };
+            const auto urlU = [](const fs::path& p) {
+                const std::string s = pg::files::utf8Of(p.generic_u8string());
+                return "file://" + std::string(s.front() == '/' ? "" : "/") + s;
+            };
+            const auto contextU = [&](const fs::path& folder) {
+                pg::git::Context c;
+                c.git = found.path;
+                c.folder = pg::files::utf8Of(folder);
+                c.allowFile = true;
+                return c;
+            };
+            const fs::path uRemote = uroot / pg::files::pathOf("remote-" + cjk + ".git");
+            fs::create_directories(uRemote, ec);
+            pg::git::call(contextU(uRemote), { "init", "--bare", "-q" });
+            pg::git::call(contextU(uRemote), { "symbolic-ref", "HEAD", "refs/heads/main" });
+            const auto countU = [&](const std::string& ref) {
+                const pg::git::Outcome o = pg::git::call(contextU(uRemote), { "rev-list", "--count", ref });
+                return o.ok ? std::atoi(o.out.c_str()) : -1;
+            };
+            // Where a UTF-8 path says a project's working folder is.
+            const auto workingOf = [&](const fs::path& store, const std::string& project) -> fs::path {
+                const std::optional<ps::Link> l = ps::linkOf(ps::idOf(project));
+                return l ? store / pg::files::pathOf(ps::kGitFolderName) / pg::files::pathOf(l->folder) : fs::path();
+            };
+
+            useU(uA);
+            ps::saveVersion("Unicode Pad", programOf("// u 1\n"), 0, dials);
+            ps::saveVersion("Unicode Pad", programOf("// u 2\n"), 0, dials);
+            const gp::Outcome c = gp::connect(env, "Unicode Pad", urlU(uRemote), "main");
+            std::printf("utf8: connect %d \"%s\"\n", c.ok ? 1 : 0, c.words.c_str());
+            const fs::path wA = workingOf(uA, "Unicode Pad");
+            P.eq("utf8.connect", c.ok && countU("main") == 2 && !wA.empty() && there(wA / ".git")
+                                      && readFile(wA / "program.fm") == "// u 2\n" && there(wA / "project.json") ? 1 : 0, 1);
+            // Nothing made beside it: the Git folder under the store's own name holds that one working folder.
+            P.eq("utf8.connect_one_folder", childFolders(uA / pg::files::pathOf(ps::kGitFolderName)) == 1 ? 1 : 0, 1);
+
+            ps::saveVersion("Unicode Pad", programOf("// u 3\n"), 0, dials);
+            const gp::Outcome pushed = gp::push(env, "Unicode Pad");
+            P.eq("utf8.push", pushed.ok && countU("main") == 3 && readFile(wA / "program.fm") == "// u 3\n" ? 1 : 0, 1);
+
+            // The links file: written under the store's name, and read back from the file (another store, then this
+            // one again, so nothing comes from the cache).
+            const std::string uId = ps::idOf("Unicode Pad");
+            P.eq("utf8.links_written", there(uA / pg::files::pathOf(ps::kLinksFile)) ? 1 : 0, 1);
+            useU(uB);
+            useU(uA);
+            const std::optional<ps::Link> back = ps::linkOf(uId);
+            P.eq("utf8.links_read_back", back && back->remote == urlU(uRemote) && back->committed == 3 ? 1 : 0, 1);
+
+            useU(uB);
+            const gp::Outcome added = gp::add(env, urlU(uRemote), "");
+            std::printf("utf8: add %d \"%s\"\n", added.ok ? 1 : 0, added.words.c_str());
+            const fs::path wB = added.ok ? workingOf(uB, added.project) : fs::path();
+            const std::optional<ps::Project> b = added.ok ? ps::load(added.project) : std::nullopt;
+            P.eq("utf8.add", added.ok && b && b->latest().files == programOf("// u 3\n") && !wB.empty()
+                                  && readFile(wB / "program.fm") == "// u 3\n" ? 1 : 0, 1);
+
+            useU(uA);
+            ps::saveVersion("Unicode Pad", programOf("// u 4\n"), 0, dials);
+            gp::push(env, "Unicode Pad");
+            useU(uB);
+            const gp::Outcome pulled = added.ok ? gp::pull(env, added.project) : gp::Outcome{};
+            const std::optional<ps::Project> b2 = added.ok ? ps::load(added.project) : std::nullopt;
+            P.eq("utf8.pull", pulled.ok && pulled.version == 2 && b2 && b2->latest().files == programOf("// u 4\n")
+                                   && readFile(wB / "program.fm") == "// u 4\n" ? 1 : 0, 1);
+        }
+        ps::setDirectoryForTests({});
+    }
+    // The JOB rows: through a Processor, as the card starts them.
+    void jobRows(funkgui::test::Probe& P, const fs::path& root, const pg::git::Found& found)
+    {
+        namespace ps = pg::projectstore;
+        std::error_code ec;
+        const funkgui::HeadlessGuiScope gui;
+        const auto context = [&](const fs::path& folder) {
+            pg::git::Context c;
+            c.git = found.path;
+            c.folder = folder.string();
+            c.allowFile = true;
+            return c;
+        };
+        const fs::path store = root / "store-job";
+        ps::setDirectoryForTests(juce::File(store.string()));
+        const fs::path bare = root / "remotes" / "live.git";
+        fs::create_directories(bare, ec);
+        pg::git::call(context(bare), { "init", "--bare", "-q" });
+        pg::git::call(context(bare), { "symbolic-ref", "HEAD", "refs/heads/main" });
+        const std::string url = "file://" + std::string(bare.generic_string().front() == '/' ? "" : "/") + bare.generic_string();
+        {
+            pg::Processor proc;
+            pg::EditorPort& port = proc.editorPort();
+            proc.setRateAndBufferSizeDetails(48000.0, 256);
+            proc.prepareToPlay(48000.0, 256);
+            proc.settle();
+            const pg::Sources init = port.draft().files;
+            ps::saveVersion("Live", init, 0, {});
+            std::string why;
+            const auto wait = [&] {
+                const auto until = std::chrono::steady_clock::now() + probe::kWorkWait;
+                while (port.gitState().busy && std::chrono::steady_clock::now() < until)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    proc.poll();
+                }
+                proc.poll();
+                proc.settle();
+                return port.gitState();
+            };
+            const bool started = port.startGit({ pg::GitOp::connect, "Live", url, "main" }, why);
+            const pg::GitState connected = wait();
+            std::printf("job: connect started %d: \"%s\"\n", started ? 1 : 0, connected.words.c_str());
+            const pg::GitLink link = port.gitLink("Live");
+            bool marked = false;
+            for (const pg::ProjectEntry& e : port.projectsPolled())
+                marked = marked || (e.name == "Live" && e.git && e.ahead == 0 && e.behind == 0 && e.remote.find("live") != std::string::npos);
+            P.eq("job.connect_links", started && connected.ok && link.linked && link.recent.size() == 1 && marked ? 1 : 0, 1);
+#if !defined(_WIN32)
+            // The listing and the card's link run no git: a git that leaves a marker, chosen, is never started by them.
+            const fs::path marker = root / "git-ran";
+            const fs::path script = root / "marking-git";
+            writeFile(script, "#!/bin/sh\ntouch '" + marker.string() + "'\nexec '" + found.path + "' \"$@\"\n");
+            fs::permissions(script, fs::perms::owner_all, ec);
+            port.setGitChosen(script.string(), why);
+            for (int k = 0; k < 3; ++k)
+            {
+                (void)port.projectsPolled();
+                (void)port.gitLink("Live");
+                (void)port.gitPolled();
+                proc.poll();
+            }
+            P.eq("job.listing_runs_no_git", there(marker) ? 0 : 1, 1);
+            port.setGitChosen({}, why);
+#else
+            probe::skip(P, "job.listing_runs_no_git", "the marking git is a shell script (POSIX)");
+#endif
+            // A pull while the project is open and unedited: the new version opened.
+            std::string openWhy;
+            port.openProject("Live", 0, openWhy);
+            proc.settle();
+            const auto commitElsewhere = [&](const std::string& line) {
+                const fs::path other = root / "other-live";
+                fs::remove_all(other, ec);
+                pg::git::clone(context(root), url, other.string(), "main");
+                writeFile(other / "program.fm", readFile(other / "program.fm") + line);
+                pg::git::commitAll(context(other), "Elsewhere: " + line, 0, {});
+                pg::git::push(context(other), "origin", "main");
+            };
+            commitElsewhere("// a line from elsewhere\n");
+            port.startGit({ pg::GitOp::pull, "Live", {}, {} }, why);
+            const pg::GitState pulled = wait();
+            const pg::ProjectState st = port.project();
+            std::printf("job: pull \"%s\", open v%d of %d\n", pulled.words.c_str(), st.version, st.latest);
+            P.eq("job.pull_opens_unedited", pulled.ok && st.version == 2 && port.draft().files.front().text.find("from elsewhere") != std::string::npos ? 1 : 0, 1);
+            // Edited: the pulled version waits in the list.
+            pg::Draft edited = port.draft();
+            edited.files.front().text += "// typed here\n";
+            port.setDraft(edited);
+            commitElsewhere("// a second line\n");
+            port.startGit({ pg::GitOp::pull, "Live", {}, {} }, why);
+            const pg::GitState pulled2 = wait();
+            const pg::ProjectState st2 = port.project();
+            const std::optional<ps::Project> live = ps::load("Live");
+            std::printf("job: pull edited \"%s\", open v%d, latest %d\n", pulled2.words.c_str(), st2.version, live ? live->latest().number : -1);
+            P.eq("job.pull_leaves_edited", pulled2.ok && st2.version == 2 && live && live->latest().number == 3
+                                               && port.draft().files.front().text.find("typed here") != std::string::npos ? 1 : 0, 1);
+            // A chosen git that is no git: said, nothing else changes.
+            const fs::path text = root / "not-git-either.txt";
+            writeFile(text, "text\n");
+            port.setGitChosen(text.string(), why);
+            port.startGit({ pg::GitOp::check, "Live", {}, {} }, why);
+            const pg::GitState nogit = wait();
+            std::printf("job: no git \"%s\"\n", nogit.words.c_str());
+            P.eq("job.nogit_said", !nogit.ok && (nogit.words.find("not git") != std::string::npos || nogit.words.find("could not be run") != std::string::npos) && port.gitLink("Live").linked ? 1 : 0, 1);
+            port.setGitChosen({}, why);
+            // An exception in the job (fminus/Failure.h's seam): the job fails in its words, the thread ends cleanly and
+            // the next press runs as before.
+            pg::failure::plant("git", pg::failure::Kind::badAlloc);
+            port.startGit({ pg::GitOp::check, "Live", {}, {} }, why);
+            const pg::GitState thrown = wait();
+            pg::failure::unplant();
+            std::printf("job: thrown \"%s\"\n", thrown.words.c_str());
+            P.eq("job.thrown_said", !thrown.ok && !thrown.busy && thrown.words.find("The plugin itself failed while checking the remote: out of memory") == 0 ? 1 : 0, 1);
+            port.startGit({ pg::GitOp::check, "Live", {}, {} }, why);
+            const pg::GitState after = wait();
+            P.eq("job.thrown_then_runs", after.ok && port.gitLink("Live").linked ? 1 : 0, 1);
+        }
+        ps::setDirectoryForTests({});
     }
 }
 
@@ -215,7 +757,7 @@ PROBE(plugin, git)
     std::printf("git: %s %s (%s)\n", found.path.c_str(), found.version.c_str(), found.why.c_str());
     if (!found.found())
     {
-        for (const char* section : { "commit", "push", "pull", "clone", "address", "hooks", "nogit" })
+        for (const char* section : { "commit", "push", "pull", "clone", "address", "hooks", "nogit", "tree", "links", "connect", "project_push", "project_pull", "job" })
             probe::skip(P, section, "no git on this machine (" + prefix + "GIT): " + found.why);
         return P.finish();
     }
@@ -519,5 +1061,9 @@ PROBE(plugin, git)
         const pg::git::Outcome cm = pg::git::commitAll(none, "x", 0, {});
         P.eq("nogit.nothing_changed", !i.ok && !cm.ok && i.why == pg::git::notFoundWords() && !there(root / "never") ? 1 : 0, 1);
     }
+
+    // ---- Package 05: TREE, LINKS, CONNECT, PUSH, CLONE, PULL, JOB ---------------------------------------------------------
+    projectRows(P, root, found);
+    jobRows(P, root, found);
     return P.finish();
 }

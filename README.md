@@ -34,7 +34,8 @@ linked in. [CHANGELOG.md](CHANGELOG.md) says what changed, release by release an
   Claude works on the plugin open in your DAW, on your Claude plan, and designs panels with no plugin open.
 - **A headless renderer.** Render and measure a program from the command line, with the plugin's own compiler.
 - **The network only when you ask.** The chat when you send a message; the factory projects and a note when a new
-  version is out, each only after a yes ([The network and updates](#the-network-and-updates)).
+  version is out, each only after a yes; a project's git when you press its buttons
+  ([The network and updates](#the-network-and-updates)).
 - **Safe to try things.** A loop that never ends, or an index outside its array, stops the program and says where, and
   what leaves the plugin is always finite.
 
@@ -1143,6 +1144,37 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
   status line says how many came in and names each it refused. A synth's export does not open in the effect, nor an
   effect's in the synth (inside a bundle, those are refused one by one and the rest come in). A click outside EXPORT
   closes it as **Done** does.
+- **Projects and git** (PROJECTS, **Git...**, or the project pill's right-click menu): a project kept in a git
+  repository of yours, through the git already on the computer and whatever it signs in with (an SSH agent, a
+  credential helper): the plugin asks for no password and keeps none. Not linked, the card takes the repository's
+  address (`https://...`, `ssh://...` or `you@host:path`) and a branch (`main` unless you say), and **Connect** makes a
+  working folder, one commit for each version the project keeps (its note the message, its save time the date, a
+  `Playground-Version: N` trailer), and pushes them: an empty repository only (one with commits is refused: use **Add
+  from Git**). Linked, the card shows the remote and branch, what there is to do ("3 versions to push", "2 commits to
+  pull", "Up to date, checked 14:02"), the folder and the last eight commits. **Push** commits each version saved since
+  and pushes, never forcing: when the remote has moved it says so ("pull first") and pushes nothing. **Pull** fetches
+  and, when only the remote moved, reads the remote's project from its commit (one that is not a project of this
+  playground is refused, the folder left as it was), moves the folder to it and saves it as a new version ("Pulled
+  1a2b3c4: ..."); when that project is open and you have changed nothing, the new version opens, else it waits in the
+  versions list. When both sides moved it says so and changes nothing (both are kept). **Check** fetches and counts.
+  **Show folder** shows the working folder, **Disconnect** (asked first) removes the link and leaves the project and the
+  folder. **Add from Git...** (the card's other face, or Git... with no project chosen) clones a repository into a new
+  folder and adds its newest commit as a new project, linked. A linked project has a small branch mark after its name
+  in PROJECTS, the explorer and the top bar's pill, with an up arrow and a count to push, a down arrow and a count to
+  pull, once known. Git runs only when you press one of these buttons (and **Look for git** in Settings): never on a
+  timer, on opening a project or at a save. The working folders are `<projects folder>/Git/<name>-<8 characters of the
+  project's id>/` (a number after it when a folder of that name is there already), ordinary repositories you can open
+  elsewhere; each holds `project.json` (the dials, presets, MIDI map, the files' order: one item a line, and no
+  version's number, time or note, which are the commit's), the version's files, `samples/` and, written once,
+  `README.md` and `.gitattributes`. The plugin removes from it only files its own last write there listed, and a
+  Connect or an Add that fails removes only the folder it made itself. The links are kept in `.git-links.json` in the
+  projects folder; nothing about git goes into the project's file or its exports. What a pull brings is a program
+  that plays when opened, as an imported project's: pull only from repositories you trust. Settings' **Projects** page
+  says which git runs (**Look for git**, **Choose git...**), and where the folders are. A host that keeps plugins in a
+  sandbox may not let git start, read `~/.ssh` or reach the network: the card shows git's own words and the Standalone
+  app can push and pull. An SSH key with a passphrase and no agent fails at once (add it to the agent, or use https
+  with a credential helper). The history is the repository's: a version the project lets go (it keeps 100) stays a
+  commit there.
 - **Factory projects** come with the plugin: its own sounds, each a project of one version (its files and its dials)
   with its presets and its info (its category and tags too), read-only. PROJECTS lists them in a group of their own on
   top, **FACTORY** (each with its presets counted; starred, in Favourites too), and the explorer in its **Factory**
@@ -2118,7 +2150,8 @@ answer stays in front of you; one Claude Desktop opens is as if you had opened i
   reads): HTTPS to `api.anthropic.com` (the Messages API, streamed, and the models list once per key), or to the
   provider you chose (its server alone, its own key; a server on this Mac or the local network over HTTP), the one way
   a chat leaves this Mac (it is what the chat is for). Requests are billed to your key. A turn goes on while the editor
-  is closed. The rest of the plugin reaches the network only after a yes: below, "The network and updates".
+  is closed. The rest of the plugin reaches the network only after a yes, or a press on a project's Git card: below,
+  "The network and updates".
 
 **Claude Desktop as the AI (MCP).** Claude Desktop can do what the chat does, on your Claude plan instead of an API
 key, and you talk to it as you would to the chat: "a tape delay with a little wow", "make a warm pad", "darker,
@@ -2220,13 +2253,15 @@ deletes what that kept here (`account-token.bin`, and the sign-in's lines in `ch
 
 ## The network and updates
 
-Three things in the plugin may reach the network, and nothing else does: no analytics, no account, nothing at start-up.
+Four things in the plugin may reach the network, and nothing else does: no analytics, no account, nothing at start-up.
 
 - **The chat**, when you send a message (above, "The chat"): the model provider you chose, with your key.
 - **The factory projects**, after a yes: the set of example projects from testingplayground.seanfunk.xyz, checked
   against the keys built into the plugin and kept up to date, at most once a day.
 - **The update check**, after a yes: one small file from the same site that says the latest version, at most once a
   day.
+- **Your projects in git**, only when you press Connect, Push, Pull, Check or Add from Git on a project's Git card: the
+  remote you gave, through your own git and its credentials (above, "The editor": Projects and git).
 
 The two from the website ask nothing until an editor opens (a host scanning its plugins, a session that plays with no
 editor open: no request) and until you say yes. Each request sends the plugin's name and version (as its

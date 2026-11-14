@@ -131,6 +131,7 @@
 #include "editor/AbCard.h"
 #include "editor/DiffCard.h"
 #include "editor/ExportCard.h"
+#include "editor/GitCard.h"
 #include "editor/NameCard.h"
 #include "editor/UpdateCards.h"
 #include "editor/PresetPicker.h"
@@ -238,6 +239,7 @@ namespace playground::ui
     inline constexpr funkgui::Tag kPresetsTag = funkgui::tags::firstProduct + 17;     // the top bar's list of presets
     inline constexpr funkgui::Tag kRecordTag = funkgui::tags::firstProduct + 18;      // the recorder's notice (REC)
     inline constexpr funkgui::Tag kCompareTag = funkgui::tags::firstProduct + 40;     // COMPARE's card (DiffCard.h)
+    inline constexpr funkgui::Tag kGitTag = funkgui::tags::firstProduct + 41;         // GIT's card (GitCard.h, package 05)
     inline constexpr funkgui::Tag kOfferTag = funkgui::tags::firstProduct + 44;       // the website's offer (UpdateCards.h)
     inline constexpr funkgui::Tag kUpdateTag = funkgui::tags::firstProduct + 45;      // the update card (UpdateCards.h)
     inline constexpr funkgui::Tag kWhatsNewTag = funkgui::tags::firstProduct + 46;    // What's new (UpdateCards.h)
@@ -399,8 +401,14 @@ namespace playground::ui
         // changed between them. Its ways in: PROJECTS' Compare... and its versions' menu, and the top bar's project pill's
         // menu (a right-click: projectMenu), "Compare with the saved version" while the editor has changes.
         void openCompare(const std::string& project, int left, int right);
+        // GIT (GitCard.h, package 05): a project's link to a git remote (Connect, Push, Pull, Check), or Add from Git with
+        // none ("").
+        void openGit(const std::string& project);
+        GitCard& gitCard() noexcept { return git_; }
         DiffCard& compareCard() noexcept { return compare_; }
         void projectMenu();
+        chat::BranchMark projectBranch() const;   // the pill's git mark (package 05): the project open's
+        void syncGit();
         // The top bar's presets (EditorPort::presetCycle): the arrows step the project open's presets (and [ and ],
         // while no text field has the caret), wrapping; the name between them opens their list (PresetPicker.h).
         void stepPresets(int step);
@@ -851,6 +859,7 @@ namespace playground::ui
         std::string presetsOf_;                          // the project presetList_ is of
         double projectsAt_ = -100.0;
         uint64_t listsRevision_ = 0;
+        uint64_t gitSeen_ = 0;                                    // package 05: EditorPort::gitPolled as last polled
         uint64_t explorerKey_ = 0;
         bool explorerStale_ = true;                      // made again at the next frame, whatever the hash
         int explorerBuilds_ = 0;
@@ -896,7 +905,7 @@ namespace playground::ui
         bool dialogOpen() const noexcept
         {
             return keyOpen_ || projects_.isOpen() || export_.isOpen() || ab_.isOpen() || settings_.isOpen() || name_.isOpen()
-                || picker_.isOpen() || compare_.isOpen() || update_.isOpen() || whatsNew_.isOpen();
+                || picker_.isOpen() || compare_.isOpen() || git_.isOpen() || update_.isOpen() || whatsNew_.isOpen();
         }
         std::string projectLabel() const;                // the top bar's pill: "Name v3 - Preset", "edited", or Projects
         bool unread_ = false;                            // folded, and the conversation grew since
@@ -936,6 +945,7 @@ namespace playground::ui
         int focusBeforePicker_ = -2;                     // the focus to give back when the list closes (-2: none)
         void afterPicker(bool wasOpen);                  // its notice to the status, the focus back once it closed
         ExportCard export_{ port_ };
+        GitCard git_{ port_ };                                   // package 05
         AbCard ab_{ port_ };
         DiffCard compare_{ port_ };
         void afterCompare(bool wasOpen);                 // its notice, its A/B asked for, the focus back once it closed

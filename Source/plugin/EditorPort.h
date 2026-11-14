@@ -352,6 +352,10 @@ namespace playground
         int64_t savedMs = 0;                     // its latest version's save, ms since 1970 (the newest first: by it)
         int64_t createdMs = 0;                   // when the project was made (ProjectStore.h's "created"), ms since 1970
         int64_t bytes = 0;                       // its file's size (a factory project's: 0)
+        bool git = false;                        // package 05: linked to a git remote (the links file, no repository read)
+        int ahead = -1, behind = -1;             // ... to push (versions and commits) and to pull, as of the last fetch
+                                                 // (-1: not known)
+        std::string remote = {};                 // ... its remote, shortened ("github.com/me/pad")
         friend bool operator==(const ProjectEntry&, const ProjectEntry&) = default;
     };
 
@@ -492,6 +496,53 @@ namespace playground
         std::string path;                        // the file
         Exported out;                            // the file written (ok)
         std::string why;                         // why not (!ok)
+    };
+
+    // ---- Package 05: projects and git (plugin/GitProjects.h, plugin/ProcessorGit.cpp, editor/GitCard.h) -------------
+    // One git job at a time, on a thread of the processor's own, only when the user pressed its button: find (git
+    // --version alone: the Settings card's Look for git), connect, push, pull, check, add (a clone made a project).
+    enum class GitOp : uint8_t { find, connect, push, pull, check, add };
+    struct GitJob
+    {
+        GitOp op = GitOp::check;
+        std::string project;                     // connect, push, pull, check
+        std::string remote;                      // connect, add
+        std::string branch;                      // connect ("" main), add ("" the remote's default)
+    };
+    struct GitCommitEntry
+    {
+        std::string sha;
+        std::string subject;
+        std::string when;                        // "2026-11-13 14:02"
+        friend bool operator==(const GitCommitEntry&, const GitCommitEntry&) = default;
+    };
+    // A project's link, from the links file and the store's cache (no repository read).
+    struct GitLink
+    {
+        bool linked = false;
+        std::string remote, shortRemote, branch;
+        std::string folder;                      // the working folder, its full path
+        int toPush = 0;                          // versions newer than the last commit
+        int ahead = -1, behind = -1;             // commits, as of the last fetch (-1: not known)
+        std::string checked;                     // when it was last fetched ("" never)
+        std::vector<GitCommitEntry> recent;      // newest first
+        bool diverged = false;                   // both sides moved: the next pull settles it
+        friend bool operator==(const GitLink&, const GitLink&) = default;
+    };
+    struct GitState
+    {
+        bool busy = false;                       // a job runs
+        uint64_t ended = 0;                      // how many have ended: a new outcome when it moves
+        GitOp op = GitOp::find;                  // the last one started
+        std::string project;                     // ... its project ("" for find and add)
+        std::string doing;                       // while busy: what it does now, in words
+        bool ok = false, cancelled = false;      // the last one's outcome
+        bool behind = false, diverged = false;   // ... push refused (pull first); pull found both sides moved
+        std::string words;                       // ... in words (git's own when it failed)
+        std::string added;                       // ... add: the project made
+        bool looked = false;                     // git looked for (a job ran, or Look for git)
+        std::string gitPath, gitVersion;         // ... what was found ("" none)
+        std::string gitWhy;                      // ... none found: why, in words
     };
 
     // What an import brought in (importProjects): the projects added (their names now) and those refused, each "<name>:
@@ -1062,6 +1113,43 @@ namespace playground
             why = "no samples here";
             return false;
         }
+
+        // ---- Package 05: projects and git ---------------------------------------------------------------------------
+        //   gitLink()       a project's link (GitLink): the links file and the store's cache, never a repository
+        //   startGit()      a job (GitJob) on the processor's git thread; false, with why, when one runs or it cannot
+        //   gitState()      the job under way or the last one's outcome; gitPolled() moves with it and with the links
+        //   cancelGit()     the running git killed (what a Connect or an Add made is removed again)
+        //   disconnectGit() the link removed, the project and its folder kept (no git runs)
+        //   gitChosen()     the git the user chose in Settings ("" none: found as Git.h says); setGitChosen() sets it
+        //   gitFolder()     <projects folder>/Git, where the working folders are
+        virtual GitLink gitLink(const std::string& project) const
+        {
+            (void)project;
+            return {};
+        }
+        virtual bool startGit(const GitJob& job, std::string& why)
+        {
+            (void)job;
+            why = "no git here";
+            return false;
+        }
+        virtual GitState gitState() const { return {}; }
+        virtual void cancelGit() {}
+        virtual uint64_t gitPolled() const { return 0; }
+        virtual bool disconnectGit(const std::string& project, std::string& why)
+        {
+            (void)project;
+            why = "no git here";
+            return false;
+        }
+        virtual std::string gitChosen() const { return {}; }
+        virtual bool setGitChosen(const std::string& path, std::string& why)
+        {
+            (void)path;
+            why = "no git here";
+            return false;
+        }
+        virtual std::string gitFolder() const { return {}; }
 
         // ---- One version's content (the Compare card, editor/DiffCard.h; the A/B card's sides) ----------------------
         // versionPolled: a version of `project` (0: its newest) from the store's table of the versions asked last

@@ -315,12 +315,18 @@ namespace playground::ui
                     const float detailW = detail.empty() ? 0.0f : c.textWidth(detail.c_str(), chat::kSmall);
                     const float labelRoom = right - labelX - (detail.empty() ? 0.0f : 10.0f);
                     const std::string label = asciiText(row.label);
-                    const float labelW = c.textWidth(label.c_str(), chat::kBody);
+                    // Package 05: a linked project's git mark after its name (its room taken before the label's).
+                    const float markW = row.git ? chat::branchMarkWidth(c, row.ahead, row.behind, chat::kSmall) + 6.0f : 0.0f;
+                    const float labelW = c.textWidth(label.c_str(), chat::kBody) + markW;
                     // The detail only where the label leaves it room; the label is cut before the detail goes.
                     const bool detailShown = !detail.empty() && labelW + 10.0f + detailW <= right - labelX;
-                    const std::string shown = fitText(c, label, chat::kBody, detailShown ? labelRoom - detailW : right - labelX);
+                    const std::string shown =
+                        fitText(c, label, chat::kBody, (detailShown ? labelRoom - detailW : right - labelX) - markW);
                     c.text(shown.c_str(), labelX, c.capCentreTop(r.centreY(), chat::kBody), chat::kBody,
                            row.active ? p.text : (hovered ? p.text : p.soft));
+                    if (row.git)
+                        chat::drawBranchMark(c, labelX + c.textWidth(shown.c_str(), chat::kBody) + 6.0f, r.centreY(), row.ahead,
+                                             row.behind, chat::kSmall, p.dim);
                     if (detailShown)
                         c.text(detail.c_str(), right, c.capCentreTop(r.centreY(), chat::kSmall), chat::kSmall, p.faint,
                                funkgui::Align::right);
@@ -469,6 +475,8 @@ namespace playground::ui
                                             : funkgui::A11yRole::button;
                     it.title = asciiText(row.label);
                     it.value = asciiText(row.detail);
+                    if (row.git)
+                        it.description = "linked to " + row.remote;   // package 05: the git mark's words
                     it.checkable = row.active || row.marked || row.fold != 0;
                     it.checked = row.active || row.marked || row.fold == 1;
                     it.help = !row.help.empty()                ? row.help

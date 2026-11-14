@@ -114,6 +114,8 @@ namespace playground::ui
             std::function<std::string()> label;       // a pill's text
             std::function<std::string()> detail;      // a dropdown's trigger's faint text at its right ("3/7"): none when null
             std::function<bool()> dot;                // ... a modified dot after its label, while true
+            // ... the git mark after its label (package 05: the project pill's, a linked project's; chat::BranchMark)
+            std::function<chat::BranchMark()> branch;
             bool chevron = false;                     // a menu opens: a dropdown's trigger (Dropdown.h)
             std::function<bool()> open;               // ... its menu (or card) is open now: drawn pressed
             std::function<Look()> look;               // ghost when null
@@ -135,6 +137,7 @@ namespace playground::ui
         void setSpecNow(std::function<std::string()> spec) { spec_.specNow = std::move(spec); }
         void setOpen(std::function<bool()> open) { spec_.open = std::move(open); }
         void setMenu(std::function<void()> menu) { spec_.menu = std::move(menu); }
+        void setBranch(std::function<chat::BranchMark()> branch) { spec_.branch = std::move(branch); }
         float preferredWidth() const;                 // a pill's, for its label now
         // A pill with an icon drawn as its icon alone (no label), where the bar has no room for its words: its
         // accessibility title and its footer's line stay.

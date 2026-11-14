@@ -3,6 +3,7 @@
 
 #include "plugin/ChatStore.h"
 #include "plugin/Factory.h"
+#include "plugin/GitProjects.h"
 #include "plugin/Launch.h"
 #include "plugin/ProjectExport.h"
 #include "plugin/ProjectStore.h"
@@ -526,6 +527,7 @@ namespace playground
     Processor::~Processor()
     {
         finishExport();                                          // an export in flight cancelled, its thread joined
+        finishGit();                                             // package 05: a git job cancelled, its thread joined
         finishPreviews();                                        // the previews' thread stopped and joined
         finishSave();                                            // a save in flight writes its file, then goes
         mcp_.reset();                                            // no call comes in while the rest goes
@@ -1436,6 +1438,7 @@ namespace playground
         picturesIdle();                                          // the pictures' GPU context, let go when idle
         pollSave();                                              // the editor's save, its file written: it lands
         pollExport();                                            // an export that ended: its thread joined
+        pollGit();                                               // package 05: a git job that ended, a pulled version
         journalPoll();                                           // what moved since the last poll (ProcessorLive.cpp)
         abSessionLoaded();                                       // a session loaded since ends the A/B (ProcessorAb.cpp)
         if (compiler_.revision() != seen_)
@@ -2399,6 +2402,18 @@ namespace playground
         for (const projectstore::Entry& e : list)
             out.push_back({ e.name, whenOf(e.savedMs), e.latest, e.versions, static_cast<int>(e.presets.size()), false,
                             e.category, e.tags, e.description, e.savedMs, e.createdMs, e.bytes });
+        // ---- Package 05: each project's git link, from the links file (no repository read) ----
+        if (const std::vector<projectstore::Link> links = projectstore::links(); !links.empty())
+            for (std::size_t i = 0; i < out.size() && i < list.size(); ++i)
+                for (const projectstore::Link& l : links)
+                    if (!list[i].id.empty() && l.id == list[i].id)
+                    {
+                        out[i].git = true;
+                        out[i].remote = gitprojects::shortRemote(l.remote);
+                        const int pending = std::clamp(list[i].latest - l.committed, 0, list[i].versions);
+                        out[i].ahead = l.ahead < 0 ? (pending > 0 ? pending : -1) : l.ahead + pending;
+                        out[i].behind = l.behind;
+                    }
         const std::lock_guard<std::mutex> lock(programMutex_);
         for (const projectstore::Entry& e : list)
             if (projectstore::sameName(e.name, projectName_))
