@@ -84,7 +84,9 @@ namespace playground::gitprojects
                 o.words = "Cancelled.";
                 return o;
             }
-            o.words = (lead.empty() ? std::string() : lead + "\n") + g.why + advice(g.why, g.ended == run::Ended::notStarted);
+            // Git that did not start (its words begin "git ..."), not a refusal of this code's before any git ran.
+            const bool notStarted = g.ended == run::Ended::notStarted && g.why.rfind("git ", 0) == 0;
+            o.words = (lead.empty() ? std::string() : lead + "\n") + g.why + advice(g.why, notStarted);
             return o;
         }
 
@@ -266,6 +268,127 @@ namespace playground::gitprojects
             std::vector<git::Commit> one;
             return git::log(c, 1, one, rev).ok && !one.empty() ? one.front().timeMs : 0;
         }
+        // ---- Part 3: both sides moved ---------------------------------------------------------------------------------------
+        std::string listed(const std::vector<std::string>& names)
+        {
+            std::string out;
+            for (std::size_t i = 0; i < names.size() && i < 4; ++i)
+                out += (i == 0 ? "" : ", ") + names[i];
+            if (names.size() > 4)
+                out += " and " + std::to_string(names.size() - 4) + " more";
+            return out;
+        }
+
+        // The project's version `v` as a tree's version, its sample files from the project (to save it again).
+        std::vector<projectstore::SampleFile> filesOfVersion(const projectstore::Project& p, const projectstore::Version& v)
+        {
+            std::vector<projectstore::SampleFile> out;
+            for (const projectstore::SampleRef& r : v.samples)
+                if (const projectstore::SampleFile* f = p.sample(r.hash))
+                    out.push_back(*f);
+            return out;
+        }
+
+        // A commit of `tree` over HEAD and `theirs` (a merge commit made in the object store, its trailer the version it
+        // is), then HEAD, the index and the folder fast-forwarded to it. "" with `failure` when it could not.
+        std::string mergeCommit(const git::Context& c, const std::string& tree, const std::string& theirs, const std::string& message,
+                                int version, git::Outcome& failure)
+        {
+            const std::string head = git::resolve(c, "HEAD");
+            std::string sha;
+            failure = git::commitTree(c, tree, { head, theirs },
+                                      message + "\n\n" + kTrailer + ": " + std::to_string(version), now(), sha);
+            if (!failure.ok)
+                return {};
+            failure = git::fastForwardTo(c, sha);
+            return failure.ok ? sha : std::string();
+        }
+
+        // Pull's last case: both sides have commits. The versions not committed yet are committed, then the two merged in
+        // git's object store (git merge-tree: the folder untouched): clean, the merge saved as a new version and made a
+        // merge commit; else the remote's commit kept in the link (Link::theirs) for the card's three ways.
+        Outcome mergeSides(const Env& env, const git::Context& c, Linked& k, const std::string& theirs)
+        {
+            const std::string where = shortRemote(k.link.remote);
+            if (git::mergeUnderWay(c))
+                return failed("A merge is under way in " + files::utf8Of(k.folder)
+                              + " (made there, not by the plugin): finish it or abort it there first. Nothing was pulled.");
+            std::string why;
+            int made = 0;
+            git::Outcome g;
+            g.ok = true;
+            const bool committed = commitNew(env, c, k.project, k.link, made, why, g);
+            if (made > 0)
+                projectstore::setLink(k.link);
+            if (!committed)
+                return !g.ok ? gitFailed(env, g, "Not pulled:") : failed("Not pulled: " + why + ".");
+            say(env, "Merging with " + where + "...");
+            git::Merged m;
+            if (git::Outcome o = git::mergeTree(c, "HEAD", theirs, m); !o.ok && !m.unsupported)
+                return gitFailed(env, o, "Not merged:");
+            // A git older than 2.38 cannot merge in the object store: no dead end, the user chooses (Keep mine and Take
+            // theirs need no merge-tree).
+            std::optional<projecttree::Tree> tree;
+            if (m.clean)
+            {
+                tree = projecttree::read(commitGetter(c, m.tree), &why);   // a merge that is no project: the user chooses
+                if (!tree)
+                    m.conflicts = { "project.json" };
+            }
+            if (!m.clean || !tree)
+            {
+                k.link.theirs = theirs;
+                git::Counts n;
+                if (git::counts(c, kRemote, k.link.branch, n).ok)
+                {
+                    k.link.ahead = n.ahead;
+                    k.link.behind = n.behind;
+                }
+                recentOf(c, k.link);
+                projectstore::setLink(k.link);
+                Outcome o;
+                o.diverged = true;
+                o.words = m.unsupported
+                              ? std::string("Both sides have changed, and this git (older than 2.38) cannot merge them on its own (a "
+                                            "newer git merges changes to different places by itself). Choose: Keep mine, Take theirs, "
+                                            "or Compare... to see both. Either way both sides stay, as versions.")
+                              : "Both sides changed " + (m.conflicts.empty() ? std::string("the same lines") : "the same lines of " + listed(m.conflicts))
+                                    + ", so git cannot merge them. Choose: Keep mine, Take theirs, or Compare... to see both. Either way both "
+                                      "sides stay, as versions.";
+                return o;
+            }
+            say(env, "Saving the merge as a version...");
+            const std::string lead = "Merged with " + sha7(theirs);
+            const std::optional<projectstore::Saved> saved = projectstore::addVersion(
+                k.project.name, tree->version, tree->samples, now(), lead,
+                tree->presets, &tree->info, &why);
+            if (!saved)
+                return failed("Merged, but not saved as a version: " + why + ". Nothing was changed in the folder.");
+            git::Outcome f;
+            const std::string sha = mergeCommit(c, m.tree, theirs, lead + " (version " + std::to_string(saved->number) + ")",
+                                                saved->number, f);
+            if (sha.empty())
+                return gitFailed(env, f, "Saved as version " + std::to_string(saved->number) + ", but the merge commit was not made:");
+            k.link.committed = saved->number;
+            k.link.commit = sha;
+            k.link.written = projecttree::filesOf(tree->version);
+            k.link.theirs.clear();
+            git::Counts n;
+            if (git::counts(c, kRemote, k.link.branch, n).ok)
+            {
+                k.link.ahead = n.ahead;
+                k.link.behind = n.behind;
+            }
+            k.link.syncedMs = now();
+            recentOf(c, k.link);
+            projectstore::setLink(k.link);
+            Outcome o;
+            o.ok = true;
+            o.version = saved->unchanged ? 0 : saved->number;
+            o.words = "Both sides had changed, in different places: merged with " + where + " (" + sha7(theirs) + ") and saved as version "
+                    + std::to_string(saved->number) + ". Push to send the merge.";
+            return o;
+        }
     }
 
     std::string shortRemote(const std::string& remote)
@@ -403,6 +526,8 @@ namespace playground::gitprojects
         if (!committed)
             return !g.ok ? gitFailed(env, g, "Not pushed:") : failed("Not pushed: " + why + ".");
         const std::string where = shortRemote(k.link.remote);
+        git::Counts before;                              // a merge commit to send counts as something pushed
+        git::counts(c, kRemote, k.link.branch, before);
         say(env, "Pushing to " + where + "...");
         const git::Outcome s = git::push(c, kRemote, k.link.branch);
         if (!s.ok)
@@ -435,8 +560,9 @@ namespace playground::gitprojects
         projectstore::setLink(k.link);
         Outcome o;
         o.ok = true;
-        o.words = made > 0 ? "Pushed " + plural(made, "version", "versions") + " to " + where + "."
-                           : "Nothing new to push: " + where + " has every version.";
+        o.words = made > 0           ? "Pushed " + plural(made, "version", "versions") + " to " + where + "."
+                : before.ahead > 0 ? "Pushed to " + where + ": it has every version now."
+                                   : "Nothing new to push: " + where + " has every version.";
         return o;
     }
 
@@ -510,15 +636,7 @@ namespace playground::gitprojects
             return o;
         }
         if (!unsaved && (n.ahead > 0 || pending > 0))
-        {
-            recentOf(c, k.link);
-            projectstore::setLink(k.link);
-            Outcome o;
-            o.diverged = true;
-            o.words = "Both sides have changed: " + where + " has " + plural(n.behind, "commit", "commits") + " this project has not, and "
-                    + "this project has " + plural(pending + n.ahead, "version", "versions") + " it has not. Nothing was pulled.";
-            return o;
-        }
+            return mergeSides(env, c, k, theirs);       // both sides moved (part 3)
         const std::string rev = unsaved ? head : theirs;
         say(env, "Reading what " + where + " brought...");
         const std::optional<projecttree::Tree> tree = projecttree::read(commitGetter(c, rev), &why);
@@ -565,6 +683,133 @@ namespace playground::gitprojects
                                    : "Pulled " + plural(count, "commit", "commits") + " from " + where + ": saved as version "
                                          + std::to_string(saved->number) + ".";
         return o;
+    }
+
+    Outcome keepMine(const Env& env, const std::string& project)
+    {
+        Linked k;
+        std::string why;
+        if (!linkedProject(project, k, why))
+            return failed(why);
+        if (k.link.theirs.empty())
+            return failed("Nothing to settle: Pull first.");
+        const git::Context c = contextOf(env, files::utf8Of(k.folder));
+        if (git::mergeUnderWay(c))
+            return failed("A merge is under way in " + files::utf8Of(k.folder) + " (made there, not by the plugin): finish it or abort it there first.");
+        const std::string theirs = k.link.theirs, where = shortRemote(k.link.remote);
+        // Yours: the version last committed (the pull that found the two sides apart committed every one first), so a
+        // second press after one cut off between its saves keeps yours, not the side it saved before.
+        const projectstore::Version* committed = k.project.version(k.link.committed);
+        const projectstore::Version mine = committed != nullptr ? *committed : k.project.latest();
+        const std::vector<projectstore::SampleFile> mineFiles = filesOfVersion(k.project, mine);
+        say(env, "Reading " + where + "'s side...");
+        const std::optional<projecttree::Tree> tree = projecttree::read(commitGetter(c, theirs), &why);
+        int theirsNumber = 0;
+        if (tree)
+        {
+            const std::optional<projectstore::Saved> t = projectstore::addVersion(project, tree->version, tree->samples, commitTime(c, theirs),
+                                                                                  "Theirs, " + sha7(theirs), tree->presets, nullptr, &why);
+            if (!t)
+                return failed("Not settled: their side could not be saved as a version: " + why + ".");
+            theirsNumber = t->unchanged ? 0 : t->number;
+        }
+        const std::optional<projectstore::Saved> m = projectstore::addVersion(project, mine, mineFiles, now(), "Mine, kept over " + sha7(theirs),
+                                                                              {}, nullptr, &why);
+        if (!m)
+            return failed("Not settled: yours could not be saved again: " + why + ".");
+        say(env, "Making the merge commit...");
+        git::Outcome f;
+        const std::string sha = mergeCommit(c, git::treeOf(c, "HEAD"), theirs, "Kept mine over " + sha7(theirs), m->number, f);
+        if (sha.empty())
+            return gitFailed(env, f, "Saved, but the merge commit was not made (Keep mine again to make it):");
+        k.link.committed = m->number;
+        k.link.commit = sha;
+        k.link.theirs.clear();
+        git::Counts n;
+        if (git::counts(c, kRemote, k.link.branch, n).ok)
+        {
+            k.link.ahead = n.ahead;
+            k.link.behind = n.behind;
+        }
+        k.link.syncedMs = now();
+        recentOf(c, k.link);
+        projectstore::setLink(k.link);
+        Outcome o;
+        o.ok = true;
+        o.words = "Kept yours: " + (theirsNumber > 0 ? where + "'s side saved as version " + std::to_string(theirsNumber) + ", y"
+                                                     : std::string("y"))
+                + "ours again as version " + std::to_string(m->number) + ". Push to send it.";
+        return o;
+    }
+
+    Outcome takeTheirs(const Env& env, const std::string& project)
+    {
+        Linked k;
+        std::string why;
+        if (!linkedProject(project, k, why))
+            return failed(why);
+        if (k.link.theirs.empty())
+            return failed("Nothing to settle: Pull first.");
+        const git::Context c = contextOf(env, files::utf8Of(k.folder));
+        if (git::mergeUnderWay(c))
+            return failed("A merge is under way in " + files::utf8Of(k.folder) + " (made there, not by the plugin): finish it or abort it there first.");
+        const std::string theirs = k.link.theirs, where = shortRemote(k.link.remote);
+        // Yours: the version last committed (a second press after one cut off would find theirs the latest).
+        const int mine = k.project.version(k.link.committed) != nullptr ? k.link.committed : k.project.latest().number;
+        say(env, "Reading " + where + "'s side...");
+        const std::optional<projecttree::Tree> tree = projecttree::read(commitGetter(c, theirs), &why);
+        if (!tree)
+            return failed("Their side is not a project to open here: " + why + ". Keep mine keeps yours.");
+        const std::optional<projectstore::Saved> t = projectstore::addVersion(project, tree->version, tree->samples, commitTime(c, theirs),
+                                                                              "Took theirs, " + sha7(theirs), tree->presets, &tree->info, &why);
+        if (!t)
+            return failed("Not settled: their side could not be saved as a version: " + why + ".");
+        say(env, "Making the merge commit...");
+        git::Outcome f;
+        const std::string sha = mergeCommit(c, git::treeOf(c, theirs), theirs, "Took theirs, " + sha7(theirs), t->number, f);
+        if (sha.empty())
+            return gitFailed(env, f, "Saved, but the merge commit was not made (Take theirs again to make it):");
+        k.link.committed = t->number;
+        k.link.commit = sha;
+        k.link.written = projecttree::filesOf(tree->version);
+        k.link.theirs.clear();
+        git::Counts n;
+        if (git::counts(c, kRemote, k.link.branch, n).ok)
+        {
+            k.link.ahead = n.ahead;
+            k.link.behind = n.behind;
+        }
+        k.link.syncedMs = now();
+        recentOf(c, k.link);
+        projectstore::setLink(k.link);
+        Outcome o;
+        o.ok = true;
+        o.version = t->unchanged ? 0 : t->number;
+        o.words = "Took " + where + "'s side: saved as version " + std::to_string(t->number) + "; yours stays version "
+                + std::to_string(mine) + ". Push to send the merge.";
+        return o;
+    }
+
+    int64_t commitTimeOf(const Env& env, const std::string& project, const std::string& sha)
+    {
+        Linked k;
+        std::string why;
+        return linkedProject(project, k, why) ? commitTime(contextOf(env, files::utf8Of(k.folder)), sha) : 0;
+    }
+
+    std::optional<projecttree::Tree> theirsOf(const Env& env, const std::string& project, std::string& sha, std::string& why)
+    {
+        Linked k;
+        if (!linkedProject(project, k, why))
+            return std::nullopt;
+        if (k.link.theirs.empty())
+        {
+            why = "Nothing to compare: the two sides have not moved apart.";
+            return std::nullopt;
+        }
+        sha = k.link.theirs;
+        say(env, "Reading " + shortRemote(k.link.remote) + "'s side...");
+        return projecttree::read(commitGetter(contextOf(env, files::utf8Of(k.folder)), sha), &why);
     }
 
     Outcome add(const Env& env, const std::string& remote, const std::string& branch)

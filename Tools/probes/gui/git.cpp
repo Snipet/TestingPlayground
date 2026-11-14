@@ -10,6 +10,8 @@
 //   gui.git.cancelled.png     ... cancelled: nothing linked, nothing left
 //   gui.git.linked.png        linked: the remote, the state, the folder, the commits, Push, Pull, Check, Show folder
 //   gui.git.behind.png        a push refused: the remote moved (pull first), in git's words
+//   gui.git.diverged.png      (part 3) both sides changed the same lines: Keep mine, Take theirs, Compare...
+//   gui.git.compare.png       ... COMPARE, the newest version against their side (no A/B, no Open for it)
 //   gui.git.disconnect.png    the Disconnect question: what stays and what goes
 //   gui.git.nogit.png         a chosen git that is none: said
 //   gui.git.add.png           Add from Git
@@ -23,14 +25,21 @@
 //   CONNECT  Connect waits for an address; Return presses it; the card says what runs, then the outcome; linked after
 //   CANCEL   Cancel kills git: nothing linked, the folder it made gone
 //   FAIL     a push refused: behind, "pull first", the line in the danger colour's place (failed)
+//   DIVERGED (part 3) a pull that cannot merge: the three ways; Compare... opens COMPARE on their side (A/B off); Keep
+//            mine settles it and Push sends it; their side's moved dial worded as the panel says it; COMPARE closed brings
+//            the Git card back, diverged
 //   ASK      Disconnect asks first (its line names the folder that stays), Escape withdraws it, the second click
 //            disconnects: the project and its folder left
 //   MARK     the explorer's row and the pill carry the mark; their accessibility says "linked to"
 //   KEYS     Tab moves between the fields; the card's accessibility: the fields, the buttons, its ids its own
 //   NOGIT    a chosen git that is no git: the card says so, nothing else changes
 //   WHATSNEW What's new never opens over the card, nor the card over What's new; while it is up a click is its own
+//   ENDED    a job that has ended before the card first looks (the processor joins it inside startGit, probes only):
+//            a Check with a git that cannot run says so and is failed, a Check that works says its outcome, at once;
+//            neither keeps the doing line or Cancel
 #include "Probe.h"
 
+#include "editor/DiffCard.h"
 #include "editor/GitCard.h"
 #include "editor/Panel.h"
 #include "editor/ProjectBrowser.h"
@@ -54,6 +63,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <string>
 #include <thread>
 #include <vector>
@@ -118,6 +128,12 @@ namespace
     {
         const std::string s = p.generic_string();
         return "file://" + std::string(s.front() == '/' ? "" : "/") + s;
+    }
+
+    std::string readText(const fs::path& p)
+    {
+        std::ifstream f(p, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
     }
 
     bool has(const std::string& s, const std::string& part) { return s.find(part) != std::string::npos; }
@@ -216,6 +232,8 @@ PROBE(gui, git)
         GC& card = panel.gitCard();
         const auto settled = [&] { return pump(processor, host, [&] { return !port.gitState().busy && !card.running(); }); };
         const auto press = [&](GC::Button b) { clickAt(host, card.centreOf(b, W, H)); };
+        std::string movedDial, movedText;              // part 3: a dial the other machine moved
+        float movedValue = 0.0f;
 
         // ---- OPEN: PROJECTS' Git... with the project chosen ------------------------------------------------------------
         panel.openProjects();
@@ -281,6 +299,24 @@ PROBE(gui, git)
             const fs::path other = root / ("other" + sfx);
             pg::git::clone(context(root), url, other.string(), "main");
             writeFile(other / "program.fm", "// from elsewhere\n");
+            // Part 3: one of its real dials moved there too (COMPARE words their side's dials as a version's).
+            for (int k = 0; k < pg::kMaxControls && movedDial.empty(); ++k)
+                if (const pg::Control& ctl = processor.control(k); ctl.used && ctl.type == pg::ControlType::real)
+                {
+                    std::string json = readText(other / "project.json");
+                    const std::string key = "{ \"name\": \"" + std::string(ctl.name) + "\", \"value\": ";
+                    if (const std::size_t at = json.find(key); at != std::string::npos)
+                    {
+                        const std::size_t from = at + key.size(), end = json.find_first_of(",}", from);
+                        movedValue = ctl.max;
+                        char buf[32];
+                        std::snprintf(buf, sizeof buf, "%.9g ", static_cast<double>(movedValue));
+                        json.replace(from, end - from, buf);
+                        writeFile(other / "project.json", json);
+                        movedDial = ctl.name;
+                        movedText = pg::dialText(ctl, movedValue);
+                    }
+                }
             pg::git::commitAll(context(other), "From elsewhere", 0, {});
             pg::git::push(context(other), "origin", "main");
             d = port.draft();
@@ -296,6 +332,53 @@ PROBE(gui, git)
             P.eq(row + "fail.behind", card.failed() && has(card.line(), "pull first") && card.state().behind ? 1 : 0, 1);
             writePng(P, host, "gui.git.behind" + sfx + ".png");
         }
+
+        // ---- DIVERGED (part 3): Pull finds both sides changed the same lines -----------------------------------------------
+        press(GC::Button::pull);
+        settled();
+        std::printf("diverged: \"%s\"\n", card.line().c_str());
+        P.eq(row + "diverged.three_ways", card.link().diverged && card.label(GC::Button::primary) == "Keep mine"
+                                              && card.label(GC::Button::pull) == "Take theirs" && card.label(GC::Button::check) == "Compare..."
+                                              && has(card.line(), "Keep mine") ? 1 : 0, 1);
+        {
+            const GC::Places dp = card.places(W, H);
+            P.eq(row + "diverged.buttons_apart", dp.disconnect.right() + 8.0f <= dp.check.x && dp.check.right() <= dp.pull.x
+                                                     && dp.pull.right() <= dp.primary.x ? 1 : 0, 1);
+        }
+        writePng(P, host, "gui.git.diverged" + sfx + ".png");
+        press(GC::Button::check);                     // Compare...: their side read into memory, COMPARE opened on it
+        pump(processor, host, [&] { return panel.compareCard().isOpen() && !panel.compareCard().reading(); });
+        {
+            const pg::ui::DiffCard& dc = panel.compareCard();
+            std::vector<funkgui::A11yItem> out;
+            dc.accessibility(out, W, H);
+            bool abOff = false;
+            for (const funkgui::A11yItem& it : out)
+                abOff = abOff || (it.title == "A/B" && !it.enabled);
+            P.eq(row + "diverged.compare_theirs", dc.isOpen() && dc.side(1) == pg::ui::DiffCard::kTheirs && dc.sideLabel(1) == "Theirs"
+                                                      && !card.isOpen() && abOff ? 1 : 0, 1);
+            // Their side's moved dial worded as the panel says it, as a version's dials are.
+            std::string said;
+            for (const pg::ContentDial& cd : port.gitTheirs("Glass Bloom").dials)
+                if (cd.name == movedDial)
+                    said = cd.text;
+            std::printf("diverged: their %s says \"%s\" (the panel's \"%s\")\n", movedDial.c_str(), said.c_str(), movedText.c_str());
+            P.eq(row + "diverged.dials_worded", !movedDial.empty() && said == movedText ? 1 : 0, 1);
+            writePng(P, host, "gui.git.compare" + sfx + ".png");
+        }
+        host.keys("escape");                          // COMPARE closed: the Git card back, the choice still owed
+        host.settle();
+        pump(processor, host, [&] { return card.isOpen(); });
+        P.eq(row + "diverged.card_back", card.isOpen() && card.project() == "Glass Bloom" && card.link().diverged
+                                             && card.label(GC::Button::primary) == "Keep mine" ? 1 : 0, 1);
+        press(GC::Button::primary);                   // Keep mine
+        settled();
+        std::printf("diverged: keep mine \"%s\"\n", card.line().c_str());
+        P.eq(row + "diverged.keep_mine", !card.link().diverged && has(card.line(), "Kept yours") ? 1 : 0, 1);
+        press(GC::Button::primary);                   // and Push
+        settled();
+        std::printf("diverged: pushed \"%s\"\n", card.line().c_str());
+        P.eq(row + "diverged.pushed", !card.failed() && has(card.line(), "Pushed") ? 1 : 0, 1);
 
         // ---- ASK: Disconnect's question ----------------------------------------------------------------------------------
         press(GC::Button::disconnect);
@@ -314,6 +397,23 @@ PROBE(gui, git)
         P.eq(row + "nogit.said", card.failed() && (has(card.line(), "not git") || has(card.line(), "could not be run")) && card.link().linked ? 1 : 0, 1);
         writePng(P, host, "gui.git.nogit" + sfx + ".png");
         port.setGitChosen({}, why);
+
+        // ---- ENDED: a job that ends before the card first looks (the processor joins its thread inside startGit, as a
+        // loaded machine's scheduling can make it end): taken at once, no frame, no poll, no move of gitPolled after ---
+        processor.setGitJoinForTests(true);
+        port.setGitChosen(notGit.string(), why);
+        press(GC::Button::check);
+        std::printf("ended: no git \"%s\"\n", card.line().c_str());
+        P.eq(row + "ended.nogit_said", card.failed() && !has(card.line(), "Checking")
+                                           && (has(card.line(), "not git") || has(card.line(), "could not be run")) ? 1 : 0, 1);
+        P.eq(row + "ended.nogit_cancel_gone", card.label(GC::Button::close) == "Close" ? 1 : 0, 1);
+        port.setGitChosen({}, why);
+        press(GC::Button::check);
+        std::printf("ended: check \"%s\"\n", card.line().c_str());
+        P.eq(row + "ended.check_said", !card.failed() && !card.line().empty() && !has(card.line(), "Checking")
+                                           && card.label(GC::Button::close) == "Close" ? 1 : 0, 1);
+        processor.setGitJoinForTests(false);
+        settled();
 
         // ---- A11Y ----------------------------------------------------------------------------------------------------------
         {

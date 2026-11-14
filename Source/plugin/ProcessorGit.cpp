@@ -66,7 +66,7 @@ namespace playground
         return out;
     }
 
-    bool Processor::startGit(const GitJob& job, std::string& why)
+    bool Processor::startGit(const GitJob& job, std::string& why, uint64_t* endsAt)
     {
         {
             const std::lock_guard<std::mutex> lock(gitMutex_);
@@ -97,10 +97,16 @@ namespace playground
             gitState_.ok = gitState_.cancelled = gitState_.behind = gitState_.diverged = false;
             gitState_.words.clear();
             gitState_.added.clear();
+            if (endsAt != nullptr)
+                *endsAt = gitState_.ended + 1;                   // under the lock: the count this job ends at
         }
         gitCancel_.store(false);
         gitRevision_.fetch_add(1);
         gitThread_ = std::thread([this, job] { runGit(job); });
+#if defined(FP_PROBES)
+        if (gitJoinForTests_)
+            gitThread_.join();                                   // ended before the caller looks (setGitJoinForTests)
+#endif
         return true;
     }
 
@@ -192,6 +198,28 @@ namespace playground
                     case GitOp::pull: o = gitprojects::pull(env, job.project); break;
                     case GitOp::check: o = gitprojects::check(env, job.project); break;
                     case GitOp::add: o = gitprojects::add(env, job.remote, job.branch); break;
+                    case GitOp::keepMine: o = gitprojects::keepMine(env, job.project); break;
+                    case GitOp::takeTheirs: o = gitprojects::takeTheirs(env, job.project); break;
+                    case GitOp::theirs:
+                    {
+                        std::string sha, why;
+                        const std::optional<projecttree::Tree> t = gitprojects::theirsOf(env, job.project, sha, why);
+                        o.ok = t.has_value();
+                        o.words = t ? "Their side (" + sha.substr(0, 7) + ") read." : why;
+                        if (t)
+                        {
+                            VersionContent v;
+                            v.read = true;
+                            v.files = t->version.files;
+                            for (const projectstore::SampleRef& r : t->version.samples)
+                                v.samples.push_back({ r.name, r.hash });
+                            v.note = "Theirs, " + sha.substr(0, 7);
+                            v.when = whenOf(gitprojects::commitTimeOf(env, job.project, sha));
+                            const std::lock_guard<std::mutex> lock(gitMutex_);
+                            gitTheirs_ = { job.project, sha, std::move(v), t->version.dials };   // worded when read
+                        }
+                        break;
+                    }
                     case GitOp::find: break;
                 }
                 if (o.cancelled || gitCancel_.load())
@@ -210,7 +238,7 @@ namespace playground
             ended.diverged = o.diverged;
             ended.words = o.words;
             ended.added = o.project;
-            if (job.op == GitOp::pull && o.ok && o.version > 0)
+            if ((job.op == GitOp::pull || job.op == GitOp::takeTheirs) && o.ok && o.version > 0)
                 open = { job.project, o.version };
         }
         catch (...)
@@ -220,13 +248,16 @@ namespace playground
             open = {};
             try
             {
-                std::string words = failure::sentence(job.op == GitOp::find      ? "looking for git"
-                                                      : job.op == GitOp::connect ? "linking the project to git"
-                                                      : job.op == GitOp::push    ? "pushing the project"
-                                                      : job.op == GitOp::pull    ? "pulling the project"
-                                                      : job.op == GitOp::check   ? "checking the remote"
-                                                      : job.op == GitOp::add     ? "adding a project from git"
-                                                                                 : "running git");
+                std::string words = failure::sentence(job.op == GitOp::find       ? "looking for git"
+                                                      : job.op == GitOp::connect    ? "linking the project to git"
+                                                      : job.op == GitOp::push       ? "pushing the project"
+                                                      : job.op == GitOp::pull       ? "pulling the project"
+                                                      : job.op == GitOp::check      ? "checking the remote"
+                                                      : job.op == GitOp::add        ? "adding a project from git"
+                                                      : job.op == GitOp::keepMine   ? "keeping your side"
+                                                      : job.op == GitOp::takeTheirs ? "taking their side"
+                                                      : job.op == GitOp::theirs     ? "reading their side"
+                                                                                    : "running git");
                 if (!words.empty())
                     words[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(words[0])));
                 ended.words = words + ".";

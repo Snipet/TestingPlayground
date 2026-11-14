@@ -501,7 +501,8 @@ namespace playground
     // ---- Package 05: projects and git (plugin/GitProjects.h, plugin/ProcessorGit.cpp, editor/GitCard.h) -------------
     // One git job at a time, on a thread of the processor's own, only when the user pressed its button: find (git
     // --version alone: the Settings card's Look for git), connect, push, pull, check, add (a clone made a project).
-    enum class GitOp : uint8_t { find, connect, push, pull, check, add };
+    // Part 3: keepMine, takeTheirs (a diverged project settled), theirs (their side read into memory for COMPARE).
+    enum class GitOp : uint8_t { find, connect, push, pull, check, add, keepMine, takeTheirs, theirs };
     struct GitJob
     {
         GitOp op = GitOp::check;
@@ -1116,7 +1117,9 @@ namespace playground
 
         // ---- Package 05: projects and git ---------------------------------------------------------------------------
         //   gitLink()       a project's link (GitLink): the links file and the store's cache, never a repository
-        //   startGit()      a job (GitJob) on the processor's git thread; false, with why, when one runs or it cannot
+        //   startGit()      a job (GitJob) on the processor's git thread; false, with why, when one runs or it cannot;
+        //                   `endsAt` (when given) the GitState::ended its job will end at, set under the lock that starts
+        //                   it, so that a job that ends before the caller looks is still known as its own
         //   gitState()      the job under way or the last one's outcome; gitPolled() moves with it and with the links
         //   cancelGit()     the running git killed (what a Connect or an Add made is removed again)
         //   disconnectGit() the link removed, the project and its folder kept (no git runs)
@@ -1127,9 +1130,10 @@ namespace playground
             (void)project;
             return {};
         }
-        virtual bool startGit(const GitJob& job, std::string& why)
+        virtual bool startGit(const GitJob& job, std::string& why, uint64_t* endsAt = nullptr)
         {
             (void)job;
+            (void)endsAt;
             why = "no git here";
             return false;
         }
@@ -1150,6 +1154,15 @@ namespace playground
             return false;
         }
         virtual std::string gitFolder() const { return {}; }
+        // Part 3: a diverged project's other side as the last GitOp::theirs job read it, from memory (never a file or a
+        // repository read here): `missing` when none was read for that project.
+        virtual VersionContent gitTheirs(const std::string& project) const
+        {
+            (void)project;
+            VersionContent v;
+            v.read = v.missing = true;
+            return v;
+        }
 
         // ---- One version's content (the Compare card, editor/DiffCard.h; the A/B card's sides) ----------------------
         // versionPolled: a version of `project` (0: its newest) from the store's table of the versions asked last

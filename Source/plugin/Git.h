@@ -130,11 +130,34 @@ namespace playground::git
     Outcome show(const Context& c, const std::string& rev, const std::string& path, std::string& bytes);
     Outcome files(const Context& c, const std::string& rev, std::vector<std::string>& paths);
 
-    // `rev`'s commit ("" when it names none here).
+    // `rev`'s commit ("" when it names none here); treeOf: its tree's id.
     std::string resolve(const Context& c, const std::string& rev);
+    std::string treeOf(const Context& c, const std::string& rev);
     // The branch HEAD is on ("" detached or none).
     std::string currentBranch(const Context& c);
 
     // HEAD's commit ("" none yet).
     Outcome head(const Context& c, std::string& sha);
+
+    // ---- Package 05, part 3: two sides that both moved -----------------------------------------------------------------
+    // The merge of `ours` and `theirs` worked out in git's object store alone (`git merge-tree --write-tree`: the working
+    // folder, the index and HEAD untouched, nothing to clear after a cancel or a crash): `clean`, the merged tree's id,
+    // and the files that conflict. ok when git ran it, clean or not. A git older than 2.38 cannot: `unsupported`.
+    struct Merged
+    {
+        bool clean = false;
+        bool unsupported = false;
+        std::string tree;
+        std::vector<std::string> conflicts;
+    };
+    Outcome mergeTree(const Context& c, const std::string& ours, const std::string& theirs, Merged& out);
+    // A commit of `tree` over `parents` (`git commit-tree`), its message and date (as commitAll's), made in the object
+    // store alone: `sha` the commit. fastForwardTo then moves HEAD, the index and the working folder to it (`merge
+    // --ff-only`: refused, nothing changed, when it is no fast-forward or a file the folder holds would be overwritten).
+    Outcome commitTree(const Context& c, const std::string& tree, const std::vector<std::string>& parents,
+                       const std::string& message, std::int64_t whenMs, std::string& sha);
+    Outcome fastForwardTo(const Context& c, const std::string& commit);
+    // A merge left under way in the folder (MERGE_HEAD: the user's own git there); `ancestor` is in `of`'s history.
+    bool mergeUnderWay(const Context& c);
+    bool isAncestor(const Context& c, const std::string& ancestor, const std::string& of);
 }

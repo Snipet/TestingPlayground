@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <mutex>
+#include <optional>
 #include <random>
 #include <sstream>
 
@@ -637,6 +638,14 @@ namespace playground::git
         return sha;
     }
 
+    std::string treeOf(const Context& c, const std::string& rev)
+    {
+        if (rev.empty() || rev.front() == '-')
+            return {};
+        const Outcome o = call(c, { "rev-parse", "--verify", "-q", rev + "^{tree}" });
+        return o.ok ? trimmed(o.out) : std::string();
+    }
+
     std::string currentBranch(const Context& c)
     {
         const Outcome o = call(c, { "symbolic-ref", "-q", "--short", "HEAD" });
@@ -656,4 +665,103 @@ namespace playground::git
         }
         return call(c, { "rev-parse", "--git-dir" });
     }
+
+    // ---- Package 05, part 3 ----------------------------------------------------------------------------------------------
+    Outcome mergeTree(const Context& c, const std::string& ours, const std::string& theirs, Merged& out)
+    {
+        out = {};
+        if (ours.empty() || theirs.empty() || ours.front() == '-' || theirs.front() == '-')
+            return refused("A merge needs two commits.");
+        // -z: the tree, then each conflicted file's name as it is (no quoting of a name outside ASCII), each ending in
+        // NUL; an empty one ends the list.
+        Outcome o = call(c, { "merge-tree", "--write-tree", "-z", "--no-messages", "--name-only", ours, theirs });
+        // Exit 0: clean; 1: conflicts (the tree written all the same, with their markers); else git could not.
+        if (o.ended == run::Ended::exited && (o.code == 0 || o.code == 1))
+        {
+            std::size_t at = 0;
+            const auto next = [&]() -> std::optional<std::string> {
+                if (at >= o.out.size())
+                    return std::nullopt;
+                const std::size_t end = std::min(o.out.find('\0', at), o.out.size());
+                std::string part = o.out.substr(at, end - at);
+                at = end + 1;
+                return part;
+            };
+            out.tree = trimmed(next().value_or(std::string()));
+            while (const std::optional<std::string> name = next())
+            {
+                if (name->empty())
+                    break;
+                if (std::find(out.conflicts.begin(), out.conflicts.end(), *name) == out.conflicts.end())
+                    out.conflicts.push_back(*name);
+            }
+            out.clean = o.code == 0 && !out.tree.empty();
+            o.ok = !out.tree.empty();
+            if (!o.ok)
+                o.why = "git merge-tree said nothing.";
+            return o;
+        }
+        // Exit 129 is git's usage error: a git older than 2.38, which has no --write-tree (it prints its usage).
+        if ((o.ended == run::Ended::exited && o.code == 129) || has(o.why, "write-tree") || has(o.why, "usage: git merge-tree")
+            || has(o.why, "unknown option"))
+        {
+            out.unsupported = true;
+            o.why = "This git (older than 2.38) cannot merge without touching the folder.";
+        }
+        return o;
+    }
+
+    Outcome commitTree(const Context& c, const std::string& tree, const std::vector<std::string>& parents,
+                       const std::string& message, std::int64_t whenMs, std::string& sha)
+    {
+        sha.clear();
+        const std::string text = trimmed(message);
+        if (tree.empty() || tree.front() == '-' || text.empty())
+            return refused("A commit needs a tree and a message.");
+        std::vector<std::string> args{ "commit-tree", tree };
+        for (const std::string& p : parents)
+        {
+            if (p.empty() || p.front() == '-')
+                return refused("A commit's parent cannot be \"" + p + "\".");
+            args.push_back("-p");
+            args.push_back(p);
+        }
+        args.push_back("-m");
+        args.push_back(text);
+        std::vector<std::pair<std::string, std::string>> env;
+        if (whenMs > 0)
+        {
+            const std::string date = "@" + std::to_string(whenMs / 1000) + " +0000";
+            env = { { "GIT_AUTHOR_DATE", date }, { "GIT_COMMITTER_DATE", date } };
+        }
+        Outcome o = callWith(c, args, false, env);
+        if (o.ok)
+            sha = trimmed(o.out);
+        else if (has(o.why, "Please tell me who you are") || has(o.why, "empty ident") || has(o.why, "unable to auto-detect")
+                 || has(o.why, "auto-detection is disabled") || has(o.why, "no name was given") || has(o.why, "no email was given"))
+            o.why = "Git does not know who you are, so it cannot commit. Set it once with these two commands:\n"
+                    "git config --global user.name \"Your Name\"\n"
+                    "git config --global user.email \"you@example.com\"";
+        return o;
+    }
+
+    Outcome fastForwardTo(const Context& c, const std::string& commit)
+    {
+        if (commit.empty() || commit.front() == '-')
+            return refused("A fast-forward needs a commit.");
+        return call(c, { "merge", "-q", "--ff-only", commit });
+    }
+
+    bool mergeUnderWay(const Context& c)
+    {
+        return resolves(c, "MERGE_HEAD");
+    }
+
+    bool isAncestor(const Context& c, const std::string& ancestor, const std::string& of)
+    {
+        if (ancestor.empty() || of.empty() || ancestor.front() == '-' || of.front() == '-')
+            return false;
+        return call(c, { "merge-base", "--is-ancestor", ancestor, of }).ok;
+    }
 }
+

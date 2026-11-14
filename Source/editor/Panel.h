@@ -860,6 +860,7 @@ namespace playground::ui
         double projectsAt_ = -100.0;
         uint64_t listsRevision_ = 0;
         uint64_t gitSeen_ = 0;                                    // package 05: EditorPort::gitPolled as last polled
+        std::string gitAfterCompare_;                             // part 3: the Git card to bring back when COMPARE closes
         uint64_t explorerKey_ = 0;
         bool explorerStale_ = true;                      // made again at the next frame, whatever the hash
         int explorerBuilds_ = 0;

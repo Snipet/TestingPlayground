@@ -122,36 +122,54 @@ namespace playground::ui
             return false;
         if (port_.gitPolled() == polled_)
             return false;
-        const uint64_t endedBefore = state_.ended;
         read();
-        if (watching_ && !state_.busy && state_.ended >= mine_ && state_.ended != endedBefore)
-        {
-            // The job this card started has ended: its outcome, once.
-            watching_ = false;
-            line_ = state_.words;
-            failed_ = !state_.ok && !state_.cancelled;
-            // The status line's words: what was done to which project, never git's (a path, an address).
-            const std::string what = state_.op == GitOp::connect ? "LINKED"
-                                   : state_.op == GitOp::push    ? (state_.behind ? "NOT PUSHED (PULL FIRST)" : "PUSHED")
-                                   : state_.op == GitOp::pull    ? (state_.diverged ? "BOTH SIDES CHANGED" : "PULLED")
-                                   : state_.op == GitOp::check   ? "CHECKED"
-                                   : state_.op == GitOp::add     ? "ADDED"
-                                                                 : "LOOKED FOR GIT";
-            const std::string who = upper(asciiText(ownName(state_.op == GitOp::add ? state_.added : project_)));
-            notice_ = state_.cancelled ? "GIT: CANCELLED"
-                    : state_.ok        ? "GIT: " + what + (who.empty() ? std::string() : ": " + who)
-                    : state_.behind || state_.diverged ? "GIT: " + what + ": " + who
-                                                       : "GIT: FAILED (ITS CARD SAYS WHY)";
-            if (state_.op == GitOp::add && state_.ok && !state_.added.empty())
-            {
-                // The project it made, shown as linked.
-                mode_ = Mode::project;
-                project_ = state_.added;
-                link_ = port_.gitLink(project_);
-            }
-        }
+        takeEnded();
         ++revision_;
         return true;
+    }
+
+    // The job this card started has ended when the count of jobs ended reaches the one startGit gave for it: so a job
+    // that ended before start() first looked (a git that cannot run, a refusal: an end at once) is taken there, and
+    // nothing waits on a later move of gitPolled or compares with what an earlier read saw.
+    void GitCard::takeEnded()
+    {
+        if (!watching_ || state_.busy || state_.ended < mine_)
+            return;
+        // The job this card started has ended: its outcome, once.
+        watching_ = false;
+        line_ = state_.words;
+        failed_ = !state_.ok && !state_.cancelled;
+        // The status line's words: what was done to which project, never git's (a path, an address).
+        const std::string what = state_.op == GitOp::connect ? "LINKED"
+                               : state_.op == GitOp::push    ? (state_.behind ? "NOT PUSHED (PULL FIRST)" : "PUSHED")
+                               : state_.op == GitOp::pull    ? (state_.diverged ? "BOTH SIDES CHANGED" : "PULLED")
+                               : state_.op == GitOp::check   ? "CHECKED"
+                               : state_.op == GitOp::add     ? "ADDED"
+                               : state_.op == GitOp::keepMine ? "KEPT YOURS"
+                               : state_.op == GitOp::takeTheirs ? "TOOK THEIRS"
+                               : state_.op == GitOp::theirs  ? "READ THEIR SIDE"
+                                                             : "LOOKED FOR GIT";
+        const std::string who = upper(asciiText(ownName(state_.op == GitOp::add ? state_.added : project_)));
+        notice_ = state_.cancelled ? "GIT: CANCELLED"
+                : state_.ok        ? "GIT: " + what + (who.empty() ? std::string() : ": " + who)
+                : state_.behind || state_.diverged ? "GIT: " + what + ": " + who
+                                                   : "GIT: FAILED (ITS CARD SAYS WHY)";
+        if (state_.op == GitOp::theirs && state_.ok)
+            compare_ = project_;                         // part 3: COMPARE, mine against theirs (the Panel opens it)
+        if (state_.op == GitOp::add && state_.ok && !state_.added.empty())
+        {
+            // The project it made, shown as linked.
+            mode_ = Mode::project;
+            project_ = state_.added;
+            link_ = port_.gitLink(project_);
+        }
+    }
+
+    std::string GitCard::takeCompare()
+    {
+        std::string c;
+        c.swap(compare_);
+        return c;
     }
 
     std::string GitCard::takeNotice()
@@ -174,7 +192,8 @@ namespace playground::ui
     {
         std::string why;
         askDisconnect_ = false;
-        if (!port_.startGit(job, why))
+        uint64_t endsAt = 0;
+        if (!port_.startGit(job, why, &endsAt))
         {
             line_ = "Not started: " + why + ".";
             failed_ = true;
@@ -182,10 +201,11 @@ namespace playground::ui
             return;
         }
         watching_ = true;
-        read();
-        mine_ = state_.ended + 1;
         line_ = doing;
         failed_ = false;
+        read();
+        mine_ = endsAt != 0 ? endsAt : state_.ended + 1;   // a port that gives none: the next to end (its old rule)
+        takeEnded();                                     // ended already: its outcome now, as poll() would take it
         ++revision_;
     }
 
@@ -211,12 +231,13 @@ namespace playground::ui
     std::string GitCard::label(Button b) const
     {
         const bool linked = mode_ == Mode::project && link_.linked;
+        const bool diverged = linked && link_.diverged;  // part 3: the three ways
         switch (b)
         {
-            case Button::primary: return mode_ == Mode::add ? "Add" : linked ? "Push" : "Connect";
-            case Button::pull: return linked ? "Pull" : "";
-            case Button::check: return linked ? "Check" : "";
-            case Button::show: return linked ? "Show folder" : "";
+            case Button::primary: return mode_ == Mode::add ? "Add" : diverged ? "Keep mine" : linked ? "Push" : "Connect";
+            case Button::pull: return diverged ? "Take theirs" : linked ? "Pull" : "";
+            case Button::check: return diverged ? "Compare..." : linked ? "Check" : "";
+            case Button::show: return linked && !diverged ? "Show folder" : "";   // diverged: the three ways' room
             case Button::disconnect: return linked ? (askDisconnect_ ? "Disconnect it" : "Disconnect...") : "";
             case Button::close: return state_.busy && watching_ ? "Cancel" : "Close";
             case Button::other: return mode_ == Mode::add ? (project_.empty() ? "" : "Back") : linked ? "" : "Add from Git...";
@@ -331,11 +352,23 @@ namespace playground::ui
                     start({ GitOp::add, {}, remote_.buffer, branch_.buffer }, "Cloning " + remote_.buffer + "...");
                 else if (!link_.linked)
                     start({ GitOp::connect, project_, remote_.buffer, branch_.buffer }, "Connecting...");
+                else if (link_.diverged)
+                    start({ GitOp::keepMine, project_, {}, {} }, "Keeping yours...");
                 else
                     start({ GitOp::push, project_, {}, {} }, "Pushing to " + link_.shortRemote + "...");
                 break;
-            case Button::pull: start({ GitOp::pull, project_, {}, {} }, "Pulling from " + link_.shortRemote + "..."); break;
-            case Button::check: start({ GitOp::check, project_, {}, {} }, "Checking " + link_.shortRemote + "..."); break;
+            case Button::pull:
+                if (link_.diverged)
+                    start({ GitOp::takeTheirs, project_, {}, {} }, "Taking theirs...");
+                else
+                    start({ GitOp::pull, project_, {}, {} }, "Pulling from " + link_.shortRemote + "...");
+                break;
+            case Button::check:
+                if (link_.diverged)
+                    start({ GitOp::theirs, project_, {}, {} }, "Reading " + link_.shortRemote + "'s side...");
+                else
+                    start({ GitOp::check, project_, {}, {} }, "Checking " + link_.shortRemote + "...");
+                break;
             case Button::show:
             {
                 std::string why;

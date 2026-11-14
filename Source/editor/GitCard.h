@@ -7,6 +7,10 @@
 //               "2 commits to pull", "Up to date, checked 14:02", "Not checked yet"); the working folder; the last
 //               eight commits (subject, when); Push, Pull, Check, Show folder, Disconnect (a second click: Disconnect
 //               it, its line saying what stays, the project and the folder, and what goes, the link)
+//   diverged    both sides moved and git could not merge them (part 3): Keep mine (their side saved as a version, yours
+//               again on top, a merge commit of yours), Take theirs (their side the newest version, yours the one
+//               before, a merge commit of theirs), Compare... (COMPARE, the newest version against their side read from
+//               the fetched commit into memory: no Open, no A/B for it, nothing written until one of the two is chosen)
 //   add         REMOTE and BRANCH (blank: the remote's default): Add (a clone made a new project here, linked); whose
 //               repository it pulls from is said, as its program plays when opened
 //   Close       or Escape, or a press outside the card: a job under way goes on, its outcome in the status line
@@ -70,6 +74,8 @@ namespace playground::ui
         bool a11yAction(uint32_t id, funkgui::A11yAction a, float width, float height);
         uint32_t revision() const noexcept { return revision_; }
         std::string takeNotice();                        // for the status line, once
+        // Part 3: their side read (Compare...): the project whose COMPARE the Panel opens, mine against theirs, once.
+        std::string takeCompare();
 
         // What it shows (the probes'): its face, the project, its link, the job, the line, the fields, a question asked.
         Mode mode() const noexcept { return mode_; }
@@ -94,6 +100,7 @@ namespace playground::ui
         bool fields() const noexcept { return mode_ == Mode::add || !link_.linked; }
         void focusOn(Field f);
         void read();                                     // the link and the job, from the port
+        void takeEnded();                                // the job this card started, once it has ended: its outcome, once
         void press(Button b);
         void start(const GitJob& job, const std::string& doing);
         std::string stateText() const;                   // "3 versions to push", "Up to date, checked 14:02"
@@ -106,7 +113,8 @@ namespace playground::ui
         GitLink link_;
         GitState state_;
         uint64_t polled_ = 0;                            // EditorPort::gitPolled as last read
-        uint64_t mine_ = 0;                              // the GitState::ended a job this card started will end at
+        uint64_t mine_ = 0;                              // the GitState::ended a job this card started will end at (from
+                                                         // startGit, under the lock that started it)
         bool watching_ = false;                          // a job this card started runs
         funkgui::text::LineEdit remote_, branch_;
         Field focus_ = Field::remote;
@@ -114,6 +122,7 @@ namespace playground::ui
         std::string line_;                               // its outcome, or what it says
         bool failed_ = false;
         std::string notice_;
+        std::string compare_;                            // takeCompare
         uint32_t revision_ = 0;
     };
 }

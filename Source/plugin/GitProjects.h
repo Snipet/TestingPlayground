@@ -18,7 +18,10 @@
 //            is "behind: pull first", its counts fetched)
 //   pull     fetch, then nothing new, or a fast-forward: the remote's tree read from the fetched commit (nothing in the
 //            folder changed when it reads as no project), the folder moved to it, and it saved as a new version (its
-//            note "Pulled <sha7>: <subject>"); both sides moved: diverged (the next package settles it)
+//            note "Pulled <sha7>: <subject>"); both sides moved: the versions not committed committed, then the two merged
+//            in git's object store (git merge-tree, the folder untouched): clean, saved as a version ("Merged with
+//            <sha7>") and made a merge commit; else diverged, the remote's commit kept for Keep mine, Take theirs and
+//            Compare (below)
 //   check    fetch, and the counts
 //   add      a clone into a new folder, its tree added as a new project (a number after a name taken), linked
 //   disconnect  the link removed; the folder stays
@@ -26,6 +29,7 @@
 
 #include "plugin/Git.h"
 #include "plugin/ProjectStore.h"
+#include "plugin/ProjectTree.h"
 
 #include <atomic>
 #include <functional>
@@ -70,6 +74,18 @@ namespace playground::gitprojects
     Outcome pull(const Env& env, const std::string& project);
     Outcome check(const Env& env, const std::string& project);
     Outcome add(const Env& env, const std::string& remote, const std::string& branch);
+
+    // ---- Part 3: a diverged project (Link::theirs set by a pull that could not merge) ----------------------------------
+    // keepMine: their side saved as a version ("Theirs, <sha7>"), yours saved on top again ("Mine, kept over <sha7>"), and
+    // a merge commit of your tree over both. takeTheirs: their side saved as the newest version ("Took theirs, <sha7>"),
+    // yours staying the version before, and a merge commit of their tree. Each saves first, then makes the commit in the
+    // object store and fast-forwards the folder to it: cut off between, the versions are saved and the link still says
+    // diverged, so pressing it again finishes it (the folder, never left half-merged, needs nothing cleared). theirsOf:
+    // their side read from the fetched commit, in memory, for COMPARE (nothing written).
+    Outcome keepMine(const Env& env, const std::string& project);
+    Outcome takeTheirs(const Env& env, const std::string& project);
+    int64_t commitTimeOf(const Env& env, const std::string& project, const std::string& sha);   // its date, ms (0: none)
+    std::optional<projecttree::Tree> theirsOf(const Env& env, const std::string& project, std::string& sha, std::string& why);
     Outcome disconnect(const std::string& project);
 
     // Words added to git's own for what a sandboxed host, an SSH key with a passphrase or a missing identity need.
