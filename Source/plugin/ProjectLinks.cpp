@@ -167,7 +167,8 @@ namespace playground::projectstore
             // FileReplace.h: renamed over in one step, a reader on Windows (another instance's look) waited out.
             std::error_code ec;
             if (!temp.replaceWithText(juce::JSON::toString(varOf(f)), false, false, "\n")
-                || !files::replace(temp.getFullPathName().toStdString(), target.getFullPathName().toStdString(), ec))
+                || !files::replace(files::pathOf(temp.getFullPathName().toStdString()),
+                                   files::pathOf(target.getFullPathName().toStdString()), ec))
             {
                 temp.deleteFile();
                 fail(why, "cannot write " + target.getFullPathName().toStdString());

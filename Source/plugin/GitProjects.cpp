@@ -1,6 +1,8 @@
 // Source/plugin/GitProjects.cpp: see GitProjects.h.
 #include "plugin/GitProjects.h"
 
+#include "plugin/FileReplace.h"
+
 #include "plugin/EditorPort.h"
 #include "plugin/ProjectTree.h"
 
@@ -89,22 +91,22 @@ namespace playground::gitprojects
         // <projects>/Git, made when missing; refused when it is a link or no folder.
         bool gitRoot(fs::path& root, std::string& why)
         {
-            root = fs::path(projectstore::gitFolder().getFullPathName().toStdString());
+            root = files::pathOf(projectstore::gitFolder().getFullPathName().toStdString());
             std::error_code ec;
             if (isLink(root))
             {
-                why = root.string() + " is a link: the working folders go only into a real folder there. Nothing was made.";
+                why = files::utf8Of(root) + " is a link: the working folders go only into a real folder there. Nothing was made.";
                 return false;
             }
             if (present(root) && !fs::is_directory(root, ec))
             {
-                why = root.string() + " is not a folder. Nothing was made.";
+                why = files::utf8Of(root) + " is not a folder. Nothing was made.";
                 return false;
             }
             fs::create_directories(root, ec);
             if (!fs::is_directory(root, ec))
             {
-                why = "cannot make the folder " + root.string();
+                why = "cannot make the folder " + files::utf8Of(root);
                 return false;
             }
             return true;
@@ -115,7 +117,7 @@ namespace playground::gitprojects
         {
             for (int k = 1; k < 1000; ++k)
             {
-                const fs::path p = root / (k == 1 ? base : base + "-" + std::to_string(k));
+                const fs::path p = root / files::pathOf(k == 1 ? base : base + "-" + std::to_string(k));
                 if (present(p))
                     continue;
                 std::error_code ec;
@@ -152,12 +154,12 @@ namespace playground::gitprojects
         // The working folder of a project's link, checked: a real folder holding a repository.
         bool workingFolder(const projectstore::Link& link, fs::path& folder, std::string& why)
         {
-            const fs::path root(projectstore::gitFolder().getFullPathName().toStdString());
-            folder = root / link.folder;
+            const fs::path root = files::pathOf(projectstore::gitFolder().getFullPathName().toStdString());
+            folder = root / files::pathOf(link.folder);
             std::error_code ec;
             if (isLink(root) || isLink(folder) || !fs::is_directory(folder, ec) || !present(folder / ".git"))
             {
-                why = "The working folder " + folder.string()
+                why = "The working folder " + files::utf8Of(folder)
                     + " is gone, or is a link, or holds no repository. Disconnect, then Connect again (or Add from Git).";
                 return false;
             }
@@ -338,7 +340,7 @@ namespace playground::gitprojects
         // a remote that cannot be reached, with nothing made.
         say(env, "Looking at " + shortRemote(remote) + "...");
         {
-            const git::Outcome h = git::call(contextOf(env, root.string()), { "ls-remote", "--heads", "--", remote, "refs/heads/" + branch },
+            const git::Outcome h = git::call(contextOf(env, files::utf8Of(root)), { "ls-remote", "--heads", "--", remote, "refs/heads/" + branch },
                                              true);
             if (!h.ok)
                 return gitFailed(env, h, "Not linked: " + shortRemote(remote) + " could not be reached.");
@@ -347,19 +349,19 @@ namespace playground::gitprojects
                               + " has commits). Use Add from Git to make a project of it, or give an empty repository.");
         }
         if (!freshFolder(root, folderBase(project, id), folder))
-            return failed("Not linked: no folder could be made in " + root.string() + ".");
+            return failed("Not linked: no folder could be made in " + files::utf8Of(root) + ".");
         // From here, every way out that fails removes the folder this call made.
         const auto undo = [&](Outcome o) {
             removeMade(folder);
             return o;
         };
-        const git::Context c = contextOf(env, folder.string());
+        const git::Context c = contextOf(env, files::utf8Of(folder));
         say(env, "Making the repository...");
         if (git::Outcome g = git::init(c, branch); !g.ok)
             return undo(gitFailed(env, g, "Not linked:"));
         projectstore::Link link;
         link.id = id;
-        link.folder = folder.filename().string();
+        link.folder = files::utf8Of(folder.filename());
         link.remote = remote;
         link.branch = branch;
         int made = 0;
@@ -391,7 +393,7 @@ namespace playground::gitprojects
             return failed(why);
         if (!k.link.theirs.empty())
             return failed("Both sides have changed since they last met: settle that first (Pull).");
-        const git::Context c = contextOf(env, k.folder.string());
+        const git::Context c = contextOf(env, files::utf8Of(k.folder));
         int made = 0;
         git::Outcome g;
         g.ok = true;
@@ -444,7 +446,7 @@ namespace playground::gitprojects
         std::string why;
         if (!linkedProject(project, k, why))
             return failed(why);
-        const git::Context c = contextOf(env, k.folder.string());
+        const git::Context c = contextOf(env, files::utf8Of(k.folder));
         const std::string where = shortRemote(k.link.remote);
         say(env, "Fetching from " + where + "...");
         if (git::Outcome f = git::fetch(c, kRemote, k.link.branch); !f.ok)
@@ -478,7 +480,7 @@ namespace playground::gitprojects
         std::string why;
         if (!linkedProject(project, k, why))
             return failed(why);
-        const git::Context c = contextOf(env, k.folder.string());
+        const git::Context c = contextOf(env, files::utf8Of(k.folder));
         const std::string where = shortRemote(k.link.remote);
         say(env, "Fetching from " + where + "...");
         if (git::Outcome f = git::fetch(c, kRemote, k.link.branch); !f.ok)
@@ -580,15 +582,15 @@ namespace playground::gitprojects
         char tag[16];
         std::snprintf(tag, sizeof tag, "%08x", static_cast<unsigned>(rng()));
         if (!freshFolder(root, std::string("added-") + tag, folder))
-            return failed("Not added: no folder could be made in " + root.string() + ".");
+            return failed("Not added: no folder could be made in " + files::utf8Of(root) + ".");
         const auto undo = [&](Outcome o) {
             removeMade(folder);
             return o;
         };
         const std::string where = shortRemote(remote);
-        git::Context c = contextOf(env, folder.string());
+        git::Context c = contextOf(env, files::utf8Of(folder));
         say(env, "Cloning " + where + "...");
-        if (git::Outcome g = git::clone(c, remote, folder.string(), branch); !g.ok)
+        if (git::Outcome g = git::clone(c, remote, files::utf8Of(folder), branch); !g.ok)
             return undo(gitFailed(env, g, "Not added:"));
         const std::string head = git::resolve(c, "HEAD");
         const std::string branchNow = branch.empty() ? git::currentBranch(c) : branch;
@@ -623,7 +625,7 @@ namespace playground::gitprojects
         fs::path named;
         for (int k = 1; k < 100 && named.empty(); ++k)
         {
-            const fs::path p = root / (k == 1 ? folderBase(*name, id) : folderBase(*name, id) + "-" + std::to_string(k));
+            const fs::path p = root / files::pathOf(k == 1 ? folderBase(*name, id) : folderBase(*name, id) + "-" + std::to_string(k));
             if (present(p))
                 continue;
             std::error_code ec;
@@ -635,10 +637,10 @@ namespace playground::gitprojects
         }
         if (!named.empty())
             folder = named;
-        c.folder = folder.string();
+        c.folder = files::utf8Of(folder);
         projectstore::Link link;
         link.id = id;
-        link.folder = folder.filename().string();
+        link.folder = files::utf8Of(folder.filename());
         link.remote = remote;
         link.branch = branchNow;
         link.committed = 1;

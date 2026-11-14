@@ -15,6 +15,7 @@
 #include <fstream>
 #include <iterator>
 #include <random>
+#include <string_view>
 #include <system_error>
 
 namespace playground::projecttree
@@ -169,7 +170,7 @@ namespace playground::projecttree
             while (from <= rel.size())
             {
                 const std::size_t end = std::min(rel.find('/', from), rel.size());
-                at /= rel.substr(from, end - from);
+                at /= files::pathOf(std::string_view(rel).substr(from, end - from));
                 if (isLink(at))
                     return false;
                 from = end + 1;
@@ -184,7 +185,7 @@ namespace playground::projecttree
             static thread_local std::mt19937_64 rng{ std::random_device{}() };
             char tag[24];
             std::snprintf(tag, sizeof tag, ".%016llx", static_cast<unsigned long long>(rng()));
-            const fs::path temp = to.parent_path() / (to.filename().string() + tag + ".part");
+            const fs::path temp = to.parent_path() / files::pathOf(files::utf8Of(to.filename()) + tag + ".part");
             {
                 std::ofstream f(temp, std::ios::binary | std::ios::trunc);
                 f.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
@@ -192,7 +193,7 @@ namespace playground::projecttree
                 if (!f)
                 {
                     fs::remove(temp, ec);
-                    fail(why, "cannot write " + to.string());
+                    fail(why, "cannot write " + files::utf8Of(to));
                     return false;
                 }
             }
@@ -201,7 +202,7 @@ namespace playground::projecttree
             if (!files::replace(temp, to, ec))
             {
                 fs::remove(temp, ec);
-                fail(why, "cannot write " + to.string());
+                fail(why, "cannot write " + files::utf8Of(to));
                 return false;
             }
             return true;
@@ -212,12 +213,12 @@ namespace playground::projecttree
             std::error_code ec;
             if (isLink(from) || !fs::is_regular_file(from, ec))
             {
-                fail(why, from.filename().string() + " is not there");
+                fail(why, files::utf8Of(from.filename()) + " is not there");
                 return std::nullopt;
             }
             if (fs::file_size(from, ec) > most)
             {
-                fail(why, from.filename().string() + " is too large");
+                fail(why, files::utf8Of(from.filename()) + " is too large");
                 return std::nullopt;
             }
             std::ifstream f(from, std::ios::binary);
@@ -289,7 +290,7 @@ namespace playground::projecttree
     bool write(const projectstore::Project& p, const projectstore::Version& v, const std::string& folder,
                const std::vector<std::string>& before, std::vector<std::string>& written, std::string* why)
     {
-        const fs::path root(folder);
+        const fs::path root = files::pathOf(folder);
         std::error_code ec;
         if (isLink(root) || !fs::is_directory(root, ec))
         {
@@ -313,7 +314,7 @@ namespace playground::projecttree
                 return false;
             }
         for (const File& f : files)
-            if (!writeBytes(root / fs::path(f.path), f.bytes, why))
+            if (!writeBytes(root / files::pathOf(f.path), f.bytes, why))
                 return false;
         if (!fs::exists(fs::symlink_status(root / kReadme, ec)) && !writeBytes(root / kReadme, readme(p), why))
             return false;
@@ -329,7 +330,7 @@ namespace playground::projecttree
             if (std::find(written.begin(), written.end(), old) != written.end() || !validPath(old) || old == kReadme
                 || old == kAttributes || !noLinkOnWay(root, old))
                 continue;
-            const fs::path at = root / fs::path(old);
+            const fs::path at = root / files::pathOf(old);
             if (fs::is_regular_file(fs::symlink_status(at, ec)))
                 fs::remove(at, ec);
         }
@@ -338,13 +339,13 @@ namespace playground::projecttree
 
     Getter folderGetter(const std::string& folder)
     {
-        return [root = fs::path(folder)](const std::string& path, std::string* why) -> std::optional<std::string> {
+        return [root = files::pathOf(folder)](const std::string& path, std::string* why) -> std::optional<std::string> {
             if (!validPath(path) || !noLinkOnWay(root, path))
             {
                 fail(why, path + " cannot be read");
                 return std::nullopt;
             }
-            return readBytes(root / fs::path(path), path.rfind("samples/", 0) == 0 ? assets::kMaxFileBytes : kMaxTextBytes, why);
+            return readBytes(root / files::pathOf(path), path.rfind("samples/", 0) == 0 ? assets::kMaxFileBytes : kMaxTextBytes, why);
         };
     }
 
