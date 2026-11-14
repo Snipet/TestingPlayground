@@ -6564,7 +6564,10 @@ namespace playground::ui
         // Until the offer is decided the factory store's answer may land with no move of the check's revision; while it
         // shows, another editor may answer it.
         if (offerDecided_ && !offer_.isOpen() && r == updateSeen_)
+        {
+            decideWhatsNew();                            // a card it waited for may have closed meanwhile
             return;
+        }
         updateSeen_ = r;
         updateState_ = port_.updateState();
         const UpdateState& u = updateState_;
@@ -6585,6 +6588,30 @@ namespace playground::ui
         }
         if (u.newer && port_.announceUpdate(u.latest))
             notice("VERSION " + upper(u.latest) + " IS OUT");
+        decideWhatsNew();
+        dirty_ = true;
+    }
+
+    // What's new, once per version (app.json's seen, both products'): after the offer is decided and answered (never two
+    // cards at once), never over another card, when app.json was read again since this editor opened.
+    void Panel::decideWhatsNew()
+    {
+        const UpdateState& u = updateState_;
+        if (whatsNewDecided_ || !offerDecided_ || !u.loaded || offer_.isOpen() || dialogOpen())
+            return;
+        if (!u.whatsNewReady)
+            return;                                      // app.json's seen not read again since this editor opened
+        whatsNewDecided_ = true;
+        if (u.whatsNewDue)
+            openWhatsNew();
+    }
+
+    void Panel::openWhatsNew()
+    {
+        if (dialogOpen() && !whatsNew_.isOpen())
+            return;
+        whatsNew_.open(updateState_.whatsNewDue ? updateState_.seen : std::string());
+        updateSeen_ = 0;                                 // seen set: read again at the next frame
         dirty_ = true;
     }
 
@@ -6593,6 +6620,8 @@ namespace playground::ui
         if (std::string n = offer_.takeNotice(); !n.empty())
             notice(n);
         if (std::string n = update_.takeNotice(); !n.empty())
+            notice(n);
+        if (std::string n = whatsNew_.takeNotice(); !n.empty())
             notice(n);
         updateSeen_ = 0;                                 // an answer given: read again at the next frame
         dirty_ = true;
@@ -8123,6 +8152,8 @@ namespace playground::ui
             focusBeforeSettings_ = -1;
             if (std::exchange(keyAfterSettings_, false) && hasChat())
                 openKeyDialog();                         // the AI page's Provider and key...
+            if (std::exchange(whatsNewAfterSettings_, false))
+                openWhatsNew();                          // the General page's What's new
         }
         dirty_ = true;
     }
@@ -8194,6 +8225,7 @@ namespace playground::ui
             return ai;
         };
         h.keyDialog = [this] { keyAfterSettings_ = true; };   // afterSettings opens it, the focus given back first
+        h.whatsNew = [this] { whatsNewAfterSettings_ = true; };   // afterSettings opens it, as the key dialog
         h.graphics = [this] {
             DebugSection g{ "Graphics (FunkGui)", {} };
             if (hostDebug_)
@@ -8935,7 +8967,7 @@ namespace playground::ui
             .mix(name_.isOpen()).mix(name_.revision()).mix(desktopBadge_).mix(picker_.isOpen()).mix(picker_.revision())
             .mix(focus_).mix(ring_).mix(pressed_).mix(touched_).mix(hasPointer_).mix(pointer_).mix(width_).mix(height_)
             .mix(layoutRevision_).mix(buttonsRoom_).mix(offer_.isOpen()).mix(offer_.revision()).mix(update_.isOpen())
-            .mix(update_.revision());
+            .mix(update_.revision()).mix(whatsNew_.isOpen()).mix(whatsNew_.key());
         // The footer: the spec line of the control under the hand (a dial's value moves with the host's automation).
         if (!dialogOpen())
         {
@@ -9342,6 +9374,9 @@ namespace playground::ui
             std::snprintf(line, sizeof line, "NAME   RETURN SAVES IT (EMPTY: ITS NUMBER'S)   ESCAPE CANCELS");
         else if (update_.isOpen())
             std::snprintf(line, sizeof line, "NEW VERSION   RETURN DOWNLOADS   ESCAPE OR A CLICK OUTSIDE: LATER");
+        else if (whatsNew_.isOpen())
+            std::snprintf(line, sizeof line, "WHAT'S NEW   UP, DOWN, SPACE AND THE WHEEL SCROLL   A LINK OPENS IN THE BROWSER   "
+                                             "ESCAPE, RETURN OR A CLICK OUTSIDE CLOSES");
         else if (compare_.isOpen())
             std::snprintf(line, sizeof line, "COMPARE   ] AND [ THE NEXT AND THE PREVIOUS CHANGE   TAB THE NEXT FILE   "
                                              "ESCAPE OR A CLICK OUTSIDE CLOSES");
@@ -9432,6 +9467,11 @@ namespace playground::ui
         {
             const funkgui::Canvas::Scope s(c, kUpdateTag, false);
             update_.draw(c, th, width_, height_, pointer_, hasPointer_);
+        }
+        if (whatsNew_.isOpen())
+        {
+            const funkgui::Canvas::Scope s(c, kWhatsNewTag, false);
+            whatsNew_.draw(c, th, width_, height_, pointer_, hasPointer_);
         }
         if (keyOpen_)
             drawKeyDialog(c, th);
@@ -9553,6 +9593,9 @@ namespace playground::ui
             else if (update_.isOpen())
                 pressCard([this] { return update_.isOpen(); }, [this] { update_.pointerDown(pointer_, width_, height_); },
                           [this] { afterUpdateCards(); });
+            else if (whatsNew_.isOpen())
+                pressCard([this] { return whatsNew_.isOpen(); }, [this] { whatsNew_.pointerDown(pointer_, width_, height_); },
+                          [this] { afterUpdateCards(); });
             else if (compare_.isOpen())
                 pressCard([this] { return compare_.isOpen(); }, [this] { compare_.pointerDown(pointer_, host_, width_, height_); },
                           [this] { afterCompare(true); });
@@ -9657,6 +9700,11 @@ namespace playground::ui
             return;
         }
         // A card's bar's thumb (Scroll.h: each moves only while its own thumb was pressed).
+        if (whatsNew_.isOpen())
+        {
+            whatsNew_.pointerDrag(pointer_, width_, height_);   // its page's thumb
+            return;
+        }
         if (settings_.isOpen() || ab_.isOpen() || picker_.isOpen() || compare_.isOpen())
         {
             if (settings_.isOpen())
@@ -9692,6 +9740,7 @@ namespace playground::ui
             return;
         }
         settings_.pointerUp();                           // a card's thumb let go (none held: nothing)
+        whatsNew_.pointerUp();
         ab_.pointerUp();
         compare_.pointerUp();
         picker_.pointerUp();
@@ -9741,6 +9790,11 @@ namespace playground::ui
         if (settings_.isOpen())
         {
             settings_.wheel(e, width_, height_);
+            return true;
+        }
+        if (whatsNew_.isOpen())
+        {
+            whatsNew_.wheel(e, width_, height_);
             return true;
         }
         if (export_.isOpen() || name_.isOpen() || keyOpen_ || update_.isOpen())
@@ -9835,6 +9889,14 @@ namespace playground::ui
         if (update_.isOpen())
         {
             update_.key(e, width_, height_);
+            afterUpdateCards();
+            return true;
+        }
+        if (whatsNew_.isOpen())
+        {
+            if (e.mods.cmd)
+                return false;                            // the app's menu keys go on (Cmd-Q), as with Settings
+            whatsNew_.key(e, width_, height_);
             afterUpdateCards();
             return true;
         }
@@ -10013,6 +10075,8 @@ namespace playground::ui
             return picker_.cursor(pointer_, width_, height_);
         if (update_.isOpen())
             return update_.cursor(pointer_, width_, height_);
+        if (whatsNew_.isOpen())
+            return whatsNew_.cursor(pointer_, width_, height_);
         if (hasPointer_ && offer_.contains(pointer_, width_, height_))
             return offer_.cursor(pointer_, width_, height_);
         const int i = pressed_ >= 0 ? pressed_ : (hasPointer_ ? itemAt(pointer_) : -1);
@@ -10138,6 +10202,11 @@ namespace playground::ui
             update_.accessibility(out, width_, height_);
             return;
         }
+        if (whatsNew_.isOpen())
+        {
+            whatsNew_.accessibility(out, width_, height_);
+            return;
+        }
         if (offer_.isOpen())
             offer_.accessibility(out, width_, height_);  // first: it is over the panel, which stays usable behind it
         for (const auto& item : items_)
@@ -10165,6 +10234,7 @@ namespace playground::ui
         r ^= (name_.isOpen() ? 0x4CF5AD43u : 0u) ^ (name_.revision() * 0x2127599Bu);
         r ^= (offer_.isOpen() ? 0x3C6EF372u : 0u) ^ (offer_.revision() * 0x9E3779B9u);
         r ^= (update_.isOpen() ? 0xA54FF53Au : 0u) ^ (update_.revision() * 0x510E527Fu);
+        r ^= (whatsNew_.isOpen() ? 0x1B873593u : 0u) ^ (whatsNew_.revision() * 0xCC9E2D51u);
         r ^= (ab_.isOpen() ? 0x7FEB352Du : 0u) ^ (ab_.revision() * 0x846CA68Bu);
         r ^= (compare_.isOpen() ? 0x3C6EF372u : 0u) ^ (compare_.revision() * 0xA54FF53Bu);
         r ^= (settings_.isOpen() ? 0x27D4EB2Du : 0u) ^ (settings_.revision() * 0x9E3779B1u) ^ (mutedShown_ ? 0x165667B1u : 0u);
@@ -10236,6 +10306,12 @@ namespace playground::ui
         if (update_.isOpen())
         {
             (void)update_.a11yAction(id, a, width_, height_);
+            afterUpdateCards();
+            return;
+        }
+        if (whatsNew_.isOpen())
+        {
+            (void)whatsNew_.a11yAction(id, a, width_, height_);
             afterUpdateCards();
             return;
         }

@@ -5,6 +5,7 @@
 // threads do, each only once an editor has opened (editorOpened) and the user said yes.
 #include "plugin/Processor.h"
 
+#include "plugin/Changelog.h"
 #include "plugin/Launch.h"
 
 #include "Product.h"
@@ -81,7 +82,25 @@ namespace playground
         }
         u.loaded = checkLoaded && factoryLoaded;
         u.offer = u.loaded && !u.envOff && !u.updatesAnswered && u.factory == 0;
+        // What's new: once per version, both products' (app.json's seen), never with <ENV_PREFIX>WHATSNEW=off.
+        bool seenFresh = false;
+        if (updateCheck_ != nullptr)
+        {
+            const updates::State s = updateCheck_->state();
+            u.seen = s.seen;
+            seenFresh = s.seenFresh;
+        }
+        u.whatsNewOff = updates::offFrom(std::getenv((std::string(product::kEnvPrefix) + "WHATSNEW").c_str()));
+        u.whatsNewReady = checkLoaded && seenFresh;
+        u.whatsNewDue = u.whatsNewReady && !u.whatsNewOff && u.seen != u.current
+                     && changelog::anythingSince(u.seen, u.current);
         return u;
+    }
+
+    void Processor::whatsNewShown()
+    {
+        if (updateCheck_ != nullptr)
+            updateCheck_->setSeen(product::kVersion);
     }
 
     void Processor::editorOpened()
@@ -151,6 +170,23 @@ namespace playground
         // release file gave.
         const std::string url = factorystore::siteFrom(std::getenv((std::string(product::kEnvPrefix) + "FACTORY_SITE").c_str()))
                               + updates::kDownloadPath;
+        return openPage(url, why);
+    }
+
+    bool Processor::openLink(const std::string& url, std::string& why)
+    {
+        // What's new's links: only the repository's pages and the website's (the changelog's own links), never another
+        // address, whatever the text compiled in says.
+        if (!changelog::linkAllowed(url))
+        {
+            why = "only the repository's and the website's pages open from here";
+            return false;
+        }
+        return openPage(url, why);
+    }
+
+    bool Processor::openPage(const std::string& url, std::string& why)
+    {
         if (pageLauncher_)
             return pageLauncher_(url, why);
         // Never from a probe (CTest's sandbox): it opens nothing on the machine that runs it.

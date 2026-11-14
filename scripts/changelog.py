@@ -4,10 +4,16 @@ The changelog's entries: one file a pull request in docs/changelog/, folded into
 pull requests edit the same lines of CHANGELOG.md (each merge to main used to make every other open one conflict at
 the top of its Unreleased section). Subcommands:
 
-  check         Hold every entry file to the rules below, and CHANGELOG.md to having its `## Unreleased` heading.
+  check         Hold every entry file to the rules below, and CHANGELOG.md to having its `## Unreleased` heading and
+                its releases' headings well formed, newest first.
   show          Print the Unreleased section as it would be once the entries are folded in. Changes nothing.
   fold          Move every entry into CHANGELOG.md, at the top of `## Unreleased`, and delete the entry files.
   cut           fold, then move everything under `## Unreleased` into a new `## YYYY-MM-DD` section below it.
+  release       cut (when anything is under Unreleased), then give the days since the last release their version's
+                heading, `## Version X.Y.Z (YYYY-MM-DD)`, under `## Unreleased`.
+  check-release Refuse a release tag (vX.Y.Z) whose version has no heading, and any tag while an entry file is left in
+                docs/changelog/ (release.yml runs it on a pushed tag). A pre-release's tag (vX.Y.Z-rc.1) needs no
+                heading.
   selftest      Run this script's own tests in a temporary git repository of made-up entries (no build needed).
 
 By example:
@@ -16,6 +22,12 @@ By example:
   scripts/changelog.py show
   scripts/changelog.py fold                     on main, after the day's merges; then commit what it says
   scripts/changelog.py cut --date 2026-11-12    the day's section made of everything under Unreleased
+  scripts/changelog.py release --version 0.2.0 --date 2026-11-20    on main, before tagging v0.2.0
+  scripts/changelog.py check-release --tag v0.2.0
+
+A release's heading covers everything under it down to the next release's heading: the day sections cut since the
+release before (`## Unreleased` stays on top, empty). The plugins compile CHANGELOG.md in and show the version they are
+(their What's new); a build whose version has no heading shows Unreleased.
 
 An entry is docs/changelog/<name>.md, <name> lower-case letters, digits and hyphens (README.md there is never one).
 It holds what its pull request changed for users, as CHANGELOG.md's entries do: a `### Title` heading, then any of
@@ -64,6 +76,9 @@ EXTENSION_RE = re.compile(r"^Claude Desktop extension: \*\*(\d+)\.(\d+)\.(\d+)\*
 LINK_RE = re.compile(r" \(\[#\d+\]\([^()\s]+\)\)$")
 MERGE_RE = re.compile(r"^Merge pull request #(\d+) from ")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+TAG_RE = re.compile(r"^v(\d+\.\d+\.\d+)(-[0-9A-Za-z.-]+)?$")
+RELEASE_RE = re.compile(r"^## Version (\d+\.\d+\.\d+) \((\d{4}-\d{2}-\d{2})\)[ \t]*$")
 
 Version = tuple[int, int, int]
 
@@ -219,6 +234,64 @@ def split_changelog(text: str) -> tuple[str, str, str] | None:
     return head, after, ""
 
 
+def release_headings(text: str) -> list[tuple[int, str, Version | None, str | None]]:
+    """Every line that starts `## Version`, in the file's order: its line number, the line, and its version and date
+    when it is well formed (`## Version X.Y.Z (YYYY-MM-DD)`), else None for both."""
+    out = []
+    for n, line in enumerate(text.split("\n"), start=1):
+        if not line.startswith("## Version"):
+            continue
+        m = RELEASE_RE.match(line)
+        if m:
+            out.append((n, line, parse_version(m.group(1)), m.group(2)))
+        else:
+            out.append((n, line, None, None))
+    return out
+
+
+def parse_version(text: str) -> Version | None:
+    m = VERSION_RE.match(text)
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2)), int(m.group(3))
+
+
+def is_day(date: str) -> bool:
+    if not DATE_RE.match(date):
+        return False
+    try:
+        datetime.date.fromisoformat(date)
+    except ValueError:
+        return False
+    return True
+
+
+def release_problems(text: str) -> list[str]:
+    """What is wrong with CHANGELOG.md's releases' headings: each well formed, its date a day, below `## Unreleased`,
+    newest first, each version once."""
+    out: list[str] = []
+    unreleased = re.search(r"^## Unreleased[ \t]*$", text, re.MULTILINE)
+    top = text[:unreleased.start()].count("\n") + 1 if unreleased else 0
+    last: tuple[Version, int] | None = None
+    for n, line, version, date in release_headings(text):
+        if version is None or date is None:
+            out.append(f"{CHANGELOG}:{n}: not a release's heading: `## Version X.Y.Z (YYYY-MM-DD)`")
+            continue
+        if not is_day(date):
+            out.append(f"{CHANGELOG}:{n}: {date} is not a day of the calendar")
+        if unreleased and n < top:
+            out.append(f"{CHANGELOG}:{n}: a release's heading above `{UNRELEASED}` (it stays on top)")
+        if last is not None:
+            if version == last[0]:
+                out.append(f"{CHANGELOG}:{n}: Version {version_text(version)} again (first on line {last[1]})")
+            elif version > last[0]:
+                out.append(f"{CHANGELOG}:{n}: Version {version_text(version)} below {version_text(last[0])} "
+                           f"(line {last[1]}): the newest release first")
+        if last is None or version < last[0]:
+            last = (version, n)
+    return out
+
+
 # ---- git ----------------------------------------------------------------------------------------------------------
 
 def git(root: Path, *args: str) -> str | None:
@@ -360,14 +433,22 @@ def cmd_check(args: argparse.Namespace) -> int:
         problems.append(f"{CHANGELOG}:1: missing")
     elif split_changelog(read_changelog(root)) is None:
         problems.append(f"{CHANGELOG}:1: no `{UNRELEASED}` heading (the entries are folded in under it)")
+    else:
+        problems += release_problems(read_changelog(root))
     for p in problems:
         print(p)
     if problems:
         return 1
     n = len(entry_files(root))
     print(f"changelog.py: {n} entr{'y' if n == 1 else 'ies'} in {ENTRIES_DIR.as_posix()}/, all well formed; "
-          f"{CHANGELOG} has `{UNRELEASED}`")
+          f"{CHANGELOG} has `{UNRELEASED}`" + releases_said(read_changelog(root)))
     return 0
+
+
+def releases_said(text: str) -> str:
+    n = len(release_headings(text))
+    return "" if n == 0 else " and 1 release's heading" if n == 1 else f" and {n} releases' headings"
+
 
 
 def cmd_show(args: argparse.Namespace) -> int:
@@ -432,6 +513,90 @@ def cmd_fold(args: argparse.Namespace) -> int:
 
 def cmd_cut(args: argparse.Namespace) -> int:
     return fold(args.root, args.date)
+
+
+def cmd_release(args: argparse.Namespace) -> int:
+    """cut when anything waits (entries, or text under Unreleased), then the release's heading under `## Unreleased`,
+    over every day section since the release before. Refused, nothing changed: a version that is no X.Y.Z, one not above
+    the newest release's, a heading there already, a date that is no day, nothing to release, a bad entry."""
+    root = args.root
+    version = parse_version(args.version)
+    if version is None:
+        print(f"changelog.py: {args.version} is no release's version: X.Y.Z (a pre-release gets no heading)",
+              file=sys.stderr)
+        return 1
+    if not is_day(args.date):
+        print(f"changelog.py: {args.date} is no day: give it as YYYY-MM-DD", file=sys.stderr)
+        return 1
+    try:
+        _, body, rest = changelog_parts(root)
+        entries = gather(root)
+    except Problem as p:
+        print(p, file=sys.stderr)
+        return 1
+    text = read_changelog(root)
+    problems = release_problems(text)
+    if problems:
+        print("\n".join(problems) + "\nchangelog.py: fix the releases' headings first", file=sys.stderr)
+        return 1
+    known = [v for _, _, v, _ in release_headings(text) if v is not None]
+    if version in known:
+        print(f"changelog.py: {CHANGELOG} has a heading for Version {args.version} already", file=sys.stderr)
+        return 1
+    if known and version < known[0]:
+        print(f"changelog.py: Version {args.version} is below the newest release, {version_text(known[0])}",
+              file=sys.stderr)
+        return 1
+    waiting = bool(entries) or body.strip("\n") != ""
+    days = re.split(r"^## Version ", rest, maxsplit=1, flags=re.MULTILINE)[0]
+    if not waiting and days.strip("\n") == "":
+        print(f"changelog.py: nothing since the last release: no entry, nothing under `{UNRELEASED}`, no day section",
+              file=sys.stderr)
+        return 1
+    if waiting:
+        code = fold(root, args.date)
+        if code != 0:
+            return code
+    head, body, rest = changelog_parts(root)
+    heading = f"## Version {args.version} ({args.date})"
+    new = head + "\n" + heading + "\n" + (("\n" + rest) if rest else "")
+    write_atomic(root / CHANGELOG, new, crlf(root))
+    print(f"Gave the days since the last release the heading `{heading}`.")
+    print(f"Commit {CHANGELOG}" + (" and the removals" if entries else "") + ", then tag v" + args.version + ".")
+    return 0
+
+
+def cmd_check_release(args: argparse.Namespace) -> int:
+    """A tag's changelog, as release.yml asks before it builds: no entry left in docs/changelog/ (they are folded in
+    first, or the plugins' What's new would lack them), and a release's version with its heading."""
+    root = args.root
+    m = TAG_RE.match(args.tag)
+    if not m:
+        print(f"changelog.py: {args.tag} is no release tag: vX.Y.Z, or with a pre-release's suffix (v0.1.0-rc.1)",
+              file=sys.stderr)
+        return 1
+    problems = []
+    left = entry_files(root)
+    if left:
+        names = ", ".join(p.relative_to(root).as_posix() for p in left)
+        problems.append(f"{len(left)} entr{'y' if len(left) == 1 else 'ies'} left in {ENTRIES_DIR.as_posix()}/ "
+                        f"({names}): fold them in first (scripts/changelog.py release)")
+    if not (root / CHANGELOG).is_file():
+        problems.append(f"no {CHANGELOG}")
+    else:
+        text = read_changelog(root)
+        problems += release_problems(text)
+        version = m.group(1)
+        if m.group(2) is None and parse_version(version) not in [v for _, _, v, _ in release_headings(text)]:
+            problems.append(f"{CHANGELOG} has no `## Version {version} (YYYY-MM-DD)` heading: give the release its "
+                            f"heading first (scripts/changelog.py release --version {version} --date YYYY-MM-DD)")
+    for p in problems:
+        print(f"changelog.py: {args.tag}: {p}", file=sys.stderr)
+    if problems:
+        return 1
+    said = "a pre-release, " if m.group(2) else f"Version {m.group(1)} has its heading, "
+    print(f"changelog.py: {args.tag}: {said}no entry left in {ENTRIES_DIR.as_posix()}/")
+    return 0
 
 
 # ---- the self-test ------------------------------------------------------------------------------------------------
@@ -656,6 +821,103 @@ def selftest(_: argparse.Namespace) -> int:
                      + entry_text("A") + "\n" + EXISTING.split("\n\n", 1)[1] + "\n" + OLDER).replace("\n", "\r\n")
         expect(r.returncode == 0 and (windows / CHANGELOG).read_bytes() == crlf_want.encode(),
                "fold: a CR LF CHANGELOG.md written back with CR LF")
+
+        # ---- releases: their headings kept by fold and cut, checked, made by release, asked for by check-release ----
+        rel = tmp / "releases"
+        (rel / ENTRIES_DIR).mkdir(parents=True)
+        g(rel, "init", "-q")
+        released = "## Version 0.1.0 (2026-01-02)\n\n" + OLDER
+        start = PREAMBLE + "## Unreleased\n\n" + EXISTING + "\n" + released
+        (rel / CHANGELOG).write_text(start)
+        (rel / ENTRIES_DIR / README).write_text("The entries.\n")
+        g(rel, "add", "-A")
+        g(rel, "commit", "-q", "-m", "Start", when=100)
+        r = run(rel, "check")
+        expect(r.returncode == 0 and "1 release's heading" in r.stdout, "check: a release's heading is well formed")
+        r = run(rel, "check-release", "--tag", "v0.1.0")
+        expect(r.returncode == 0, "check-release: a release with its heading and no entry left passes")
+        r = run(rel, "check-release", "--tag", "v0.2.0")
+        expect(r.returncode == 1 and "no `## Version 0.2.0 (YYYY-MM-DD)` heading" in r.stderr,
+               "check-release: a release's version with no heading refused")
+        r = run(rel, "check-release", "--tag", "v0.2.0-rc.1")
+        expect(r.returncode == 0, "check-release: a pre-release needs no heading")
+        for tag in ("0.2.0", "v0.2", "v0.2.0.1", "release"):
+            r = run(rel, "check-release", "--tag", tag)
+            expect(r.returncode == 1 and "no release tag" in r.stderr, f"check-release: {tag} is no tag")
+        (rel / ENTRIES_DIR / "late.md").write_text(entry_text("Late"))
+        for tag in ("v0.1.0", "v0.2.0-rc.1"):
+            r = run(rel, "check-release", "--tag", tag)
+            expect(r.returncode == 1 and "1 entry left in docs/changelog/ (docs/changelog/late.md)" in r.stderr,
+                   f"check-release: {tag} refused while an entry file is left")
+        r = run(rel, "fold")
+        folded = (rel / CHANGELOG).read_text()
+        expect(r.returncode == 0 and folded.endswith("\n" + released) and "### Late" in folded.split("## Version")[0],
+               "fold: under Unreleased, the release's section untouched byte for byte")
+        r = run(rel, "cut", "--date", "2026-01-05")
+        cutted = (rel / CHANGELOG).read_text()
+        expect(r.returncode == 0 and cutted == PREAMBLE + "## Unreleased\n\n## 2026-01-05\n"
+               + folded.split("## Unreleased\n", 1)[1].split("## Version", 1)[0] + released,
+               "cut: the day's section above the release's heading")
+
+        bad_headings = {
+            "## Version 0.2 (2026-01-09)": "not a release's heading",
+            "## Version 0.2.0": "not a release's heading",
+            "## Version 0.2.0 (2026-02-30)": "not a day",
+            "## Version 0.1.0 (2026-01-09)": "Version 0.1.0 again",
+        }
+        for line, words in bad_headings.items():
+            (rel / CHANGELOG).write_text(cutted.replace("## 2026-01-05\n", line + "\n\n## 2026-01-05\n"))
+            r = run(rel, "check")
+            expect(r.returncode == 1 and words in r.stdout and r.stdout.startswith("CHANGELOG.md:"),
+                   f"check: `{line}` refused ({words})")
+        def above_day(line: str) -> str:
+            return cutted.replace("## 2026-01-05\n", line + "\n\n## 2026-01-05\n")
+        (rel / CHANGELOG).write_text(above_day("## Version 0.2.0 (2026-01-05)"))
+        r = run(rel, "check")
+        expect(r.returncode == 0 and "2 releases' headings" in r.stdout, "check: releases newest first pass")
+        (rel / CHANGELOG).write_text(above_day("## Version 0.0.5 (2026-01-05)")
+                                     .replace("## Unreleased\n", "## Version 0.0.6 (2026-01-06)\n\n## Unreleased\n"))
+        r = run(rel, "check")
+        expect(r.returncode == 1 and "above `## Unreleased`" in r.stdout, "check: a release above Unreleased refused")
+        (rel / CHANGELOG).write_text(above_day("## Version 0.0.3 (2026-01-05)"))
+        r = run(rel, "check")
+        expect(r.returncode == 1 and "the newest release first" in r.stdout, "check: releases out of order refused")
+        (rel / CHANGELOG).write_text(cutted)
+
+        # release: refusals change nothing
+        for args, words in ((("--version", "0.2", "--date", "2026-01-09"), "no release's version"),
+                            (("--version", "0.2.0-rc.1", "--date", "2026-01-09"), "no release's version"),
+                            (("--version", "0.2.0", "--date", "2026-1-9"), "no day"),
+                            (("--version", "0.1.0", "--date", "2026-01-09"), "already"),
+                            (("--version", "0.0.9", "--date", "2026-01-09"), "below the newest release")):
+            r = run(rel, "release", *args)
+            expect(r.returncode == 1 and words in r.stderr and (rel / CHANGELOG).read_text() == cutted,
+                   f"release {' '.join(args)}: refused ({words}), nothing changed")
+        # a day cut already, nothing waiting: the heading over it
+        r = run(rel, "release", "--version", "0.2.0", "--date", "2026-01-09")
+        rel1 = (rel / CHANGELOG).read_text()
+        expect(r.returncode == 0 and rel1 == cutted.replace("## Unreleased\n\n## 2026-01-05\n",
+                                                            "## Unreleased\n\n## Version 0.2.0 (2026-01-09)\n\n"
+                                                            "## 2026-01-05\n"),
+               "release: the heading over the days cut since the last release, Unreleased empty on top")
+        r = run(rel, "check")
+        expect(r.returncode == 0 and "2 releases' headings" in r.stdout, "check: passes after the release")
+        r = run(rel, "release", "--version", "0.3.0", "--date", "2026-01-10")
+        expect(r.returncode == 1 and "nothing since the last release" in r.stderr
+               and (rel / CHANGELOG).read_text() == rel1, "release: refused with nothing since the last release")
+        # entries waiting: folded, cut into the day, then the heading
+        (rel / ENTRIES_DIR / "next.md").write_text(entry_text("Next"))
+        r = run(rel, "release", "--version", "0.3.0", "--date", "2026-01-12")
+        rel2 = (rel / CHANGELOG).read_text()
+        expect(r.returncode == 0 and rel2 == rel1.replace(
+                   "## Unreleased\n\n",
+                   "## Unreleased\n\n## Version 0.3.0 (2026-01-12)\n\n## 2026-01-12\n\n" + entry_text("Next") + "\n"),
+               "release: the entries folded, cut into the day, the day under the version's heading")
+        expect(not (rel / ENTRIES_DIR / "next.md").exists(), "release: the entry file gone")
+        r = run(rel, "check-release", "--tag", "v0.3.0")
+        expect(r.returncode == 0, "check-release: passes after release")
+        r = run(rel, "show")
+        expect(r.stdout == "## Unreleased\n", "show: an empty Unreleased over the releases")
     except RuntimeError as e:
         failures.append(str(e))
         print(f"FAIL  {e}")
@@ -682,6 +944,13 @@ def main() -> int:
     p = subs.add_parser("cut", help="fold, then make the Unreleased section the day's")
     p.add_argument("--date", required=True, help="the day, YYYY-MM-DD")
     p.set_defaults(func=cmd_cut)
+    p = subs.add_parser("release", help="cut, then give the days since the last release the version's heading")
+    p.add_argument("--version", required=True, help="the release's version, X.Y.Z")
+    p.add_argument("--date", required=True, help="its day, YYYY-MM-DD")
+    p.set_defaults(func=cmd_release)
+    p = subs.add_parser("check-release", help="refuse a tag whose version has no heading, or with entries left")
+    p.add_argument("--tag", required=True, help="the tag, vX.Y.Z (or vX.Y.Z-rc.1)")
+    p.set_defaults(func=cmd_check_release)
     p = subs.add_parser("selftest", help="run this script's tests in a temporary repository")
     p.set_defaults(func=selftest)
 

@@ -6,6 +6,8 @@
 #include "editor/Items.h"
 #include "editor/SettingsPages.h"
 
+#include "plugin/Changelog.h"
+
 #include "Product.h"
 
 #include <algorithm>
@@ -379,5 +381,295 @@ namespace playground::ui
         if (a == funkgui::A11yAction::press)
             pointerDown({ r->centreX(), r->centreY() }, width, height);
         return true;
+    }
+
+    // ---- What's new -----------------------------------------------------------------------------------------------------
+
+    namespace
+    {
+        constexpr float kPageInset = 4.0f;               // the page's text from the body's edges (its bar at the right)
+        constexpr float kPageBar = 10.0f;
+    }
+
+    void WhatsNewCard::open(const std::string& seen) { openFor(changelog::since(seen, product::kVersion)); }
+
+    void WhatsNewCard::openFor(const std::vector<changelog::Version>& shown)
+    {
+        title_ = changelog::title(shown, product::kVersion);
+        raw_ = changelog::markdown(shown);
+        shown_ = asciiText(raw_);
+        layout_ = {};
+        laidW_ = -1.0f;
+        scroll_ = Scroll{};
+        open_ = true;
+        port_.whatsNewShown();                           // seen: this version, both products'
+        ++revision_;
+    }
+
+    void WhatsNewCard::close()
+    {
+        open_ = false;
+        scroll_.release();
+        ++revision_;
+    }
+
+    std::string WhatsNewCard::takeNotice()
+    {
+        std::string n;
+        n.swap(notice_);
+        return n;
+    }
+
+    WhatsNewCard::Places WhatsNewCard::places(float width, float height) const
+    {
+        Places at;
+        const float w = std::min(680.0f, width - 32.0f);
+        const float h = std::max(160.0f, std::min(640.0f, height - 64.0f));
+        at.box = { std::round((width - w) * 0.5f), std::round(std::max(16.0f, (height - h) * 0.42f)), w, std::round(h) };
+        const float top = at.box.y + kPad + 30.0f + 14.0f;
+        const float bottom = at.box.bottom() - kPad - kButtonH - 14.0f;
+        at.body = { at.box.x + kPad - kPageInset, top, w - 2.0f * kPad + kPageInset, std::max(0.0f, bottom - top) };
+        const float cw = buttonW("Close", true) + 12.0f;
+        at.close = { at.box.right() - kPad - cw, at.box.bottom() - kPad - kButtonH, cw, kButtonH };
+        return at;
+    }
+
+    const markdown::Layout& WhatsNewCard::laidOut(float bodyW) const
+    {
+        const float w = std::max(80.0f, bodyW - 2.0f * kPageInset - kPageBar);
+        if (w != laidW_)
+        {
+            layout_ = {};
+            float y = 0.0f;
+            markdown::Options o;
+            o.links = true;
+            markdown::layout(layout_, metrics_, shown_, raw_, w, y, o);
+            laidW_ = w;
+            contentH_ = y + 8.0f;
+        }
+        return layout_;
+    }
+
+    Scroll WhatsNewCard::scroller(float width, float height) const
+    {
+        const Places at = places(width, height);
+        (void)laidOut(at.body.w);
+        Scroll s = scroll_;
+        s.content = contentH_;
+        s.view = at.body.h;
+        s.row = chat::kBodyLine;
+        s.clamp();
+        return s;
+    }
+
+    int WhatsNewCard::linkAt(funkgui::Point p, const Places& at) const
+    {
+        if (!at.body.contains(p))
+            return -1;
+        const markdown::Layout& l = laidOut(at.body.w);
+        const float x0 = at.body.x + kPageInset, top = at.body.y - scroll_.offset;
+        for (int i = 0; i < static_cast<int>(l.links.size()); ++i)
+        {
+            const funkgui::Rect& r = l.links[static_cast<std::size_t>(i)].r;
+            if (funkgui::Rect{ x0 + r.x, top + r.y, r.w, r.h }.contains(p))
+                return i;
+        }
+        return -1;
+    }
+
+    void WhatsNewCard::openLink(const std::string& url)
+    {
+        std::string why;
+        if (port_.openLink(url, why))
+            notice_ = "OPENED " + upper(url) + " IN THE BROWSER";
+        else
+            notice_ = "THE LINK DID NOT OPEN: " + upper(why);
+    }
+
+    void WhatsNewCard::scrollBy(float dy, float width, float height)
+    {
+        Scroll s = scroller(width, height);
+        if (s.moveTo(s.offset + dy))
+            scroll_.offset = s.offset;
+        ++revision_;
+    }
+
+    void WhatsNewCard::pointerDown(funkgui::Point p, float width, float height)
+    {
+        const Places at = places(width, height);
+        Scroll s = scroller(width, height);
+        if (at.close.contains(p) || !at.box.contains(p))
+            close();                                     // Close, or a press outside the card
+        else if (s.shown() && s.press(p, at.body))
+            scroll_ = s;                                 // the bar's thumb, dragged from here
+        else if (const int i = linkAt(p, at); i >= 0)
+            openLink(laidOut(at.body.w).links[static_cast<std::size_t>(i)].url);
+        ++revision_;
+    }
+
+    void WhatsNewCard::pointerDrag(funkgui::Point p, float width, float height)
+    {
+        if (!scroll_.dragging())
+            return;
+        const Places at = places(width, height);
+        Scroll s = scroller(width, height);
+        s.drag(p, at.body);
+        scroll_ = s;
+        ++revision_;
+    }
+
+    void WhatsNewCard::pointerUp() { scroll_.release(); }
+
+    void WhatsNewCard::wheel(const funkgui::WheelEvent& e, float width, float height)
+    {
+        // As the code scrolls (Scroll.h): the delta as it came, WheelEvent::reversed never read.
+        Scroll s = scroller(width, height);
+        if (!s.wheel(e.dy, e.smooth))
+            return;
+        scroll_ = s;
+        ++revision_;
+    }
+
+    void WhatsNewCard::key(const funkgui::KeyEvent& e, float width, float height)
+    {
+        using K = funkgui::Key;
+        const float page = std::max(chat::kBodyLine, places(width, height).body.h - 2.0f * chat::kBodyLine);
+        switch (e.key)
+        {
+            case K::escape:
+            case K::enter: close(); break;
+            case K::up: scrollBy(-3.0f * chat::kBodyLine, width, height); break;
+            case K::down: scrollBy(3.0f * chat::kBodyLine, width, height); break;
+            case K::pageUp: scrollBy(-page, width, height); break;
+            case K::pageDown:
+            case K::space: scrollBy(page, width, height); break;
+            case K::home: scrollBy(-1.0e9f, width, height); break;
+            case K::end: scrollBy(1.0e9f, width, height); break;
+            case K::character:
+            case K::tab:
+            case K::left:
+            case K::right:
+            case K::backspace:
+            case K::del: break;
+        }
+        ++revision_;
+    }
+
+    funkgui::Cursor WhatsNewCard::cursor(funkgui::Point p, float width, float height) const
+    {
+        const Places at = places(width, height);
+        if (at.close.contains(p) || linkAt(p, at) >= 0)
+            return funkgui::Cursor::pointingHand;
+        return funkgui::Cursor::normal;
+    }
+
+    uint64_t WhatsNewCard::key() const noexcept { return scroll_.key() ^ (static_cast<uint64_t>(revision_) << 40); }
+
+    void WhatsNewCard::draw(funkgui::Canvas& c, const funkgui::Theme& th, float width, float height, funkgui::Point pointer,
+                            bool hasPointer) const
+    {
+        const chat::Palette p = chat::palette(th);
+        const Places at = places(width, height);
+        const funkgui::Rect& box = at.box;
+        frame(c, th, p, box, width, height, true);
+        heading(c, p, box.x + kPad, box.y + kPad, chat::Icon::list, title_, box.w - 2.0f * kPad);
+        const markdown::Layout& l = laidOut(at.body.w);
+        const Scroll s = scroller(width, height);
+        const int hover = hasPointer ? linkAt(pointer, at) : -1;
+        c.pushClip(at.body);
+        markdown::draw(c, th, l, metrics_, at.body.x + kPageInset, at.body.y - s.offset, at.body, hover);
+        c.popClip();
+        if (s.shown())
+            s.draw(c, at.body, th);
+        // Where the page goes on, a hairline at the cut.
+        if (s.offset > 0.5f)
+            c.hairlineH(box.x + 1.0f, at.body.y, box.w - 2.0f, p.cardEdge);
+        if (s.offset < s.max() - 0.5f)
+            c.hairlineH(box.x + 1.0f, at.body.bottom(), box.w - 2.0f, p.cardEdge);
+        const std::string foot = std::string("Settings, General shows this again. ") + product::kName + " " + product::kVersion + ".";
+        c.text(fitText(c, foot, chat::kSmall, at.close.x - box.x - kPad - 8.0f).c_str(), box.x + kPad,
+               c.capCentreTop(at.close.centreY(), chat::kSmall), chat::kSmall, p.faint);
+        button(c, p, at.close, "Close", true, hasPointer && at.close.contains(pointer));
+    }
+
+    int WhatsNewCard::linkCount(float width, float height) const
+    {
+        return static_cast<int>(laidOut(places(width, height).body.w).links.size());
+    }
+
+    std::optional<funkgui::Point> WhatsNewCard::centreOfLink(int i, float width, float height) const
+    {
+        const Places at = places(width, height);
+        const markdown::Layout& l = laidOut(at.body.w);
+        if (i < 0 || i >= static_cast<int>(l.links.size()))
+            return std::nullopt;
+        const funkgui::Rect& r = l.links[static_cast<std::size_t>(i)].r;
+        const funkgui::Point c{ at.body.x + kPageInset + r.x + std::min(r.w, 12.0f) * 0.5f,
+                                at.body.y - scroll_.offset + r.y + r.h * 0.5f };
+        if (!at.body.contains(c))
+            return std::nullopt;
+        return c;
+    }
+
+    std::string WhatsNewCard::linkUrl(int i, float width, float height) const
+    {
+        const markdown::Layout& l = laidOut(places(width, height).body.w);
+        return i >= 0 && i < static_cast<int>(l.links.size()) ? l.links[static_cast<std::size_t>(i)].url : std::string();
+    }
+
+    void WhatsNewCard::accessibility(std::vector<funkgui::A11yItem>& out, float width, float height) const
+    {
+        const Places at = places(width, height);
+        funkgui::A11yItem box;
+        box.id = kA11yBase;
+        box.role = funkgui::a11yrole::group;
+        box.bounds = at.box;
+        box.title = title_;
+        out.push_back(box);
+        funkgui::A11yItem page;
+        page.id = kA11yBase + 1;
+        page.parent = kA11yBase;
+        page.role = funkgui::a11yrole::group;
+        page.bounds = at.body;
+        page.title = "The changes";
+        page.description = shown_;                       // the whole page, as written (a screen reader reads it all)
+        out.push_back(std::move(page));
+        a11yButton(out, kA11yBase + 2, kA11yBase, at.close, "Close");
+        const markdown::Layout& l = laidOut(at.body.w);
+        uint32_t id = kA11yBase + 16;
+        for (std::size_t i = 0; i < l.links.size() && i < 4000; ++i)
+        {
+            const funkgui::Rect& r = l.links[i].r;
+            const funkgui::Rect on{ at.body.x + kPageInset + r.x, at.body.y - scroll_.offset + r.y, r.w, r.h };
+            if (on.bottom() < at.body.y || on.y > at.body.bottom())
+                continue;                                // links out of view: the page's text has them
+            a11yButton(out, id + static_cast<uint32_t>(i), kA11yBase + 1, on, "Link: " + l.links[i].url);
+        }
+    }
+
+    bool WhatsNewCard::a11yAction(uint32_t id, funkgui::A11yAction a, float width, float height)
+    {
+        if (!open_ || (a != funkgui::A11yAction::press && a != funkgui::A11yAction::focus))
+            return false;
+        const Places at = places(width, height);
+        if (id == kA11yBase + 2)
+        {
+            if (a == funkgui::A11yAction::press)
+                close();
+            ++revision_;
+            return true;
+        }
+        if (id >= kA11yBase + 16)
+        {
+            const markdown::Layout& l = laidOut(at.body.w);
+            const std::size_t i = id - (kA11yBase + 16);
+            if (i >= l.links.size())
+                return false;
+            if (a == funkgui::A11yAction::press)
+                openLink(l.links[i].url);
+            ++revision_;
+            return true;
+        }
+        return false;
     }
 }

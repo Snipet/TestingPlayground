@@ -32,10 +32,10 @@
 //   HELD      a store's file renamed over while another process reads it (plugin/FileReplace.h): a reader holding the
 //             file open (a std::ifstream, as every reader of these files) through the write and letting go within the
 //             helper's window, and the write lands: the helper itself, usage.json's flush and Reset (usage::Ledger),
-//             app.json (an answer) and factory.json (an answer); a reader that never lets go: the write fails as before,
-//             nothing lost (the ledger's counts kept and said failed, app.json's answer written by the next write). On
-//             POSIX a rename over an open file always lands, so the never-lets-go rows are Windows' alone (skipped,
-//             saying so); the others pass there by nature and are Windows' test
+//             app.json (an answer, and What's new's seen) and factory.json (an answer); a reader that never lets go:
+//             the write fails as before, nothing lost (the ledger's counts kept and said failed, app.json's answer
+//             written by the next write). On POSIX a rename over an open file always lands, so the never-lets-go rows
+//             are Windows' alone (skipped, saying so); the others pass there by nature and are Windows' test
 //   TWO       two processors share one check: one request for two editors' opens
 //   JOIN      a processor (the last holder) going while a check is in flight returns promptly, the thread joined
 //   OFFER     the processor's offer: due with neither answered; Allow with the factory unticked: updates yes, the factory
@@ -833,6 +833,17 @@ PROBE(plugin, updates)
             }
             P.eq("held.app.lands", appJson(h)["updates"].toString() == "no" && appJson(h)["seen"].toString() == "0.1.0" ? 1 : 0, 1);
             P.eq("held.app.lands.written", c.written() ? 1 : 0, 1);   // the check's own answer, not the file's alone
+            {
+                // What's new's seen, as skipped: written over a reader that lets go, the answer kept.
+                Reader r(app);
+                (void)r.open(kLetGo);
+                c.setSeen("0.2.0");
+                (void)settle(c);
+                r.close();
+            }
+            P.eq("held.app.seen_lands",
+                 appJson(h)["seen"].toString() == "0.2.0" && appJson(h)["updates"].toString() == "no" ? 1 : 0, 1);
+            P.eq("held.app.seen_lands.written", c.written() ? 1 : 0, 1);
             if (kPosix)
                 probe::skip(P, "held.app.never", kPosixWhy);
             else
@@ -841,15 +852,18 @@ PROBE(plugin, updates)
                     Reader never(app);
                     (void)never.open(kNever);
                     c.setAnswer(up::Answer::later);
+                    c.setSeen("0.3.0");
                     (void)settle(c);
-                    P.eq("held.app.never.unchanged", appJson(h)["updates"].toString() == "no" ? 1 : 0, 1);
+                    P.eq("held.app.never.unchanged", appJson(h)["updates"].toString() == "no"
+                                                         && appJson(h)["seen"].toString() == "0.2.0" ? 1 : 0, 1);
                     P.eq("held.app.never.not_written", c.written() ? 0 : 1, 1);
                     never.close();
                 }
                 c.skip("0.9.0");                         // the next write takes the answer that waited with it
                 (void)settle(c);
                 P.eq("held.app.never.nothing_lost", appJson(h)["updates"].toString() == "later"
-                                                        && appJson(h)["skipped"].toString() == "0.9.0" ? 1 : 0, 1);
+                                                        && appJson(h)["skipped"].toString() == "0.9.0"
+                                                        && appJson(h)["seen"].toString() == "0.3.0" ? 1 : 0, 1);
                 P.eq("held.app.never.written_after", c.written() ? 1 : 0, 1);
             }
         }

@@ -423,13 +423,16 @@ namespace playground::updates
         std::condition_variable cv;
         bool stop = false;
         bool loadWanted = false, checkWanted = false, forced = false, writeWanted = false;
-        bool answerDirty = false, skippedDirty = false, resultDirty = false;
+        bool answerDirty = false, skippedDirty = false, resultDirty = false, seenDirty = false;
         bool busy = false;
         bool editorSeen = false;
         bool checking = false;
         Answer answer = Answer::notAsked;
         bool loaded = false;
         std::string skipped;
+        std::string seen;                        // What's new's: the version whose card the user last saw
+        bool seenFresh = false;                  // seen read again since the last editor opened (rereadSeen)
+        bool seenWanted = false;
         Release latest;
         int64_t checkedMs = 0, triedMs = 0;
         std::string why;
@@ -470,6 +473,8 @@ namespace playground::updates
                         answer = answerOf(v["updates"]);
                     if (!skippedDirty)
                         skipped = validVersion(str(v["skipped"])) ? str(v["skipped"]) : std::string();
+                    if (!seenDirty)
+                        seen = validVersion(str(v["seen"])) ? str(v["seen"]) : std::string();
                     if (!resultDirty)
                     {
                         double ms = 0;
@@ -502,13 +507,27 @@ namespace playground::updates
             }
         }
 
+        // What's new's seen as app.json has it now (the other product's editor may have shown the card meanwhile),
+        // unless this one's waits to be written; then fresh, for the editor that opened.
+        void rereadSeen()
+        {
+            const juce::var v = readApp();
+            {
+                const std::lock_guard<std::mutex> lock(m);
+                if (!seenDirty && v.isObject())
+                    seen = validVersion(str(v["seen"])) ? str(v["seen"]) : std::string();
+                seenFresh = true;
+            }
+            bump();
+        }
+
         // The fields this process changed, set on app.json as it is now (read again under the folder's lock): what the
         // other product (or another process) wrote meanwhile, and every field this one does not know, are kept.
         void writeApp()
         {
-            bool a = false, s = false, r = false;
+            bool a = false, s = false, r = false, w = false;
             Answer ans;
-            std::string skip, prices;
+            std::string skip, prices, seenNow;
             Release rel;
             int64_t checked = 0;
             {
@@ -516,13 +535,15 @@ namespace playground::updates
                 a = answerDirty;
                 s = skippedDirty;
                 r = resultDirty;
+                w = seenDirty;
                 ans = answer;
                 skip = skipped;
+                seenNow = seen;
                 rel = latest;
                 checked = checkedMs;
                 prices = pricesJson;
             }
-            if (!a && !s && !r)
+            if (!a && !s && !r && !w)
                 return;
             const std::atomic<bool> never{ false };
             const FolderLock lock(file.parent_path(), never);
@@ -541,6 +562,8 @@ namespace playground::updates
             }
             if (s)
                 o->setProperty("skipped", juce::String::fromUTF8(skip.c_str()));
+            if (w)
+                o->setProperty("seen", juce::String::fromUTF8(seenNow.c_str()));
             if (r)
             {
                 o->setProperty("checkedMs", juce::var(static_cast<juce::int64>(checked)));
@@ -558,6 +581,8 @@ namespace playground::updates
                 answerDirty = false;
             if (s && skipped == skip)
                 skippedDirty = false;
+            if (w && seen == seenNow)
+                seenDirty = false;
             if (r && checkedMs == checked)
                 resultDirty = false;
         }
@@ -652,15 +677,16 @@ namespace playground::updates
         {
             for (;;)
             {
-                bool doLoad = false, doCheck = false, doForce = false;
+                bool doLoad = false, doCheck = false, doForce = false, doSeen = false;
                 {
                     std::unique_lock<std::mutex> lock(m);
-                    cv.wait(lock, [&] { return stop || loadWanted || checkWanted || writeWanted; });
+                    cv.wait(lock, [&] { return stop || loadWanted || checkWanted || writeWanted || seenWanted; });
                     if (stop)
                         return;
                     doLoad = std::exchange(loadWanted, false);
                     doCheck = std::exchange(checkWanted, false);
                     doForce = std::exchange(forced, false);
+                    doSeen = std::exchange(seenWanted, false);
                     writeWanted = false;
                     busy = true;
                 }
@@ -675,6 +701,8 @@ namespace playground::updates
                     if (doLoad || !wasLoaded)
                         load();
                     writeApp();
+                    if (doSeen)
+                        rereadSeen();
                     if (doCheck && !cancel.load())
                         considerCheck(doForce);
                 }
@@ -747,6 +775,8 @@ namespace playground::updates
         st.current = s_->config.version;
         st.newer = !s_->latest.version.empty() && compareVersions(s_->latest.version, s_->config.version) > 0;
         st.skipped = s_->skipped;
+        st.seen = s_->seen;
+        st.seenFresh = s_->seenFresh;
         st.checkedMs = s_->checkedMs;
         st.why = s_->why;
         st.revision = s_->revision.load();
@@ -801,12 +831,28 @@ namespace playground::updates
         s_->cv.notify_all();
     }
 
+    void Check::setSeen(const std::string& version)
+    {
+        {
+            const std::lock_guard<std::mutex> lock(s_->m);
+            if (!validVersion(version) || (s_->seen == version && !s_->seenDirty))
+                return;                                  // nothing to write
+            s_->seen = version;
+            s_->seenDirty = true;
+            s_->writeWanted = true;
+        }
+        s_->bump();
+        s_->cv.notify_all();
+    }
+
     void Check::editorOpened()
     {
         {
             const std::lock_guard<std::mutex> lock(s_->m);
             s_->editorSeen = true;
             s_->checkWanted = true;
+            s_->seenWanted = true;                       // What's new decides on app.json's seen as it is now
+            s_->seenFresh = false;
         }
         s_->cv.notify_all();
     }
@@ -830,13 +876,13 @@ namespace playground::updates
     bool Check::idle() const
     {
         const std::lock_guard<std::mutex> lock(s_->m);
-        return !s_->busy && !s_->loadWanted && !s_->checkWanted && !s_->writeWanted;
+        return !s_->busy && !s_->loadWanted && !s_->checkWanted && !s_->writeWanted && !s_->seenWanted;
     }
 
     bool Check::written() const
     {
         const std::lock_guard<std::mutex> lock(s_->m);
-        return !s_->answerDirty && !s_->skippedDirty && !s_->resultDirty;
+        return !s_->answerDirty && !s_->skippedDirty && !s_->resultDirty && !s_->seenDirty;
     }
 
     int Check::requests() const noexcept { return s_->requests.load(); }
