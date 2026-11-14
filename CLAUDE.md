@@ -1262,11 +1262,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
      `<PREFIX>FACTORY=off`.
   3. **The update check** (`plugin/UpdateCheck.h`, "The update check" above): the same site and the same request, the
      same two conditions (a yes, an editor opened), never with `<PREFIX>UPDATES=off`.
-  A host scanning plugins, a processor made with no editor, a probe: none ever causes a request (`plugin.updates` GATE,
-  `plugin.factorystore` GATE).
   4. **The user's git** (`plugin/Git.h`, "Running git" below): the remote the user gave, through the user's own git
      and its credentials, only when the user presses Connect, Push, Pull, Check or Add from Git on a project's Git card
      (`plugin.git` JOB: the listing and the card's link run no git).
+  A host scanning plugins, a processor made with no editor, a probe: none ever causes a request (`plugin.updates` GATE,
+  `plugin.factorystore` GATE).
 
   The chat goes through `claude::Transport`
   (`ClaudeApi.cpp`: HTTPS, or HTTP to a server on this Mac or the local network; never following a redirect,

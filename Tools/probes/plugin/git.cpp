@@ -53,6 +53,9 @@
 //            mine's saves and its commit, pressing it again finishes, keeping yours, and Take theirs's, its words naming
 //            yours; a merge the user left under way in the folder: refused, left as it is; a git older than 2.38 (a
 //            stand-in): the pull diverged, saying so, and Keep mine and Take theirs settle it
+//   UTF8     a store folder (and its remote) named in Greek and CJK, outside ASCII and Windows-1252: Connect, Push,
+//            the links file written and read back, Add from Git on a second store, Pull; each working folder and file
+//            where a UTF-8 path says (project and sample names are ASCII: validFileName, tidyName)
 //   JOB      through a Processor: the job connects, links and marks (projectsPolled, gitLink); the listing and the card's
 //            link run no git (a git that leaves a marker); a pull opens the new version when the project is open and
 //            unedited, and leaves it in the list when it is edited; a chosen git that is no git: the job says so; an
@@ -61,6 +64,7 @@
 
 #include "fminus/Failure.h"
 
+#include "plugin/FileReplace.h"
 #include "plugin/Git.h"
 #include "plugin/GitProjects.h"
 #include "plugin/Processor.h"
@@ -438,7 +442,7 @@ namespace
             };
             const auto folderB = [&] {
                 const std::optional<ps::Link> l = linkB();
-                return l ? fs::path(gp::folderOf(*l)) : fs::path();
+                return l ? pg::files::pathOf(gp::folderOf(*l)) : fs::path();
             };
             // A changes program.fm, B lib.fm: different files, the same dials: merged clean.
             use(storeA);
@@ -586,6 +590,85 @@ namespace
             for (const char* r : { "merge.old_git_diverged", "merge.old_git_keep_mine", "merge.old_git_take_theirs" })
                 probe::skip(P, r, "the old git's stand-in is a shell script (POSIX)");
 #endif
+        }
+
+        // ---- UTF8: a store folder named outside ASCII and outside Windows-1252 (Greek and CJK: as a Documents folder
+        // under a Windows account's own name), its remotes there too. Every path here is made from UTF-8 text and given
+        // back as UTF-8 (FileReplace.h's pathOf, utf8Of), as the plugin's are: on Windows the old conversions through
+        // the ANSI code page made another folder, or threw; on POSIX it holds that git's output is read as it is ------
+        {
+            const std::string greek = "\xCE\xA0\xCF\x81\xCF\x8C\xCE\xB2\xCE\xB1";       // "Proba" in Greek letters
+            const std::string cjk = "\xE6\x97\xA5\xE6\x9C\xAC";                          // two CJK characters
+            const fs::path uroot = root / pg::files::pathOf(greek + "-" + cjk);
+            const fs::path uA = uroot / pg::files::pathOf("A-" + greek), uB = uroot / pg::files::pathOf("B-" + cjk);
+            const auto useU = [](const fs::path& store) {
+                ps::setDirectoryForTests(juce::File(juce::String::fromUTF8(pg::files::utf8Of(store).c_str())));
+            };
+            const auto urlU = [](const fs::path& p) {
+                const std::string s = pg::files::utf8Of(p.generic_u8string());
+                return "file://" + std::string(s.front() == '/' ? "" : "/") + s;
+            };
+            const auto contextU = [&](const fs::path& folder) {
+                pg::git::Context c;
+                c.git = found.path;
+                c.folder = pg::files::utf8Of(folder);
+                c.allowFile = true;
+                return c;
+            };
+            const fs::path uRemote = uroot / pg::files::pathOf("remote-" + cjk + ".git");
+            fs::create_directories(uRemote, ec);
+            pg::git::call(contextU(uRemote), { "init", "--bare", "-q" });
+            pg::git::call(contextU(uRemote), { "symbolic-ref", "HEAD", "refs/heads/main" });
+            const auto countU = [&](const std::string& ref) {
+                const pg::git::Outcome o = pg::git::call(contextU(uRemote), { "rev-list", "--count", ref });
+                return o.ok ? std::atoi(o.out.c_str()) : -1;
+            };
+            // Where a UTF-8 path says a project's working folder is.
+            const auto workingOf = [&](const fs::path& store, const std::string& project) -> fs::path {
+                const std::optional<ps::Link> l = ps::linkOf(ps::idOf(project));
+                return l ? store / pg::files::pathOf(ps::kGitFolderName) / pg::files::pathOf(l->folder) : fs::path();
+            };
+
+            useU(uA);
+            ps::saveVersion("Unicode Pad", programOf("// u 1\n"), 0, dials);
+            ps::saveVersion("Unicode Pad", programOf("// u 2\n"), 0, dials);
+            const gp::Outcome c = gp::connect(env, "Unicode Pad", urlU(uRemote), "main");
+            std::printf("utf8: connect %d \"%s\"\n", c.ok ? 1 : 0, c.words.c_str());
+            const fs::path wA = workingOf(uA, "Unicode Pad");
+            P.eq("utf8.connect", c.ok && countU("main") == 2 && !wA.empty() && there(wA / ".git")
+                                      && readFile(wA / "program.fm") == "// u 2\n" && there(wA / "project.json") ? 1 : 0, 1);
+            // Nothing made beside it: the Git folder under the store's own name holds that one working folder.
+            P.eq("utf8.connect_one_folder", childFolders(uA / pg::files::pathOf(ps::kGitFolderName)) == 1 ? 1 : 0, 1);
+
+            ps::saveVersion("Unicode Pad", programOf("// u 3\n"), 0, dials);
+            const gp::Outcome pushed = gp::push(env, "Unicode Pad");
+            P.eq("utf8.push", pushed.ok && countU("main") == 3 && readFile(wA / "program.fm") == "// u 3\n" ? 1 : 0, 1);
+
+            // The links file: written under the store's name, and read back from the file (another store, then this
+            // one again, so nothing comes from the cache).
+            const std::string uId = ps::idOf("Unicode Pad");
+            P.eq("utf8.links_written", there(uA / pg::files::pathOf(ps::kLinksFile)) ? 1 : 0, 1);
+            useU(uB);
+            useU(uA);
+            const std::optional<ps::Link> back = ps::linkOf(uId);
+            P.eq("utf8.links_read_back", back && back->remote == urlU(uRemote) && back->committed == 3 ? 1 : 0, 1);
+
+            useU(uB);
+            const gp::Outcome added = gp::add(env, urlU(uRemote), "");
+            std::printf("utf8: add %d \"%s\"\n", added.ok ? 1 : 0, added.words.c_str());
+            const fs::path wB = added.ok ? workingOf(uB, added.project) : fs::path();
+            const std::optional<ps::Project> b = added.ok ? ps::load(added.project) : std::nullopt;
+            P.eq("utf8.add", added.ok && b && b->latest().files == programOf("// u 3\n") && !wB.empty()
+                                  && readFile(wB / "program.fm") == "// u 3\n" ? 1 : 0, 1);
+
+            useU(uA);
+            ps::saveVersion("Unicode Pad", programOf("// u 4\n"), 0, dials);
+            gp::push(env, "Unicode Pad");
+            useU(uB);
+            const gp::Outcome pulled = added.ok ? gp::pull(env, added.project) : gp::Outcome{};
+            const std::optional<ps::Project> b2 = added.ok ? ps::load(added.project) : std::nullopt;
+            P.eq("utf8.pull", pulled.ok && pulled.version == 2 && b2 && b2->latest().files == programOf("// u 4\n")
+                                   && readFile(wB / "program.fm") == "// u 4\n" ? 1 : 0, 1);
         }
         ps::setDirectoryForTests({});
     }

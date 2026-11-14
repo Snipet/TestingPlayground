@@ -1,7 +1,7 @@
 // Source/plugin/FileReplace.h: a file written beside its place renamed over it in one step, on every platform, the
 // way every store of the plugin's that another process reads keeps its file (Usage.cpp's usage.json, FactoryStore.cpp's
-// factory.json and its set, UpdateCheck.cpp's app.json, ChatStore.cpp's key and chats). JUCE-free, so any of their
-// sides may take it.
+// factory.json and its set, UpdateCheck.cpp's app.json, ChatStore.cpp's key and chats), and the pair that makes a path
+// of UTF-8 text and back (pathOf, utf8Of: the git code's). JUCE-free, so any of their sides may take it.
 //
 // POSIX: rename(2), which lands whatever reads the old file (a reader keeps the file it opened). Windows: MoveFileExW
 // with MOVEFILE_REPLACE_EXISTING, which fails while another handle holds the old file without sharing its deletion, as
@@ -13,6 +13,8 @@
 #pragma once
 
 #include <filesystem>
+#include <string>
+#include <string_view>
 #include <system_error>
 
 namespace playground::files
@@ -22,4 +24,19 @@ namespace playground::files
 
     // `from` renamed over `to`; false with `ec` set when it did not move.
     bool replace(const std::filesystem::path& from, const std::filesystem::path& to, std::error_code& ec);
+
+    // The plugin's paths are UTF-8 text (JUCE's toStdString, run::run's arguments and working folder), while
+    // std::filesystem::path made from a std::string, and its string(), go through the process's ANSI code page on
+    // Windows: a folder under a name outside it (Zoë, a Cyrillic or CJK account) would be another folder, or throw.
+    // So a path is made from UTF-8 text by pathOf and given back as UTF-8 text by utf8Of, never fs::path(std::string)
+    // nor path::string(). On POSIX both are the bytes as they are.
+    inline std::filesystem::path pathOf(std::string_view utf8)
+    {
+        return std::filesystem::path(std::u8string(utf8.begin(), utf8.end()));
+    }
+    inline std::string utf8Of(const std::filesystem::path& p)
+    {
+        const std::u8string u = p.u8string();
+        return std::string(u.begin(), u.end());
+    }
 }

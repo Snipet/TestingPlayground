@@ -1,6 +1,8 @@
 // Source/plugin/Git.cpp: see Git.h. CLAUDE.md, "Git", gives the rules each run keeps.
 #include "plugin/Git.h"
 
+#include "plugin/FileReplace.h"
+
 #include "Product.h"
 
 #include <algorithm>
@@ -9,6 +11,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <mutex>
+#include <optional>
 #include <random>
 #include <sstream>
 
@@ -46,7 +49,7 @@ namespace playground::git
             static std::string made;
             const std::lock_guard<std::mutex> lock(mutex);
             std::error_code ec;
-            if (!made.empty() && fs::is_directory(made, ec) && fs::is_empty(made, ec) && !ec)
+            if (const fs::path m = files::pathOf(made); !made.empty() && fs::is_directory(m, ec) && fs::is_empty(m, ec) && !ec)
                 return made;
             made.clear();
             const fs::path tmp = fs::temp_directory_path(ec);
@@ -64,7 +67,7 @@ namespace playground::git
 #if !defined(_WIN32)
                     fs::permissions(folder, fs::perms::owner_all, fs::perm_options::replace, ec);
 #endif
-                    made = folder.string();
+                    made = files::utf8Of(folder);                // run::run reads it as UTF-8
                     return made;
                 }
             }
@@ -242,8 +245,15 @@ namespace playground::git
         if (!given.empty())
             return tryGit(given);
         const std::string var = std::string(product::kEnvPrefix) + "GIT";
+#if defined(_WIN32)
+        // The variable as Windows holds it (wide), given on as UTF-8 (FileReplace.h's pathOf, utf8Of).
+        const std::wstring wvar(var.begin(), var.end());
+        if (const wchar_t* v = _wgetenv(wvar.c_str()); v != nullptr && *v != L'\0')
+            return tryGit(files::utf8Of(fs::path(v)));
+#else
         if (const char* v = std::getenv(var.c_str()); v != nullptr && *v != '\0')
             return tryGit(v);
+#endif
         std::vector<std::string> places;
 #if defined(__APPLE__)
         places = { "/opt/homebrew/bin/git", "/usr/local/bin/git" };
@@ -259,12 +269,13 @@ namespace playground::git
         if (const std::string onPath = run::resolve("git.exe"); !onPath.empty())
             if (Found f = tryGit(onPath); f.found())
                 return f;
-        if (const char* pf = std::getenv("ProgramFiles"); pf != nullptr && *pf != '\0')
+        if (const wchar_t* pf = _wgetenv(L"ProgramFiles"); pf != nullptr && *pf != L'\0')
         {
-            const std::string p = std::string(pf) + "\\Git\\cmd\\git.exe";
+            // The variable as Windows holds it (wide), the path given on as UTF-8, as run::run reads it.
+            const fs::path p = fs::path(pf) / L"Git" / L"cmd" / L"git.exe";
             std::error_code ec;
-            if (fs::is_regular_file(fs::path(p), ec))
-                if (Found f = tryGit(p); f.found())
+            if (fs::is_regular_file(p, ec))
+                if (Found f = tryGit(files::utf8Of(p)); f.found())
                     return f;
         }
 #else
@@ -346,7 +357,7 @@ namespace playground::git
         if (c.git.empty())
             return refused(notFoundWords());   // nothing made
         std::error_code ec;
-        fs::create_directories(fs::path(c.folder), ec);
+        fs::create_directories(files::pathOf(c.folder), ec);
         if (Outcome o = call(c, { "init", "-q" }); !o.ok)
             return o;
         // `init -b` needs git 2.28; HEAD pointed at the branch does the same on any.
@@ -661,21 +672,28 @@ namespace playground::git
         out = {};
         if (ours.empty() || theirs.empty() || ours.front() == '-' || theirs.front() == '-')
             return refused("A merge needs two commits.");
-        Outcome o = call(c, { "merge-tree", "--write-tree", "--no-messages", "--name-only", ours, theirs });
+        // -z: the tree, then each conflicted file's name as it is (no quoting of a name outside ASCII), each ending in
+        // NUL; an empty one ends the list.
+        Outcome o = call(c, { "merge-tree", "--write-tree", "-z", "--no-messages", "--name-only", ours, theirs });
         // Exit 0: clean; 1: conflicts (the tree written all the same, with their markers); else git could not.
         if (o.ended == run::Ended::exited && (o.code == 0 || o.code == 1))
         {
-            std::istringstream in(o.out);
-            std::string line;
-            std::getline(in, line);
-            out.tree = trimmed(line);
-            while (std::getline(in, line))
+            std::size_t at = 0;
+            const auto next = [&]() -> std::optional<std::string> {
+                if (at >= o.out.size())
+                    return std::nullopt;
+                const std::size_t end = std::min(o.out.find('\0', at), o.out.size());
+                std::string part = o.out.substr(at, end - at);
+                at = end + 1;
+                return part;
+            };
+            out.tree = trimmed(next().value_or(std::string()));
+            while (const std::optional<std::string> name = next())
             {
-                line = trimmed(line);
-                if (line.empty())
+                if (name->empty())
                     break;
-                if (std::find(out.conflicts.begin(), out.conflicts.end(), line) == out.conflicts.end())
-                    out.conflicts.push_back(line);
+                if (std::find(out.conflicts.begin(), out.conflicts.end(), *name) == out.conflicts.end())
+                    out.conflicts.push_back(*name);
             }
             out.clean = o.code == 0 && !out.tree.empty();
             o.ok = !out.tree.empty();
