@@ -33,6 +33,7 @@
 //   MARK     the explorer's row and the pill carry the mark; their accessibility says "linked to"
 //   KEYS     Tab moves between the fields; the card's accessibility: the fields, the buttons, its ids its own
 //   NOGIT    a chosen git that is no git: the card says so, nothing else changes
+//   WHATSNEW What's new never opens over the card, nor the card over What's new; while it is up a click is its own
 #include "Probe.h"
 
 #include "editor/DiffCard.h"
@@ -439,6 +440,30 @@ PROBE(gui, git)
         P.eq(row + "open.from_pill", chosen && card.isOpen() && card.project() == "Glass Bloom" ? 1 : 0, 1);
         clickAt(host, { 4.0f, H - 4.0f });
         P.eq(row + "open.outside_closes", card.isOpen() ? 0 : 1, 1);
+
+        // ---- WHATSNEW: What's new never opens over the card, nor the card over What's new (openGit refuses while any card
+        // is up: a menu's late answer); while What's new is up a click is its own (it closes it and goes no further) -----
+        panel.openGit("Glass Bloom");
+        host.settle();
+        panel.openWhatsNew();
+        host.tick(2);
+        P.eq(row + "whatsnew.not_over_git", card.isOpen() && !panel.whatsNewCard().isOpen() ? 1 : 0, 1);
+        host.keys("escape");
+        host.settle();
+        panel.whatsNewCard().open(std::string());
+        host.tick(2);
+        clickAt(host, panel.centreOfProjects(), ctrl());
+        const bool menuUnder = host.chooseMenuItem("Git...");
+        host.tick(2);
+        host.settle();
+        P.eq(row + "whatsnew.click_its_own", !menuUnder && !card.isOpen() && !panel.whatsNewCard().isOpen() ? 1 : 0, 1);
+        panel.whatsNewCard().open(std::string());
+        panel.openGit("Glass Bloom");                    // a menu's late answer: refused while any card is up
+        host.tick(2);
+        P.eq(row + "whatsnew.git_not_over_it", !card.isOpen() && panel.whatsNewCard().isOpen() ? 1 : 0, 1);
+        host.keys("escape");
+        host.settle();
+        P.eq(row + "whatsnew.then_closes", panel.whatsNewCard().isOpen() ? 0 : 1, 1);
 
         // ---- ASK: the second click disconnects ---------------------------------------------------------------------------
         panel.openGit("Glass Bloom");

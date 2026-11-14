@@ -23,6 +23,7 @@
 
 #include "editor/ChatStyle.h"
 #include "editor/Items.h"
+#include "editor/Markdown.h"
 #include "editor/Scroll.h"
 
 #include "plugin/ChatPort.h"
@@ -115,17 +116,11 @@ namespace playground::ui
         bool shown() const override { return !hidden_; }
         void setHidden(bool hidden) { hidden_ = hidden; }   // the chat folded away
 
-        // How a piece of text is set (ChatView.cpp resolves the style and the colour).
-        enum Role : uint8_t { body, strong, code, h1, h2, h3, dim, small, smallStrong, faint, danger, quote, accent,
-                              smallCode };
+        // How a piece of text is set (Markdown.h resolves the style and the colour).
+        using Role = markdown::Role;
 
     private:
-        struct Span
-        {
-            float x = 0.0f, y = 0.0f, lineH = 0.0f;
-            std::string text;
-            Role role = body;
-        };
+        using Span = markdown::Span;
         enum class ShapeKind : uint8_t { bubble, inlineCode, codeCard, bullet, quoteBar, rule, toolCard, errorCard,
                                          questionCard, option };
         struct Shape
@@ -134,12 +129,7 @@ namespace playground::ui
             ShapeKind kind = ShapeKind::bubble;
             int q = -1, o = -1;                       // an option's question and its place
         };
-        struct CodeLine
-        {
-            float x = 0.0f, y = 0.0f;
-            std::string text;
-            std::vector<funkgui::text::Span> spans;
-        };
+        using CodeLine = markdown::CodeLine;
         enum class ActionKind : uint8_t { copyMessage, copyCode, toggleThinking, option, submit, clearChecks, togglePlan };
         struct Action
         {
@@ -158,7 +148,7 @@ namespace playground::ui
         {
             float x = 0.0f, y = 0.0f;
             chat::Icon icon = chat::Icon::none;
-            Role role = dim;
+            Role role = Role::dim;
         };
         struct Block
         {
@@ -200,13 +190,13 @@ namespace playground::ui
         float maxScroll() const noexcept;
         float adv(Role r) const;
         void layoutBlock(Block& b, const std::vector<ChatEntry>& entries, int count, bool copyAfter, float w, bool live);
+        // Markdown.h's layout, made the block's (its shapes, its code blocks' Copy buttons).
+        static void take(Block& b, markdown::Layout&& l);
         // text: as drawn (asciiText); raw: the entry's own, line for line (what Copy copies).
         void layoutMarkdown(Block& b, const std::string& text, const std::string& raw, float w, float& y) const;
         // markdown false: the paragraph as plain text (the user's own words).
         float flow(Block& b, const std::string& paragraph, Role base, float x0, float w, float y, float lineH,
                    bool markdown = true) const;
-        void layoutCode(Block& b, const std::string& lang, const std::vector<std::string>& lines, const std::string& copied,
-                        float w, float& y) const;
         void reveal(int block);                            // scrolled to show the block whole (as far as it fits)
         static std::vector<bool> chosenOf(const ChatQuestion& q, const std::string& answer);
         void layoutEmpty(float w);
@@ -247,7 +237,7 @@ namespace playground::ui
         float copiedFor_ = 0.0f;                      // the "Copied" confirmation, seconds left
         int copiedBlock_ = -1, copiedAction_ = -1;
         funkgui::Point pointer_{ -1.0e4f, -1.0e4f };
-        mutable float advBody_ = 0.0f, advSmall_ = 0.0f, advCode_ = 0.0f, advH1_ = 0.0f, advH2_ = 0.0f;
+        markdown::Metrics metrics_;                   // each role's advance, measured once
         bool hidden_ = false;
         uint64_t content_ = 0;                        // what show() laid out, mixed (drawKey)
         uint32_t layouts_ = 0;                        // blocks laid out so far (Block::laidOut)

@@ -79,6 +79,7 @@
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
 #include "plugin/FactoryStore.h"
+#include "plugin/UpdateCheck.h"
 #include "plugin/FolderSync.h"
 #include "plugin/Journal.h"
 #include "plugin/McpLink.h"
@@ -189,6 +190,11 @@ namespace playground
         FolderSync& folderSync() noexcept { return folder_; }
         using FolderLauncher = std::function<bool(FolderApp app, const std::string& path, std::string& why)>;
         void setFolderLauncher(FolderLauncher launcher) { folderLauncher_ = std::move(launcher); }
+        // What opens the website's download page and What's new's links (EditorPort::openDownloadPage, openLink;
+        // ProcessorUpdates.cpp): the probes' records the address and opens nothing; the default opens nothing under a
+        // probe's sandbox either. Message thread.
+        using PageLauncher = std::function<bool(const std::string& url, std::string& why)>;
+        void setPageLauncher(PageLauncher launcher) { pageLauncher_ = std::move(launcher); }
         capture::Recorder& recorder() noexcept { return capture_; }   // the capture tool's recorder (the probes)
         // The most samples one Engine::process call got since prepareToPlay (never more than it announced).
         int largestEngineCall() const noexcept { return largestCall_; }
@@ -422,6 +428,22 @@ namespace playground
         std::vector<DebugSection> debugRows() const override;
         uint64_t debugGathers() const override { return debugGathers_; }
         bool showPath(const std::string& path, std::string& why) override;
+
+        // ---- The website: the offer, the update check (ProcessorUpdates.cpp; EditorPort's "The website") ---------------
+        UpdateState updateState() const override;
+        uint64_t updateRevision() const override { return updateCheck_ != nullptr ? updateCheck_->revision() : 0; }
+        void editorOpened() override;
+        void answerOffer(bool allow, bool factory, bool updates) override;
+        void setUpdates(bool on) override;
+        void setFactoryProjects(bool on) override;
+        void checkForUpdates() override;
+        void skipUpdate(const std::string& version) override;
+        bool announceUpdate(const std::string& version) override;
+        bool openDownloadPage(std::string& why) override;
+        void whatsNewShown() override;
+        bool openLink(const std::string& url, std::string& why) override;
+        bool openPage(const std::string& url, std::string& why);   // the browser, through pageLauncher_ (or nothing)
+
         bool midiLearnable() const override;
         midilearn::View midi() const override { return learn_.view(); }
         uint64_t midiRevision() const override { return learn_.revision(); }
@@ -558,6 +580,10 @@ namespace playground
         // first processor starts it (its thread reads the set on disk) and the last one gone stops and joins its thread,
         // before a host may unload the plugin. Nothing here fetches: that waits for an editor and the user's yes.
         std::shared_ptr<factorystore::Store> factoryStore_ = factorystore::attach();
+        // The update check (the process's, UpdateCheck.h), held the same way: the first processor starts it (its thread
+        // reads app.json), the last one gone joins it. Nothing here checks: that waits for an editor and the user's yes.
+        std::shared_ptr<updates::Check> updateCheck_ = updates::attach();
+        bool editorSeen_ = false;                                // an editor of this processor opened (editorOpened)
         std::vector<ProjectEntry> entriesOf(const std::vector<projectstore::Entry>& list) const;
         // The presets in turn (EditorPort::presetCycle; the host's programs; MIDI's program change): the project open's
         // presets as the store's cache has them (presetsCached: never a file read whole here; one not in the cache
@@ -1025,6 +1051,7 @@ namespace playground
                                                 [this](const Draft& now, const Draft& next) { return folderDraftIf(now, next); },
                                                 [this](const Sources& files) { run(files); } } };
         FolderLauncher folderLauncher_;
+        PageLauncher pageLauncher_;
         struct FolderKept
         {
             bool on = false;

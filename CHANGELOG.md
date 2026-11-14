@@ -1,8 +1,9 @@
 # Changelog
 
 What changed in the two plugins, TestingPlayground (the effect) and TestingPlaygroundSynth (the synth), newest first:
-one section for each day work was merged, and under it each pull request with what you can do since. The plugins are
-at version 0.1.0 and have no tagged releases yet, so the days stand in for versions.
+one section for each day work was merged, and under it each pull request with what you can do since. Each release has
+a heading of its own, `## Version 0.1.0 (2026-11-10)`, above the days it holds; what is under `## Unreleased` comes
+with the next one. The plugins' What's new shows the version you have from here.
 
 When a day changed the Claude Desktop extension, its section says the extension's new version. Open the new `.mcpb`
 (or run the installer again) to update it: Claude Desktop replaces an extension only with a newer version.
@@ -366,6 +367,8 @@ Claude Desktop extension: **0.21.0** (was 0.17.0).
   it opens.
 - On macOS and Windows a message to Google Gemini went out malformed: the query in its address was moved into the
   request's body. The address now goes out as the plugin built it, query included.
+
+## Version 0.1.0 (2026-11-10)
 
 ## 2026-11-09
 

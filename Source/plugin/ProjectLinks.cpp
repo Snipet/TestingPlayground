@@ -1,11 +1,14 @@
 // Source/plugin/ProjectLinks.cpp: ProjectStore.h's links to git remotes (package 05): the folder's .git-links.json.
 #include "plugin/ProjectStore.h"
 
+#include "plugin/FileReplace.h"
+
 #include <juce_core/juce_core.h>
 
 #include <algorithm>
 #include <atomic>
 #include <mutex>
+#include <system_error>
 
 namespace playground::projectstore
 {
@@ -161,7 +164,10 @@ namespace playground::projectstore
             }
             const juce::File target = linksFile();
             const juce::File temp = dir.getChildFile(juce::String(kLinksFile) + ".saving");
-            if (!temp.replaceWithText(juce::JSON::toString(varOf(f)), false, false, "\n") || !temp.moveFileTo(target))
+            // FileReplace.h: renamed over in one step, a reader on Windows (another instance's look) waited out.
+            std::error_code ec;
+            if (!temp.replaceWithText(juce::JSON::toString(varOf(f)), false, false, "\n")
+                || !files::replace(temp.getFullPathName().toStdString(), target.getFullPathName().toStdString(), ec))
             {
                 temp.deleteFile();
                 fail(why, "cannot write " + target.getFullPathName().toStdString());

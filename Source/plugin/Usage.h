@@ -197,7 +197,7 @@ namespace playground::usage
     bool reset();
     bool resetOwed();
     bool lastResetFailed();
-    uint64_t revision() noexcept;
+    uint64_t revision() noexcept;                // moves with each count, reset and price table taken (offerPrices)
     Snapshot snapshot(Range range);
     std::filesystem::path processFile();
     // Probes only: every write of a ledger's file fails (as a full disk or a folder that may not be written would),
