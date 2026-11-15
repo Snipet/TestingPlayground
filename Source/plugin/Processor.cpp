@@ -1618,7 +1618,7 @@ namespace playground
         juce::ValueTree state = apvts_.copyState();
         juce::ValueTree program{ kProgramTag };
         std::vector<std::string> keys;
-        const Assets samples = assetsNow();                      // outside programMutex_ (factoryWaitingHolds)
+        const Assets samplesNow = assetsNow();                   // outside programMutex_ (factoryWaitingHolds)
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
             program.setProperty(kActive, draft_.active, nullptr);
@@ -1631,7 +1631,7 @@ namespace playground
                 if (!projectPreset_.empty())
                     program.setProperty(kProjectPreset, juce::String::fromUTF8(projectPreset_.c_str()), nullptr);
             }
-            else if (factoryWaitingHolds(samples))
+            else if (factoryWaitingHolds(samplesNow))
             {
                 // A session's factory project this machine's set still lacks: named as the session named it.
                 program.setProperty(kProject, juce::String::fromUTF8(factoryWaiting_.name.c_str()), nullptr);

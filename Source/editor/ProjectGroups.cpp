@@ -201,7 +201,10 @@ namespace playground::ui::projectgroups
             case FactoryNote::Kind::offline:
                 port.fetchFactoryNow();
                 return "TRYING AGAIN: THE FACTORY PROJECTS";
-            default: break;
+            case FactoryNote::Kind::none:
+            case FactoryNote::Kind::getting:
+            case FactoryNote::Kind::unchecked:
+            case FactoryNote::Kind::off: break;          // no action: text alone
         }
         return {};
     }
