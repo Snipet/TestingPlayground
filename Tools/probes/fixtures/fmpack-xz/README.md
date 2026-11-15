@@ -17,6 +17,11 @@ and its CRC-32, little-endian) and then the JSON compressed by `xz --format=xz -
 | `<kind>-none.fmpack` | `-1 --check=none` | none (ID 0) |
 | `effect-x86.fmpack` | `--x86 --lzma2=preset=6 --check=crc64`: x86's BCJ filter before LZMA2, which the plugins' decoder (XZ Embedded, built without BCJ: `Source/xz/XzOptions.h`) does not have, so it is refused | CRC64 (ID 4) |
 
+**Kept byte for byte.** The probe compares what each package decodes to with its `.json` exactly, and takes the
+expected size from it, so these files must be the committed bytes on every checkout: the repository's
+`.gitattributes` marks this folder's `.json` files `-text` (git never turns their LF line endings into Windows' CR LF,
+as it otherwise may on a Windows checkout) and its `.fmpack` files binary.
+
 `<kind>` is `effect` or `instrument` (a product's `PRODUCT_KIND`): a project names its kind, and the other kind's is
 refused on import, so each product imports its own. Every `.fmpack` reads back with `tail -c +21 <file> | xz -d`.
 
