@@ -10,9 +10,9 @@
 //            for the other, closes and says so; a second editor shows none
 //   NOTNOW   (Paper) Not now: the update check "later", the factory projects unasked, said in the status; no offer in
 //            the next editor; the Network page's switches make either a yes again
-//   PILL     once the check answers with a newer version: the pill in the top bar ("0.2.0 is out"), clear of the
-//            project's pill, and the status line's "VERSION 0.2.0 IS OUT" once a process (not again in a second
-//            editor); nothing opens by itself
+//   PILL     once the check answers with a newer version (the build's next minor, kNewer): the pill in the top bar
+//            ("<newer> is out"), clear of the project's pill, and the status line's "VERSION <newer> IS OUT" once a
+//            process (not again in a second editor); nothing opens by itself
 //   CARD     the pill opens the update card (modal); Escape and a click outside close it (Later); Download hands the
 //            site's /download to the processor's hook and closes; Skip this version takes the pill away
 //   NETWORK  the Network page: unanswered, on with a newer version, failed (the reason in words), off; Check now asks the
@@ -20,8 +20,9 @@
 // What's new (<ENV_PREFIX>WHATSNEW turned on for these rows alone: plugin/Changelog.h, the card in UpdateCards.h):
 //   WHATSNEW_OFF   with <ENV_PREFIX>WHATSNEW=off (every other probe's), no card, the offer answered or not
 //   WHATSNEW_AFTER a first install: the offer first and alone; once it is answered, What's new by itself, this
-//            version's ("What's new in <version>"), drawn, modal, inside the window; app.json's seen this version; a
-//            second editor and a new processor over the same folder show none (once per version)
+//            version's ("What's new in <version>", or "What's new in this build" while CHANGELOG.md has no heading for
+//            it: Unreleased), drawn, modal, inside the window; app.json's seen this version; a second editor and a new
+//            processor over the same folder show none (once per version)
 //   WHATSNEW_PAGE  it scrolls: the wheel, End to its end, Home back; a link in view is drawn and named to a screen
 //            reader, a click on it gives its address (the repository's) to the processor's hook, nothing opened else,
 //            the card still open and the status saying so; an address that is not the repository's or the website's
@@ -59,6 +60,7 @@
 
 #include <juce_core/juce_core.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -77,10 +79,21 @@ using Act = pg::ui::SettingsCard::Act;
 
 namespace
 {
+    // The site's newer version: the build's next minor, whatever the build's version is (0.1.0 -> 0.2.0, 0.2.0 ->
+    // 0.3.0), so that every word naming it (the pill, the status line, the card, Skip) follows the build.
+    std::string nextMinor(const std::string& version)
+    {
+        int major = 0, minor = 0;
+        if (std::sscanf(version.c_str(), "%d.%d", &major, &minor) != 2)
+            return "99.0.0";
+        return std::to_string(major) + "." + std::to_string(minor + 1) + ".0";
+    }
+
+    const std::string kNewer = nextMinor(pg::product::kVersion);
     const std::string kRelease =
-        "{\"format\":\"funk-playground-release\",\"version\":1,\"latest\":{\"version\":\"0.2.0\",\"tag\":\"v0.2.0\","
-        "\"date\":\"2026-11-20\",\"summary\":\"Samples in the panel, a faster schematic, and the chat remembers which model "
-        "each project used.\"}}";
+        "{\"format\":\"funk-playground-release\",\"version\":1,\"latest\":{\"version\":\"" + kNewer + "\",\"tag\":\"v"
+        + kNewer + "\",\"date\":\"2026-11-20\",\"summary\":\"Samples in the panel, a faster schematic, and the chat "
+        "remembers which model each project used.\"}}";
 
     // The site, held (a request waits until let go, or its cancel) or offline at the probe's word.
     class Site final : public pg::claude::Transport
@@ -259,7 +272,7 @@ PROBE(gui, updates)
                                               + juce::String(juce::Time::currentTimeMillis()));
     base.deleteRecursively();
     funkgui::UiPreferences::get().setTheme(0);
-    const std::string newer = "0.2.0";
+    const std::string newer = kNewer;
 
     // ---- GRAPHITE: OFFER (Allow), PILL, CARD, NETWORK ------------------------------------------------------------------
     {
@@ -569,8 +582,12 @@ PROBE(gui, updates)
     }
 
     // ---- What's new ----------------------------------------------------------------------------------------------------
+    // The card's title: this version's when CHANGELOG.md has its heading, else Unreleased's (a development build: a
+    // version set before its release's heading), as plugin.changelog's REAL tells the two apart.
     const std::string version = pg::product::kVersion;
-    const std::string title = "What's new in " + version;
+    const bool headed = std::any_of(pg::changelog::versions().begin(), pg::changelog::versions().end(),
+                                    [&](const pg::changelog::Version& v) { return v.number == version; });
+    const std::string title = headed ? "What's new in " + version : std::string("What's new in this build");
     {
         // WHATSNEW_OFF: the environment's off (every other probe's): an answered offer, no card.
         WhatsNewEnv env("off");

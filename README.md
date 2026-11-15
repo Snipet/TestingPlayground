@@ -2308,8 +2308,8 @@ Four things in the plugin may reach the network, and nothing else does: no analy
 
 The two from the website ask nothing until an editor opens (a host scanning its plugins, a session that plays with no
 editor open: no request) and until you say yes. Each request sends the plugin's name and version (as its
-`User-Agent`, "TestingPlayground/0.1.0") and nothing else: no identifier, nothing of your projects, programs or chats.
-It follows no redirect, and nothing in the update file is an address the plugin goes to or anything it runs.
+`User-Agent`: "TestingPlayground/0.2.0" for 0.2.0) and nothing else: no identifier, nothing of your projects, programs
+or chats. It follows no redirect, and nothing in the update file is an address the plugin goes to or anything it runs.
 
 **The offer.** The first time an editor opens, a card over the lower middle of the editor asks **Use the website?**,
 with both lines ticked: **The factory projects, kept up to date** and **A note when a new version is out**. **Allow**
@@ -2321,13 +2321,13 @@ and clicks behind it. Both answers are this computer's, shared by the effect and
 found, or why it failed: no connection, a reply it could not read), **Check now**, and **Get the factory projects** with
 what the plugin holds of them.
 
-**A new version.** When the check finds a newer version, a pill in the top bar says so ("0.2.0 is out"), and the
+**A new version.** When the check finds a newer version, a pill in the top bar says so ("0.3.0 is out"), and the
 status line says it once; nothing opens by itself, in a host or in the Standalone. A click on the pill opens a card:
 the version you have, the release's summary, **Download** (opens the download page, testingplayground.seanfunk.xyz/
 download, in your browser), **Skip this version** (no pill until a later one) and **Later**.
 
 **What's new.** The first time an editor opens on a version you have not seen, after the offer is answered and never
-over another card, a card shows **What's new in 0.1.0**: that version's part of the changelog, built into the plugin
+over another card, a card shows **What's new in 0.2.0**: that version's part of the changelog, built into the plugin
 (nothing is fetched). When you skipped versions, each one's part shows under its own heading, the newest first; a build
 of your own whose version has no release yet shows what is waiting (Unreleased). It scrolls (the wheel, the arrows,
 Space, Home and End); a link opens in your browser, and only a page of the plugins' repository or of
@@ -2692,12 +2692,17 @@ prints both identities) is its own, so the two load in one host beside each othe
 keeps keys for itself (some do for the space bar or the arrows, or play notes from the computer keyboard) may need its
 "keyboard to plugin" option on for typing in the editor.
 
-**Releasing.** First give `CHANGELOG.md` its `## Version` heading, on `main`: `scripts/changelog.py release --version
-<version> --date <YYYY-MM-DD>` folds the entries waiting in `docs/changelog/`, cuts the day's section and puts
-`## Version <version> (<date>)` over the days since the release before (the plugins compile the changelog in, and their
-What's new shows that section); commit it. A tag makes the release: the workflow refuses a tag whose version has no
-heading, or one while an entry waits in `docs/changelog/` (`scripts/changelog.py check-release --tag v<version>`; a
-pre-release needs no heading). Push `v<version>` (the products' version, `products/<key>.cmake`), or
+**Releasing.** First set the products' version: `PRODUCT_VERSION` in each `products/<key>.cmake`, both products at
+the release's version (a pull request of its own, merged before the heading; nothing else of their identity changes). A
+build whose version has no `## Version` heading in `CHANGELOG.md` yet is a development build: its What's new shows
+what waits under Unreleased, titled "What's new in this build", and the update check compares the site's version with
+the new one. Then, once the release's last pull request has merged, give `CHANGELOG.md` its `## Version` heading, on
+`main`: `scripts/changelog.py release --version <version> --date <YYYY-MM-DD>` folds the entries waiting in
+`docs/changelog/`, cuts the day's section and puts `## Version <version> (<date>)` over the days since the release
+before (the plugins compile the changelog in, and their What's new shows that section, "What's new in <version>");
+commit it. A tag makes the release: the workflow refuses a tag whose version has no heading, or one while an entry
+waits in `docs/changelog/` (`scripts/changelog.py check-release --tag v<version>`; a pre-release needs no heading), and
+one whose version is not the products'. Push `v<version>`, or
 `v<version>-rc.<n>` for a pre-release, and `.github/workflows/release.yml` makes a draft GitHub release and attaches
 each platform's files to it: on a Mac runner the Release build, `TestingPlayground-<version>.pkg` and
 `TestingPlayground-Installer-<version>.dmg` signed and notarized as above, Gatekeeper asked about each; on Windows the
@@ -2707,6 +2712,7 @@ says which glibc and libstdc++ it needs). Run by hand with an existing release's
 and attaches their files to that release:
 
 ```sh
+# products/effect.cmake, products/synth.cmake: set(PRODUCT_VERSION "<version>"), merged to main first
 scripts/changelog.py release --version <version> --date <YYYY-MM-DD>   # then commit CHANGELOG.md and the removals
 git tag -a v<version> -m "TestingPlayground <version>" && git push origin v<version>
 gh release edit v<version> --draft=false      # once you have read the draft

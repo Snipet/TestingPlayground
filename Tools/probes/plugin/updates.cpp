@@ -912,10 +912,20 @@ PROBE(plugin, updates)
     }
 
     // ---- TWO, OFFER, SKIP (the processor's), DOWNLOAD ------------------------------------------------------------------
+    // The site's versions above the build's, whatever the build's version is: the next minor, then ten minors on, so
+    // that the later one is newer by its number and not by its text while the build's minor is under 10 ("0.12.0"
+    // after "0.3.0"; these rows served 0.9.0 and 0.10.0 when the build was 0.1.0).
+    const auto minorsOn = [](int n) {
+        int major = 0, minor = 0;
+        if (std::sscanf(pg::product::kVersion, "%d.%d", &major, &minor) != 2)
+            return std::string("99.0.0");
+        return std::to_string(major) + "." + std::to_string(minor + n) + ".0";
+    };
+    const std::string newer = minorsOn(1), later = minorsOn(10);
     {
         const juce::File h = freshHome();
         auto s = std::make_shared<Site>();
-        s->serve(release("0.9.0"));
+        s->serve(release(newer));
         const up::Config cfg = configOf(h, s, pg::product::kVersion);
         up::useConfigForTests(&cfg);
         pg::factorystore::setDirectoryForTests(h);
@@ -943,18 +953,18 @@ PROBE(plugin, updates)
             // Written on the factory store's own thread: waited for (kWorkWait), as any other thread's work.
             P.eq("offer.allow.factory_json", waitFor([&] { return h.getChildFile("factory.json").loadFileAsString().contains("\"no\""); }) ? 1 : 0, 1);
             P.eq("two.one_request_for_two_editors", s->count(), 1);
-            P.eq("two.newer", u1.newer && u1.latest == "0.9.0" ? 1 : 0, 1);
-            P.eq("two.announced_once", pa.announceUpdate("0.9.0") && !pb.announceUpdate("0.9.0") ? 1 : 0, 1);
+            P.eq("two.newer", u1.newer && u1.latest == newer ? 1 : 0, 1);
+            P.eq("two.announced_once", pa.announceUpdate(newer) && !pb.announceUpdate(newer) ? 1 : 0, 1);
             // The processor's newer is false for a skipped version.
-            pa.skipUpdate("0.9.0");
+            pa.skipUpdate(newer);
             if (c != nullptr)
                 (void)settle(*c);
-            P.eq("skip.processor_not_newer", !pb.updateState().newer && pb.updateState().skipped == "0.9.0" ? 1 : 0, 1);
-            s->serve(release("0.10.0"));
+            P.eq("skip.processor_not_newer", !pb.updateState().newer && pb.updateState().skipped == newer ? 1 : 0, 1);
+            s->serve(release(later));
             pa.checkForUpdates();
             if (c != nullptr)
                 (void)settle(*c);
-            P.eq("skip.later_one_shows", pb.updateState().newer && pb.updateState().latest == "0.10.0" ? 1 : 0, 1);
+            P.eq("skip.later_one_shows", pb.updateState().newer && pb.updateState().latest == later ? 1 : 0, 1);
             pa.setUpdates(false);
             if (c != nullptr)
                 (void)settle(*c);
@@ -978,7 +988,7 @@ PROBE(plugin, updates)
         // Not now: updates later, the factory unasked, the offer not due again (a new processor reads it so).
         const juce::File h = freshHome();
         auto s = std::make_shared<Site>();
-        s->serve(release("0.9.0"));
+        s->serve(release(newer));
         const up::Config cfg = configOf(h, s, pg::product::kVersion);
         up::useConfigForTests(&cfg);
         pg::factorystore::setDirectoryForTests(h);
