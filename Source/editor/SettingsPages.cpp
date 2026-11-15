@@ -1,6 +1,7 @@
 // Source/editor/SettingsPages.cpp: the settings card's page table (SettingsPages.h), its Builder, and the pages small
-// enough to live here: General, Editor, Projects, AI and About. Audio and MIDI is SettingsDevices.cpp's, Debug
-// SettingsDebug.cpp's. Each control writes where its setting already lives, and each page reads it there each layout.
+// enough to live here: General, Editor (the code's text size, Format on Run), Projects, AI and About. Audio and MIDI
+// is SettingsDevices.cpp's, Debug SettingsDebug.cpp's. Each control writes where its setting already lives, and each
+// page reads it there each layout.
 #include "editor/SettingsPages.h"
 
 #include "editor/ChatStyle.h"
@@ -144,6 +145,17 @@ namespace playground::ui::settings
         return c;
     }
 
+    float Builder::stepper(int less, int more, float x, const std::string& value, std::string lessTitle, std::string moreTitle,
+                           bool canLess, bool canMore)
+    {
+        button(less, { x, y, kStepW, kRowH }, "-", std::move(lessTitle), canLess);
+        const float vx = x + kStepW;
+        const float tw = std::min(textW(value, chat::kSmall), kStepValueW - 8.0f);
+        line(Line::Kind::value, value, { std::round(vx + 0.5f * (kStepValueW - tw)), y, tw + 1.0f, kRowH });
+        button(more, { vx + kStepValueW, y, kStepW, kRowH }, "+", std::move(moreTitle), canMore);
+        return vx + kStepValueW + kStepW;
+    }
+
     const char* showFolderWord()
     {
 #if defined(_WIN32)
@@ -266,10 +278,24 @@ namespace playground::ui::settings
                        static_cast<uint64_t>(ctx.host != nullptr ? ctx.host->zoomPercent() : 0));
         }
 
-        // ---- Editor: Format on Run (the code text size comes with its own package) --------------------------------------
+        // ---- Editor: the code's text size (codesize, as the code's keys step it) and Format on Run -------------------------
         void buildEditor(Builder& b)
         {
             b.heading("CODE");
+            b.label("Text size");
+            const int size = codesize::read();
+            const std::string shown = codesize::label(size);
+            const float right = b.stepper(kTextSmaller, kTextLarger, b.ctrlX, shown, "Smaller text", "Larger text",
+                                          codesize::step(size, -1) != size, codesize::step(size, 1) != size);
+            const std::string reset = "Reset";
+            b.button(kTextReset, { right + 10.0f, b.y, Builder::pillW(reset, false, false), kRowH }, reset,
+                     "Reset the text size to " + codesize::label(codesize::kDefault), size != codesize::kDefault);
+            b.y += kRowH + 2.0f;
+            b.notes(shortcutText(std::string("For the code in every editor on ") + kThisMachine
+                                 + ". The code's keys set it too: Cmd-= larger, Cmd-- smaller, Cmd-0 back to "
+                                 + codesize::label(codesize::kDefault) + "."),
+                    b.ctrlX, b.ctrlW);
+            b.y += 10.0f;
             b.label("Run");
             const std::string what = "Format on Run";
             b.toggle(kFormatOnRun, { b.ctrlX, b.y, Builder::switchW(what), kRowH }, what, "Format on Run", CodeAssist::formatOnRun());
@@ -279,10 +305,19 @@ namespace playground::ui::settings
 
         void actEditor(const Control& c, Context&)
         {
-            if (c.act == Act::item && c.index == kFormatOnRun)
+            if (c.act != Act::item)
+                return;
+            if (c.index == kFormatOnRun)
                 CodeAssist::setFormatOnRun(!CodeAssist::formatOnRun());
+            else if (c.index == kTextSmaller || c.index == kTextLarger || c.index == kTextReset)
+            {
+                // The keys' steps (every open editor follows UiPreferences' revision); the ends hold.
+                const int size = codesize::read();
+                codesize::write(codesize::step(size, c.index == kTextSmaller ? -1 : c.index == kTextLarger ? 1 : 0));
+            }
         }
 
+        // The text size and Format on Run live in UiPreferences: the keys, the wheel and the status line move its revision.
         uint64_t keyEditor(const Context&) { return funkgui::UiPreferences::get().revision(); }
 
         // ---- Projects: the folder, shown in the file manager ------------------------------------------------------------
