@@ -1,8 +1,10 @@
 // Source/editor/SettingsGit.cpp: the Settings card's Projects page's Git rows (package 05; SettingsPages.h's gitRows):
-// the git the plugin runs (the one the user chose, else found as plugin/Git.h finds it), Look for git (git --version
-// alone, on the processor's git job: nothing is run until it is pressed), Choose git... and Use the one found, and the
-// folder the working folders go in. Each reads where its setting lives (EditorPort::gitState, gitChosen, gitFolder) at
-// each layout; the page's key mixes EditorPort::gitPolled, so a look that ends draws again.
+// the git the plugin runs (the one the user chose, else found as plugin/Git.h finds it), as the machine's record
+// remembers it (plugin/GitRecord.h: what the last look found, kept for every launch and both products, shown with no
+// git run), Look for git (git --version alone, on the processor's git job: nothing is run until it is pressed), Choose
+// git... and Use the one found (each looks at once, as the user pressed it), and the folder the working folders go in.
+// Each reads where its setting lives (EditorPort::gitState, gitChosen, gitFolder) at each layout; the page's key mixes
+// EditorPort::gitPolled, which moves with the record too, so a look that ends, here or in another process, draws again.
 #include "editor/SettingsPages.h"
 
 #include "editor/ChatStyle.h"
@@ -23,9 +25,10 @@ namespace playground::ui::settings
         if (st.busy && st.op == GitOp::find)
             now = "Looking...";
         else if (!st.looked)
-            now = chosen.empty() ? "Not looked for yet" : chosen + " (not looked at yet)";
+            now = chosen.empty() ? std::string("Not looked for on ") + kThisMachine + " yet"
+                                 : chosen + " (chosen, not looked at yet)";
         else if (!st.gitPath.empty())
-            now = "git " + st.gitVersion + " at " + st.gitPath;
+            now = "git " + st.gitVersion + " at " + st.gitPath + (chosen.empty() ? "" : " (chosen)");
         else
         {
             now = st.gitWhy;
@@ -42,7 +45,8 @@ namespace playground::ui::settings
         button(kLookForGit, "Look for git", "Look for git: runs git --version, nothing else", !st.busy);
         button(kChooseGit, "Choose git...", "Choose the git program to run", true);
         if (!chosen.empty())
-            button(kDefaultGit, "Use the one found", "Forget the git chosen: find it as the plugin does", true);
+            button(kDefaultGit, "Use the one found", "Forget the git chosen: find it as the plugin does, and look",
+                   !st.busy);
         b.y += kRowStep;
         b.label("Folders");
         b.line(Line::Kind::value, port.gitFolder(), { b.ctrlX, b.y, b.ctrlW, kRowH });
@@ -51,10 +55,13 @@ namespace playground::ui::settings
         b.button(kShowGitFolder, { b.ctrlX, b.y, Builder::pillW(word, false, false), kRowH }, word,
                  std::string(word) + ": the git working folders");
         b.y += kRowStep;
-        b.notes("A project's Git... links it to a repository of yours. Git runs only when you press Connect, Push, Pull, "
-                "Check or Add from Git (and Look for git here), and signs in its own way (an SSH agent, a credential "
-                "helper): the plugin keeps no password or token. A host that keeps plugins in a sandbox may not let git "
-                "run: the Standalone app can push and pull.",
+        b.notes(std::string("A project's Git... links it to a repository of yours. Git runs only when you press "
+                            "Connect, Push, Pull, Check or Add from Git (and Look for git, Choose git... or Use the one"
+                            " found here); what it found is remembered on ")
+                    + kThisMachine
+                    + " for both playgrounds. It signs in its own way (an SSH agent, a credential helper): the plugin "
+                      "keeps no password or token. A host that keeps plugins in a sandbox may not let git run: the "
+                      "Standalone app can push and pull.",
                 b.ctrlX, b.ctrlW);
     }
 
@@ -66,7 +73,10 @@ namespace playground::ui::settings
         switch (c.index)
         {
             case kLookForGit: ctx.port.startGit({ GitOp::find, {}, {}, {} }, why); return true;
-            case kDefaultGit: ctx.port.setGitChosen({}, why); return true;
+            case kDefaultGit:
+                if (ctx.port.setGitChosen({}, why))
+                    ctx.port.startGit({ GitOp::find, {}, {}, {} }, why);   // looked at at once, as a choice is
+                return true;
             case kShowGitFolder: ctx.port.showPath(ctx.port.gitFolder(), why); return true;
             case kChooseGit:
             {

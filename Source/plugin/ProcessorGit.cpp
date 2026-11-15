@@ -8,6 +8,7 @@
 #include "fminus/Failure.h"
 
 #include "plugin/GitProjects.h"
+#include "plugin/GitRecord.h"
 #include "plugin/ProjectStore.h"
 
 #include "Product.h"
@@ -112,8 +113,22 @@ namespace playground
 
     GitState Processor::gitState() const
     {
-        const std::lock_guard<std::mutex> lock(gitMutex_);
-        return gitState_;
+        GitState st;
+        {
+            const std::lock_guard<std::mutex> lock(gitMutex_);
+            st = gitState_;
+        }
+        // What a look found is the machine's record (GitRecord.h), remembered across launches, instances and both
+        // products; this process's own look writes it before it ends, so the record is never behind it.
+        const gitrecord::Record r = gitrecord::read();
+        if (r.looked())
+        {
+            st.looked = true;
+            st.gitPath = r.path;
+            st.gitVersion = r.version;
+            st.gitWhy = r.why;
+        }
+        return st;
     }
 
     void Processor::cancelGit()
@@ -122,7 +137,10 @@ namespace playground
         gitRevision_.fetch_add(1);
     }
 
-    uint64_t Processor::gitPolled() const { return gitRevision_.load() + projectstore::linksRevision(); }
+    uint64_t Processor::gitPolled() const
+    {
+        return gitRevision_.load() + projectstore::linksRevision() + gitrecord::revision();
+    }
 
     bool Processor::disconnectGit(const std::string& project, std::string& why)
     {
@@ -145,11 +163,11 @@ namespace playground
         return true;
     }
 
-    std::string Processor::gitChosen() const { return projectstore::gitPath(); }
+    std::string Processor::gitChosen() const { return gitrecord::read().chosen; }
 
     bool Processor::setGitChosen(const std::string& path, std::string& why)
     {
-        const bool ok = projectstore::setGitPath(path, &why);
+        const bool ok = gitrecord::setChosen(path, &why);   // the machine's, both products' (GitRecord.h)
         gitRevision_.fetch_add(1);
         return ok;
     }
@@ -165,7 +183,10 @@ namespace playground
         try
         {
             failure::at("git");
-            const git::Found found = git::find(projectstore::gitPath());
+            git::Found found = git::find(gitrecord::read().chosen);
+            // What was found, remembered for every launch and both products (written only when it differs); a git found
+            // before that is gone now is said so, in found.why, the first time a press needs it.
+            gitrecord::noteFound(found, juce::Time::currentTimeMillis());
             ended.looked = true;
             ended.gitPath = found.path;
             ended.gitVersion = found.version;
