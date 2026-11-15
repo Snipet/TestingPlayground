@@ -1,6 +1,7 @@
 // Source/editor/SettingsPages.cpp: the settings card's page table (SettingsPages.h), its Builder, and the pages small
-// enough to live here: General, Editor (the code's text size, Format on Run), Projects, AI and About. Audio and MIDI is SettingsDevices.cpp's, Debug
-// SettingsDebug.cpp's. Each control writes where its setting already lives, and each page reads it there each layout.
+// enough to live here: General, Editor (the code's text size, Format on Run), Projects, AI and About. Audio and MIDI
+// is SettingsDevices.cpp's, Debug SettingsDebug.cpp's. Each control writes where its setting already lives, and each
+// page reads it there each layout.
 #include "editor/SettingsPages.h"
 
 #include "editor/ChatStyle.h"
