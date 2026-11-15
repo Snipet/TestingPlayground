@@ -50,6 +50,12 @@ namespace playground::ui
         virtual void pointerUp(const funkgui::PointerEvent&, funkgui::GestureController&) {}
         virtual void doubleClick(const funkgui::PointerEvent&, funkgui::GestureController&) {}
         virtual bool wheel(const funkgui::WheelEvent&, funkgui::GestureController&, double /*nowSec*/) { return false; }
+        // A trackpad's pinch over it (Panel::magnify sends it to the item under the pointer): true when used.
+        virtual bool magnify(const funkgui::MagnifyEvent&) { return false; }
+        // A press of the middle button at a point: it reaches only an item that says true here (with its drag, its
+        // release and its double-click); everywhere else it does nothing (FunkGui delivered it as a left press until
+        // F1). The right button is a popup press and goes everywhere, as before.
+        virtual bool takesButtons(funkgui::Point) const { return false; }
         virtual bool key(const funkgui::KeyEvent&, funkgui::GestureController&) { return false; }
         virtual void accessibility(std::vector<funkgui::A11yItem>&) const = 0;
         virtual bool a11yAction(uint32_t id, funkgui::A11yAction, double value, funkgui::GestureController&) = 0;

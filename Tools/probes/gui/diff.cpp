@@ -452,7 +452,7 @@ PROBE(gui, diff)
         host.settle();
         P.eq("scroll.home", v.scroll() == 0 ? 1 : 0, 1);
         const funkgui::Rect d = card.view().places(view()).diff;
-        host.wheel(d.centreX(), d.centreY(), -pg::ui::Scroll::kWheelNotch);
+        host.wheel(d.centreX(), d.centreY(), -funkgui::scroll::kWheelNotch);
         host.settle();
         P.eq("scroll.notch_three_rows", v.scroll() == 3 ? 1 : 0, 1);
         host.keys("end");

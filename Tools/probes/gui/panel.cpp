@@ -777,7 +777,7 @@ PROBE(gui, panel)
 
         // As the code scrolls: a notch 3 * 24 px, reversed the same way, the thumb dragged in proportion.
         {
-            const float notchDy = pg::ui::Scroll::kWheelNotch;
+            const float notchDy = funkgui::scroll::kWheelNotch;
             const float most = panel.guiScroller(false).max();
             const double notch = std::min(72.0, static_cast<double>(most));
             const funkgui::Point over{ L->area.right() - 6.0f, L->area.y + 10.0f };

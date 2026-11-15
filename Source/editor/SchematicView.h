@@ -41,7 +41,8 @@
 // that net's name field (on a wire, its tag goes there). A popup click opens the part's (Edit, Rotate, Rotate back,
 // Mirror, Copy, Cut, Duplicate, Delete, Show in netlist; on a pin of a net drawn as tags, Show it as wires), the wire's
 // (Rename net, Show as labels, Delete wire, Select net, Copy, Cut, Show in netlist) or the canvas's menu (Select all,
-// Paste, Fit, Tidy, Netlist view, Undo, Redo); a popup drag, or a drag with Alt, pans in every mode and cancels nothing.
+// Paste, Fit, Frame selection, Tidy, Netlist view, Undo, Redo); a popup drag, or a drag with Alt, pans in every mode and
+// cancels nothing.
 // A double click on a part (and Return with one selected, and a click on its value) edits it in place (the field,
 // below); on a badge it opens the Netlist view at its message's line; on a wire it selects the whole net. A press
 // outside an open field writes what can be written and closes it. A left drag or a carried part within 16 px of the
@@ -54,7 +55,18 @@
 // Cmd-Z, Cmd-Shift-Z, Cmd-Y, Cmd-A, Cmd-C, Cmd-X, Cmd-V, Cmd-D (the clipboard: netlist text, fminus/CirDoc.h's copied
 // and apply's paste op; Duplicate pastes just below the selection, else beside it, where the copy meets nothing; a
 // paste onto parts is refused, as a drop is), Tab and Shift-Tab (the parts in line order), the
-// arrows (a unit; Shift 4), F and Home (fit), Cmd-0, Cmd-=, Cmd--. While a field is open it takes every key.
+// arrows (a unit; Shift 4), F and Home (fit), . (frame the selection), Cmd-0, Cmd-=, Cmd-- (about the pointer over
+// the canvas, else its centre). While a field is open it takes every key ('.' types there).
+//
+// Navigation, as Blender's Node Editor has it (README, "The schematic"): a middle drag pans (the closed hand), a
+// Ctrl- (or Cmd-) middle drag zooms about the press (up or right in, a factor of 2 every 120 px); a notched wheel zooms
+// toward the pointer (kStepZoom a notch), with Ctrl or Cmd it pans sideways and with Shift up and down (three grid units
+// a notch); a smooth wheel (a trackpad) pans both ways as it came, with Ctrl or Cmd it zooms toward the pointer; a pinch
+// zooms toward the pointer by its own factor. A wheel gesture's mode is its last event's that was not inertial: a
+// momentum tail does what its gesture did, the next gesture is read afresh. The pans take the deltas as they came
+// (ui::Scroll's rule: WheelEvent::reversed never read); the zooms read reversed (the hand's direction, as a slider's).
+// Alt-left and right drags pan too, and Home, F, ., Cmd-=, Cmd-- and the toolbar reach everything without a gesture a
+// host may take first. A view change writes no text and asks for no check: only the session keeps it (persist()).
 //
 // Live probes (Engine.h's "Probes"). While the program that plays holds this netlist's module (the
 // status's probe table, CompileStatus::probes), the selected wire run's net is probe slot 0 and up to three pinned
@@ -248,7 +260,8 @@ namespace playground::ui
         void pointerDrag(const funkgui::PointerEvent& e);
         void pointerUp(const funkgui::PointerEvent& e);
         void doubleClick(const funkgui::PointerEvent& e);
-        bool wheel(const funkgui::WheelEvent& e, double nowSec);
+        bool wheel(const funkgui::WheelEvent& e);        // the navigation (above, "Navigation")
+        bool magnify(const funkgui::MagnifyEvent& e);    // a pinch: zooms toward the pointer
         bool key(const funkgui::KeyEvent& e);            // false: Escape with nothing left to end (leave the canvas)
         void accessibility(std::vector<funkgui::A11yItem>& out) const;
         bool a11yAction(uint32_t id, funkgui::A11yAction a, double value = 0.0);   // a dial's through setGestures's
@@ -371,6 +384,7 @@ namespace playground::ui
         void selectPart(const std::string& name, bool centre);
         bool selectAtLine(int line, bool centre);        // the part on a netlist line (0-based); the problems' jump
         void fit(bool opening);                          // F: everything, down to 25 %; opening: never below 60 %
+        void frameSelection();                           // .: the selection (none: everything, as F), eased
         void zoomTo(float zoom, funkgui::Point aboutPx); // about a point of the canvas
         void panBy(float dxPx, float dyPx);              // the content moves by these px
         bool startCircuit();                             // an empty file's seed, one gesture
@@ -404,7 +418,7 @@ namespace playground::ui
             std::vector<cir::UnitEdge> edges;            // sorted
         };
         using Mark = sch::Mark;                          // a message on the file, mapped to what it marks
-        enum class Drag : uint8_t { none, press, move, wire, marquee, pan, carry, knob, control };
+        enum class Drag : uint8_t { none, press, move, wire, marquee, pan, carry, knob, control, zoom };
         // A circuit dial on the drawing (above): its part, its slot, a switch's chip (and its positions), its centre.
         struct Knob
         {
@@ -572,7 +586,11 @@ namespace playground::ui
         bool easing_ = false;
         float zoomTo_ = 1.0f, cxTo_ = 0.0f, cyTo_ = 0.0f;
         bool fitPending_ = false;
-        double zoomedAt_ = -10.0;                        // the wheel's last zoom (the guard)
+        void ease(const cir::Box& b, float most);        // the view eased to frame a box (4 units of margin a side)
+        // A wheel gesture's mode, decided by its last event that was not inertial: its momentum tail keeps it.
+        enum class WheelMode : uint8_t { zoom, pan, panX, panY };
+        WheelMode wheelMode_ = WheelMode::pan;
+        float zoomFrom_ = 1.0f;                          // a zoom drag's zoom at the press (Ctrl-middle)
 
         // the pointer, the tool, the gesture
         funkgui::Point pointer_{ -1.0e4f, -1.0e4f };

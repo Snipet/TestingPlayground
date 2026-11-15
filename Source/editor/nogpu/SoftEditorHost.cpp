@@ -38,6 +38,20 @@ namespace playground::ui
             return out;
         }
 
+        // FunkGui's EditorHost's rule (F1): the button of a press, its drags and its release (JUCE's mouseUp carries the
+        // buttons as they were just before the release). Left when none is down (a move) and when several are: the
+        // left one first, then the right, then the middle.
+        funkgui::Button buttonFrom(const juce::ModifierKeys& m)
+        {
+            if (m.isLeftButtonDown())
+                return funkgui::Button::left;
+            if (m.isRightButtonDown())
+                return funkgui::Button::right;
+            if (m.isMiddleButtonDown())
+                return funkgui::Button::middle;
+            return funkgui::Button::left;
+        }
+
         std::vector<std::string> pathsOf(const juce::StringArray& files)
         {
             std::vector<std::string> paths;
@@ -292,6 +306,7 @@ namespace playground::ui
         p.mods = modsFrom(e.mods);
         p.clicks = e.getNumberOfClicks();
         p.popup = e.mods.isPopupMenu();
+        p.button = buttonFrom(e.mods);                   // F1: a middle press was (and is) a press; now it says so
         return p;
     }
 
@@ -377,6 +392,21 @@ namespace playground::ui
         updateCursor();
         if (!used)
             juce::Component::mouseWheelMove(e, wheel);   // the host's window scrolls, never a dial
+    }
+
+    // FunkGui's EditorHost's (F1): a trackpad's pinch; one the Panel does not use goes to the parent, as the wheel.
+    void SoftEditorHost::mouseMagnify(const juce::MouseEvent& e, float scaleFactor)
+    {
+        funkgui::MagnifyEvent g;
+        g.x = e.position.x / zoomScale_;
+        g.y = e.position.y / zoomScale_;
+        g.scale = scaleFactor;
+        g.mods = modsFrom(e.mods);
+        nudgeFullRate();
+        const bool used = panel_->magnify(g);
+        updateCursor();
+        if (!used)
+            juce::Component::mouseMagnify(e, scaleFactor);
     }
 
     bool SoftEditorHost::keyPressed(const juce::KeyPress& k)

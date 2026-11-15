@@ -6,9 +6,10 @@
 //   gui.scroll.projects.png   PROJECTS' projects a notch and a half down: a row cut at each edge, its thumb
 //   gui.scroll.presets.png    the presets' list a notch down
 // and checks:
-//   CODE      Scroll's constants held to the TextEditor's: a code tab scrolled by one notch of a notched wheel moves
-//             3 * rowHeight(), which is Scroll's rule for its row; a trackpad's 0.1 unit 51.2 px; WheelEvent::reversed
-//             set, the same direction (the TextEditor never reads it); a tab that fits takes no wheel
+//   CODE      Scroll's rule (FunkGui's funkgui::scroll) held to the TextEditor's: a code tab scrolled by one notch of
+//             a notched wheel moves 3 * rowHeight(), which is Scroll's rule for its row; a trackpad's 0.1 unit
+//             51.2 px; WheelEvent::reversed set, the same direction (the TextEditor never reads it); a tab that fits
+//             takes no wheel
 //   SCROLL    the helper alone: a view that holds its content has no bar and takes no wheel; the offset clamped to
 //             0 .. content - view; reveal the least move; a press on the thumb drags it, on the track jumps
 //   EXPLORER  (the least size, the chat folded: its list taller than its card) and
@@ -20,8 +21,8 @@
 //             The explorer with every section folded fits: no bar, and the Panel takes no wheel there. PROJECTS: a
 //             thumb's drag chooses no project and carries none onto a group; the versions' list (one version) fits and
 //             takes no wheel. The presets' list: a wheel over the search field moves nothing
-// FunkGui's HeadlessHost::wheel can set neither reversed nor dx (until FunkGui's F1): those rows build the WheelEvent
-// and give it to Panel::wheel, the host's own entry point, as EditorHost does.
+// The rows with reversed or dx build the WheelEvent and give it to Panel::wheel, the host's own entry point, as
+// EditorHost does (written before FunkGui's F1 gave HeadlessHost a whole wheel event).
 #include "Probe.h"
 
 #include "editor/Explorer.h"
@@ -53,7 +54,7 @@ using BL = pg::ui::ProjectBrowser::List;
 
 namespace
 {
-    constexpr float kNotch = pg::ui::Scroll::kWheelNotch;       // one notch of a notched wheel, as JUCE gives it
+    constexpr float kNotch = funkgui::scroll::kWheelNotch;       // one notch of a notched wheel, as JUCE gives it
 
     std::string program()
     {
@@ -260,11 +261,11 @@ PROBE(gui, scroll)
         host.wheel(over.x, over.y, -kNotch);
         host.settle();
         P.near("code.notch_three_rows", ed.scroll().y, 3.0 * rowH, 0.01);
-        P.near("code.notch_is_scrolls", ed.scroll().y, pg::ui::Scroll::pxPerUnit(false, static_cast<float>(rowH)) * kNotch, 0.01);
+        P.near("code.notch_is_scrolls", ed.scroll().y, funkgui::scroll::wheelPx(kNotch, false, static_cast<float>(rowH)), 0.01);
         top();
         host.wheel(over.x, over.y, -0.1f, true);
         host.settle();
-        P.near("code.smooth_512_a_unit", ed.scroll().y, 0.1 * pg::ui::Scroll::kWheelPxPerUnit, 0.01);
+        P.near("code.smooth_512_a_unit", ed.scroll().y, 0.1 * funkgui::scroll::kWheelPxPerUnit, 0.01);
         top();
         panel.wheel(reversedWheel(over, -kNotch));
         host.settle();
