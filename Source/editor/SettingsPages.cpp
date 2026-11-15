@@ -365,9 +365,10 @@ namespace playground::ui::settings
             b.row("Made by", product::kCompany);
             b.row("Website", "testingplayground.seanfunk.xyz");
             b.heading("LICENCES");
-            b.notes("Built with JUCE, FunkGui, FMinus and LLVM, bgfx and the JetBrains Mono font. The licences of what it "
-                    "draws with (bgfx, bx, bimg, bgfx.cmake and the font) are in the licences folder beside the Standalone "
-                    "and in the Claude Desktop extension; the source, open, holds the rest.",
+            b.notes("Built with JUCE, FunkGui, FMinus and LLVM, bgfx, XZ Embedded and the JetBrains Mono font. The licences "
+                    "of what it draws with (bgfx, bx, bimg, bgfx.cmake and the font) are in the licences folder beside the "
+                    "Standalone and in the Claude Desktop extension, XZ Embedded's (it reads packages) beside the "
+                    "Standalone; the source, open, holds the rest.",
                     0.0f, b.inner);
         }
     }

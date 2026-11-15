@@ -1,0 +1,157 @@
+{
+  "format": "funk-playground-project",
+  "version": 1,
+  "plugin": "TestingPlaygroundSynth",
+  "kind": "instrument",
+  "name": "Xz Fixture",
+  "versions": [
+    {
+      "number": 1,
+      "saved": 1763000060000,
+      "note": "made-up version 1",
+      "active": 0,
+      "files": [
+        {
+          "name": "program.fm",
+          "text": "// Xz Fixture: a made-up program, version 1\nmodule Voice\n{\n    param float gain0 [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n    param float gain1 [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n    param float gain2 [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n    bool process(float* restrict left, float* restrict right, int n)\n    {\n        return true;\n    }\n};\n"
+        },
+        {
+          "name": "notes.fm",
+          "text": "// notes\n"
+        }
+      ],
+      "dials": [
+        {
+          "name": "gain0",
+          "value": 0.25
+        },
+        {
+          "name": "gain1",
+          "value": 0.26
+        },
+        {
+          "name": "gain2",
+          "value": 0.27
+        }
+      ]
+    },
+    {
+      "number": 2,
+      "saved": 1763000120000,
+      "note": "made-up version 2",
+      "active": 0,
+      "files": [
+        {
+          "name": "program.fm",
+          "text": "// Xz Fixture: a made-up program, version 2\nmodule Voice\n{\n    param float gain0 [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n    param float gain1 [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n    param float gain2 [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n    param float gain3 [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n    param float gain4 [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n    param float gain5 [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n    bool process(float* restrict left, float* restrict right, int n)\n    {\n        return true;\n    }\n};\n"
+        },
+        {
+          "name": "notes.fm",
+          "text": "// notes\n// notes\n"
+        }
+      ],
+      "dials": [
+        {
+          "name": "gain0",
+          "value": 0.25
+        },
+        {
+          "name": "gain1",
+          "value": 0.26
+        },
+        {
+          "name": "gain2",
+          "value": 0.27
+        },
+        {
+          "name": "gain3",
+          "value": 0.28
+        },
+        {
+          "name": "gain4",
+          "value": 0.29
+        },
+        {
+          "name": "gain5",
+          "value": 0.3
+        }
+      ]
+    },
+    {
+      "number": 3,
+      "saved": 1763000180000,
+      "note": "made-up version 3",
+      "active": 0,
+      "files": [
+        {
+          "name": "program.fm",
+          "text": "// Xz Fixture: a made-up program, version 3\nmodule Voice\n{\n    param float gain0 [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n    param float gain1 [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n    param float gain2 [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n    param float gain3 [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n    param float gain4 [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n    param float gain5 [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n    param float gain6 [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n    param float gain7 [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n    param float gain8 [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n    bool process(float* restrict left, float* restrict right, int n)\n    {\n        return true;\n    }\n};\n"
+        },
+        {
+          "name": "notes.fm",
+          "text": "// notes\n// notes\n// notes\n"
+        }
+      ],
+      "dials": [
+        {
+          "name": "gain0",
+          "value": 0.25
+        },
+        {
+          "name": "gain1",
+          "value": 0.26
+        },
+        {
+          "name": "gain2",
+          "value": 0.27
+        },
+        {
+          "name": "gain3",
+          "value": 0.28
+        },
+        {
+          "name": "gain4",
+          "value": 0.29
+        },
+        {
+          "name": "gain5",
+          "value": 0.3
+        },
+        {
+          "name": "gain6",
+          "value": 0.31
+        },
+        {
+          "name": "gain7",
+          "value": 0.32
+        },
+        {
+          "name": "gain8",
+          "value": 0.33
+        }
+      ]
+    }
+  ],
+  "presets": [
+    {
+      "name": "Half",
+      "saved": 1763000300000,
+      "from": 3,
+      "dials": [
+        {
+          "name": "gain0",
+          "value": 0.5
+        }
+      ]
+    }
+  ],
+  "info": {
+    "description": "A made-up project for plugin.export's xz rows.",
+    "author": "",
+    "category": "Test",
+    "tags": [
+      "fixture"
+    ],
+    "genres": []
+  }
+}
