@@ -232,6 +232,17 @@ else()
   list(FILTER FP_EDITOR_GPU_SOURCES EXCLUDE REGEX "/ShaderLibraryNone\\.cpp$")
 endif()
 file(GLOB FP_FMINUS_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/fminus/*.cpp)
+# XZ Embedded (Source/xz/embedded/, vendored unmodified from the XZ Utils project's tukaani-project/xz-embedded:
+# Source/xz/SEED.tsv, scripts/sync-xz-embedded.sh; 0BSD, its COPYING beside it): the .xz decoder that reads a package
+# (.fmpack) in xz on every platform, plugin/XzDecode.cpp its one caller (ProjectExport.cpp's; on macOS Apple's decoder
+# reads them and plugin.export holds this one to it). C, built once for every product with its options
+# (Source/xz/XzOptions.h) and our userspace glue (Source/xz/xz_config.h), and none of our warning flags: it is
+# third-party code. Hidden symbols, so no other plugin in a host binds to it.
+file(GLOB FP_XZ_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/xz/embedded/*.c)
+add_library(fp_xz STATIC ${FP_XZ_SOURCES})
+set_target_properties(fp_xz PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF C_VISIBILITY_PRESET hidden)
+target_include_directories(fp_xz PRIVATE ${FP_SOURCE_ROOT}/xz ${FP_SOURCE_ROOT}/xz/embedded)
+target_link_libraries(fp_xz PRIVATE fp_lto)
 # The GUI sandbox's helper (Source/sandbox/): its own sources, and the editor's .gui code and the .gui and program
 # reading it shares with the plugin, by name: nothing that compiles a program (Patch.cpp, FMinus, LLVM), plays one
 # (Source/dsp) or is the plugin's (Source/plugin). A file added to this list must keep that so.
@@ -741,7 +752,7 @@ namespace @FP_NAMESPACE@
   # PUBLIC, so the format wrappers compile JUCE with the same settings as the shared code.
   target_compile_definitions(${PRODUCT_NAME} PUBLIC JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0)
   target_link_libraries(${PRODUCT_NAME}
-      PRIVATE ${PRODUCT_NAME}_dsp fp_flags juce::juce_audio_utils
+      PRIVATE ${PRODUCT_NAME}_dsp fp_flags fp_xz juce::juce_audio_utils
       PUBLIC  juce::juce_recommended_config_flags)
   if(FP_LTO)
     target_link_libraries(${PRODUCT_NAME} PUBLIC juce::juce_recommended_lto_flags)
