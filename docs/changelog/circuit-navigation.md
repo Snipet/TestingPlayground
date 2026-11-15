@@ -12,8 +12,8 @@
 - In the Schematic view, a middle-button drag pans, a Ctrl- (or Cmd-) middle-button drag zooms about where it pressed,
   and a trackpad's pinch zooms toward the pointer.
 - **.** frames the selection (with nothing selected, everything), and the canvas's menu has **Frame selection**.
-- The settings' Debug page names the FunkGui compiled in, and while the GPU runs its renderer, vendor and device, its
-  largest texture and the custom shaders registered.
+- The settings' Debug page names the FunkGui compiled in (now 0.27.0), and while the GPU runs its renderer, vendor and
+  device, its largest texture and the custom shaders registered.
 
 **Fixed**
 - **F**, Home and the menu's Fit keep the view where the easing lands in the session, not where it started.
