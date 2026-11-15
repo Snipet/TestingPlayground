@@ -129,7 +129,7 @@ function(fp_add_probes key)
                                                  PROBE_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
   # juce_audio_formats: the samples' readers (plugin/AssetFiles.cpp), as the plugin has them through juce_audio_utils.
   target_link_libraries(${FP_PROBES} PRIVATE
-      ${PRODUCT_NAME}_dsp fp_flags FunkGui::core FunkGui::harness
+      ${PRODUCT_NAME}_dsp fp_flags fp_xz FunkGui::core FunkGui::harness
       juce::juce_audio_processors juce::juce_audio_formats juce::juce_recommended_config_flags)
   if(FP_WITH_GPU)
     target_link_libraries(${FP_PROBES} PRIVATE FunkGui::gpu)

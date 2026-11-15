@@ -14,8 +14,15 @@
 //            same versions and files
 //   ZLIB     a package whose body is zlib (as a build without xz writes) imports
 //   REFUSE   a package of the other kind (the why names it), one with a byte changed (its check), one cut short, a file
-//            that is no export, a zip with no project.json, and (but on macOS) one in xz, the why naming it: refused,
-//            nothing added
+//            that is no export, a zip with no project.json, one that says xz and holds plain JSON (damaged), one of a
+//            method byte no build knows: refused, nothing added
+//   XZ       packages in xz (Tools/probes/fixtures/fmpack-xz: made by XZ Utils, each check type) read on every
+//            platform to the exact JSON, by its reader (Apple's on macOS, XZ Embedded elsewhere) and by the vendored
+//            decoder (plugin/XzDecode.h), and this kind's import with its versions, files, dials and presets; damaged
+//            streams (cut short, a byte changed in the header, the body and the footer, a size other than they hold, a
+//            filter it lacks, a reserved check, bytes after the stream) refused by the vendored decoder in words, stream
+//            padding read; damaged packages refused on import, nothing added; on macOS the writer's own package read
+//            by Apple's decoder and by the vendored one, the same bytes; a bundle carrying an xz package imported
 //   THROWN   an export that throws with its temporary written (fminus/Failure.h's seam), one project and a bundle:
 //            fails in words, the folder holding nothing new, and the next export is taken
 //   BUNDLE   several projects as one bundle (startExport, off the message thread): held before its store's work
@@ -39,6 +46,7 @@
 #include "plugin/ProjectExport.h"
 #include "plugin/ProjectStore.h"
 #include "plugin/Processor.h"
+#include "plugin/XzDecode.h"
 
 #include "dsp/Assets.h"
 
@@ -328,15 +336,213 @@ PROBE(plugin, export)
             zb.writeToStream(os, nullptr);
         }
         P.eq("refuse.no_manifest", refused(bare, "project.json") ? 1 : 0, 1);
-#if !defined(__APPLE__)
-        // A package in xz, as macOS writes it: this build reads none, and says so (its body is never looked at).
-        std::vector<uint8_t> xz = packageOf(ps::toJson(*original), px::Method::stored);
-        xz[5] = static_cast<uint8_t>(px::Method::xz);
-        const juce::File fromMac = out.getChildFile("FromMac.fmpack");
-        writeBytes(fromMac, xz);
-        P.eq("refuse.xz", refused(fromMac, "xz") ? 1 : 0, 1);
-#endif
+        // A package that says xz and holds plain JSON: damaged, on every platform.
+        std::vector<uint8_t> notXz = packageOf(ps::toJson(*original), px::Method::stored);
+        notXz[5] = static_cast<uint8_t>(px::Method::xz);
+        const juce::File plain = out.getChildFile("NotXz.fmpack");
+        writeBytes(plain, notXz);
+        P.eq("refuse.xz_not_xz", refused(plain, "damaged") ? 1 : 0, 1);
+        // A method byte no build knows (3): still refused, the why saying so.
+        std::vector<uint8_t> unknown = packageOf(ps::toJson(*original), px::Method::stored);
+        unknown[5] = 3;
+        const juce::File odd = out.getChildFile("Unknown.fmpack");
+        writeBytes(odd, unknown);
+        P.eq("refuse.unknown_method", refused(odd, "does not know") ? 1 : 0, 1);
         P.eq("refuse.nothing_added", ps::list().size() == before ? 1 : 0, 1);
+    }
+
+    // XZ: packages in xz (as macOS writes them) read on every platform: Tools/probes/fixtures/fmpack-xz/ (its README).
+    {
+        const juce::File fx = juce::File(PROBE_SOURCE_DIR).getChildFile("Tools/probes/fixtures/fmpack-xz");
+        const char* const kinds[] = { "effect", "instrument" };
+        const char* const checks[] = { "crc64-6", "crc32", "sha256", "none" };
+        const std::string mine = kInstrument ? "instrument" : "effect";
+        const auto sizeOf = [](const std::vector<uint8_t>& b) {
+            uint64_t n = 0;
+            for (int i = 0; i < 8 && b.size() >= 20; ++i)
+                n |= static_cast<uint64_t>(b[static_cast<std::size_t>(8 + i)]) << (8 * i);
+            return static_cast<std::size_t>(n);
+        };
+        // The vendored decoder (plugin/XzDecode.h) on a stream, into a buffer of exactly `size` bytes.
+        const auto vendored = [](const std::vector<uint8_t>& body, std::size_t size, std::string& text, std::string& said) {
+            text.assign(size, '\0');
+            said.clear();
+            return pg::xzdecode::decode(body.data(), body.size(), reinterpret_cast<uint8_t*>(text.data()), size, &said);
+        };
+        int platformRead = 0;
+        int vendoredRead = 0;
+        int fixtures = 0;
+        for (const char* kind : kinds)
+        {
+            const juce::String json = fx.getChildFile(juce::String(kind) + ".json").loadFileAsString();
+            const std::string want = json.toStdString();
+            for (const char* check : checks)
+            {
+                const std::vector<uint8_t> pkg = bytesOf(fx.getChildFile(juce::String(kind) + "-" + check + ".fmpack"));
+                ++fixtures;
+                if (pkg.size() <= 20 || pkg[5] != 2 || sizeOf(pkg) != want.size() || want.empty())
+                    continue;
+                const std::vector<uint8_t> body(pkg.begin() + 20, pkg.end());
+                std::string w;
+                const std::optional<std::string> got = px::decompress(body.data(), body.size(), px::Method::xz, want.size(), &w);
+                platformRead += got && *got == want ? 1 : 0;
+                std::string text, said;
+                vendoredRead += vendored(body, want.size(), text, said) && text == want ? 1 : 0;
+                if (!got || *got != want)
+                    std::printf("xz: %s-%s not read here: %s\n", kind, check, w.c_str());
+            }
+        }
+        std::printf("xz: %d fixtures, %d read by this platform's reader, %d by the vendored decoder\n", fixtures, platformRead, vendoredRead);
+        P.eq("xz.fixtures_read", platformRead, 8);
+        P.eq("xz.vendored_read", vendoredRead, 8);
+
+        // Each check's package of this kind imports: its versions, files and presets as the JSON has them.
+        int imported = 0;
+        for (const char* check : checks)
+        {
+            std::string n;
+            why.clear();
+            const juce::File f = fx.getChildFile(juce::String(mine) + "-" + check + ".fmpack");
+            if (!pa.importProject(f.getFullPathName().toStdString(), n, why))
+            {
+                std::printf("xz: %s refused: %s\n", f.getFileName().toRawUTF8(), why.c_str());
+                continue;
+            }
+            const std::optional<ps::Project> p = ps::load(n);
+            const juce::var root = juce::JSON::parse(fx.getChildFile(juce::String(mine) + ".json").loadFileAsString());
+            const juce::var v3 = root["versions"][2];
+            imported += p && n.rfind("Xz Fixture", 0) == 0 && p->versions.size() == 3 && p->presets.size() == 1
+                                && p->versions.back().files.size() == 2
+                                && p->versions.back().files[0].text == v3["files"][0]["text"].toString().toStdString()
+                                && p->versions.back().dials.size() == 9
+                            ? 1 : 0;
+        }
+        P.eq("xz.imports", imported, 4);
+
+        // Damaged streams, from the CRC64 one: the vendored decoder's why, then the import's, on every platform.
+        const std::string json = fx.getChildFile(juce::String(mine) + ".json").loadFileAsString().toStdString();
+        const std::vector<uint8_t> good = bytesOf(fx.getChildFile(juce::String(mine) + "-crc64-6.fmpack"));
+        const std::vector<uint8_t> body = good.size() > 40 ? std::vector<uint8_t>(good.begin() + 20, good.end()) : std::vector<uint8_t>(40, 0);
+        const auto refusedAs = [&](const char* key, const std::vector<uint8_t>& b, std::size_t size, const char* says) {
+            std::string text, said;
+            const bool ok = vendored(b, size, text, said);
+            std::printf("xz: %s: %s\n", key, ok ? "read" : said.c_str());
+            P.eq(key, !ok && said.find(says) != std::string::npos ? 1 : 0, 1);
+        };
+        std::vector<uint8_t> b = body;
+        b.resize(b.size() - 30);
+        refusedAs("xz.cut_short", b, json.size(), "cut short");
+        refusedAs("xz.cut_to_header", { body.begin(), body.begin() + 12 }, json.size(), "cut short");
+        b = body;
+        b[1] ^= 0x01;   // the magic
+        refusedAs("xz.header_magic", b, json.size(), "not xz data");
+        b = body;
+        b[7] ^= 0x01;   // the check's ID, its header's CRC32 left as it was
+        refusedAs("xz.header_flags", b, json.size(), "changed");
+        b = body;
+        b[b.size() / 2] ^= 0x10;
+        refusedAs("xz.body_byte", b, json.size(), "changed");
+        b = body;
+        b[b.size() - 8] ^= 0x01;   // the footer's backward size, under its CRC32
+        refusedAs("xz.footer_byte", b, json.size(), "changed");
+        refusedAs("xz.size_smaller", body, json.size() - 1, "holds more than its header says");
+        refusedAs("xz.size_larger", body, json.size() + 1, "not the size its header says");
+        refusedAs("xz.size_zero", body, 0, "holds more than its header says");
+        const std::vector<uint8_t> x86 = bytesOf(fx.getChildFile("effect-x86.fmpack"));
+        refusedAs("xz.filter", x86.size() > 20 ? std::vector<uint8_t>(x86.begin() + 20, x86.end()) : body,
+                  fx.getChildFile("effect.json").getSize() > 0 ? static_cast<std::size_t>(fx.getChildFile("effect.json").getSize()) : 1,
+                  "filter");
+        b = body;
+        b[7] = 0x02;   // a check ID xz's format reserves, its header's CRC32 made again (over the two flag bytes)
+        {
+            const uint32_t c = px::crc32(b.data() + 6, 2);
+            for (int i = 0; i < 4; ++i)
+                b[static_cast<std::size_t>(8 + i)] = static_cast<uint8_t>(c >> (8 * i));
+        }
+        refusedAs("xz.reserved_check", b, json.size(), "integrity check");
+        b = body;
+        b.insert(b.end(), { 'j', 'u', 'n', 'k' });
+        refusedAs("xz.trailing", b, json.size(), "follows");
+        b = body;
+        b.insert(b.end(), { 0, 0, 0, 0 });
+        {
+            std::string text, said;
+            P.eq("xz.padding_reads", vendored(b, json.size(), text, said) && text == json ? 1 : 0, 1);
+        }
+
+        // The same damage as packages: refused on import, saying damaged, nothing added (Apple's decoder on macOS).
+        const std::size_t before = ps::list().size();
+        const auto importRefused = [&](const char* key, std::vector<uint8_t> pkg) {
+            const juce::File f = out.getChildFile(juce::String(key) + ".fmpack");
+            writeBytes(f, pkg);
+            std::string n;
+            why.clear();
+            const bool no = !pa.importProject(f.getFullPathName().toStdString(), n, why);
+            std::printf("xz: %s: %s\n", key, no ? why.c_str() : "imported");
+            P.eq(key, no && why.find("damaged") != std::string::npos ? 1 : 0, 1);
+        };
+        const auto withBody = [&](const std::vector<uint8_t>& nb) {
+            std::vector<uint8_t> p(good.begin(), good.begin() + std::min<std::ptrdiff_t>(20, static_cast<std::ptrdiff_t>(good.size())));
+            p.insert(p.end(), nb.begin(), nb.end());
+            return p;
+        };
+        b = body;
+        b.resize(b.size() - 30);
+        importRefused("xz.import_cut_short", withBody(b));
+        b = body;
+        b[1] ^= 0x01;
+        importRefused("xz.import_header", withBody(b));
+        b = body;
+        b[b.size() / 2] ^= 0x10;
+        importRefused("xz.import_body", withBody(b));
+        b = body;
+        b[b.size() - 8] ^= 0x01;
+        importRefused("xz.import_footer", withBody(b));
+        {
+            std::vector<uint8_t> p = good;
+            if (p.size() > 20)
+                p[8] = static_cast<uint8_t>(p[8] - 1);   // the size one less: the CRC-32 is the JSON's whole
+            importRefused("xz.import_size", p);
+        }
+        P.eq("xz.import_nothing_added", ps::list().size() == before ? 1 : 0, 1);
+
+        // What macOS's writer wrote (PACKAGE), read by Apple's decoder and by the vendored one: the same bytes. Only
+        // macOS writes xz; elsewhere the fixtures stand for it (xz.fixtures_read, xz.vendored_read).
+#if defined(__APPLE__)
+        {
+            const std::size_t size = sizeOf(pb);
+            const std::vector<uint8_t> pbody = pb.size() > 20 ? std::vector<uint8_t>(pb.begin() + 20, pb.end()) : std::vector<uint8_t>{};
+            std::string w;
+            const std::optional<std::string> apple = px::decompress(pbody.data(), pbody.size(), px::Method::xz, size, &w);
+            std::string text, said;
+            const bool ours = vendored(pbody, size, text, said);
+            std::printf("xz: the writer's package, %zu bytes: Apple's %s, the vendored %s\n", size, apple ? "read" : w.c_str(),
+                        ours ? "read" : said.c_str());
+            P.eq("xz.apple_and_vendored_same", pb.size() > 20 && pb[5] == 2 && apple && ours && *apple == text && size > 0 ? 1 : 0, 1);
+        }
+#else
+        probe::skip(P, "xz.apple_and_vendored_same", "only macOS writes xz (Apple's encoder): the fixtures stand for it here");
+#endif
+
+        // A bundle that carries an xz package (as a Mac's bundle does): importProjects (readAll) takes it.
+        {
+            const std::vector<uint8_t> member = good;
+            const std::string manifest = std::string("{\"format\": \"funk-playground-bundle\", \"version\": 1, \"kind\": \"") + mine
+                                         + "\", \"projects\": [{\"name\": \"Xz Fixture\", \"file\": \"Xz Fixture.fmpack\"}]}";
+            juce::ZipFile::Builder zb;
+            zb.addEntry(new juce::MemoryInputStream(manifest.data(), manifest.size(), true), 9, "bundle.json", juce::Time::getCurrentTime());
+            zb.addEntry(new juce::MemoryInputStream(member.data(), member.size(), true), 0, "Xz Fixture.fmpack", juce::Time::getCurrentTime());
+            const juce::File xb = out.getChildFile("XzBundle.zip");
+            {
+                juce::FileOutputStream os(xb);
+                zb.writeToStream(os, nullptr);
+            }
+            pg::Imported in;
+            const bool ok = pa.importProjects(xb.getFullPathName().toStdString(), in, why);
+            const std::optional<ps::Project> p = in.names.size() == 1 ? ps::load(in.names[0]) : std::nullopt;
+            std::printf("xz: bundle: %s, %zu refused\n", in.names.empty() ? why.c_str() : in.names[0].c_str(), in.refused.size());
+            P.eq("xz.bundle_imports", ok && in.refused.empty() && p && p->versions.size() == 3 && p->presets.size() == 1 ? 1 : 0, 1);
+        }
     }
 
     // BUNDLE

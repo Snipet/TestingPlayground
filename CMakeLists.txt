@@ -232,6 +232,17 @@ else()
   list(FILTER FP_EDITOR_GPU_SOURCES EXCLUDE REGEX "/ShaderLibraryNone\\.cpp$")
 endif()
 file(GLOB FP_FMINUS_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/fminus/*.cpp)
+# XZ Embedded (Source/xz/embedded/, vendored unmodified from the XZ Utils project's tukaani-project/xz-embedded:
+# Source/xz/SEED.tsv, scripts/sync-xz-embedded.sh; 0BSD, its COPYING beside it): the .xz decoder that reads a package
+# (.fmpack) in xz on every platform, plugin/XzDecode.cpp its one caller (ProjectExport.cpp's; on macOS Apple's decoder
+# reads them and plugin.export holds this one to it). C, built once for every product with its options
+# (Source/xz/XzOptions.h) and our userspace glue (Source/xz/xz_config.h), and none of our warning flags: it is
+# third-party code. Hidden symbols, so no other plugin in a host binds to it.
+file(GLOB FP_XZ_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/xz/embedded/*.c)
+add_library(fp_xz STATIC ${FP_XZ_SOURCES})
+set_target_properties(fp_xz PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF C_VISIBILITY_PRESET hidden)
+target_include_directories(fp_xz PRIVATE ${FP_SOURCE_ROOT}/xz ${FP_SOURCE_ROOT}/xz/embedded)
+target_link_libraries(fp_xz PRIVATE fp_lto)
 # The GUI sandbox's helper (Source/sandbox/): its own sources, and the editor's .gui code and the .gui and program
 # reading it shares with the plugin, by name: nothing that compiles a program (Patch.cpp, FMinus, LLVM), plays one
 # (Source/dsp) or is the plugin's (Source/plugin). A file added to this list must keep that so.
@@ -741,7 +752,7 @@ namespace @FP_NAMESPACE@
   # PUBLIC, so the format wrappers compile JUCE with the same settings as the shared code.
   target_compile_definitions(${PRODUCT_NAME} PUBLIC JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0)
   target_link_libraries(${PRODUCT_NAME}
-      PRIVATE ${PRODUCT_NAME}_dsp fp_flags juce::juce_audio_utils
+      PRIVATE ${PRODUCT_NAME}_dsp fp_flags fp_xz juce::juce_audio_utils
       PUBLIC  juce::juce_recommended_config_flags)
   if(FP_LTO)
     target_link_libraries(${PRODUCT_NAME} PUBLIC juce::juce_recommended_lto_flags)
@@ -786,6 +797,32 @@ namespace @FP_NAMESPACE@
       endif()
     endforeach()
   endif()
+
+  # XZ Embedded's licence (0BSD, Source/xz/embedded/COPYING) beside the others in each bundle, as
+  # xz-embedded-COPYING.txt: the VST3's and the AU's Resources/licences, the Standalone's licences/ (macOS: its
+  # Resources/licences). The packages (scripts/package.sh, package-linux.sh, the installer's payload) copy the bundles
+  # and the Standalone's folder whole, so it goes with them.
+  set(_fp_xz_licence ${CMAKE_BINARY_DIR}/licences/xz-embedded-COPYING.txt)
+  configure_file(${FP_SOURCE_ROOT}/xz/embedded/COPYING ${_fp_xz_licence} COPYONLY)
+  foreach(_fmt AU VST3 Standalone)
+    if(TARGET ${PRODUCT_NAME}_${_fmt})
+      if(APPLE)
+        target_sources(${PRODUCT_NAME}_${_fmt} PRIVATE ${_fp_xz_licence})
+        set_source_files_properties(${_fp_xz_licence} TARGET_DIRECTORY ${PRODUCT_NAME}_${_fmt}
+                                    PROPERTIES MACOSX_PACKAGE_LOCATION Resources/licences)
+      else()
+        if(_fmt STREQUAL "VST3")
+          set(_fp_lic_dir "$<TARGET_FILE_DIR:${PRODUCT_NAME}_${_fmt}>/../Resources/licences")
+        else()
+          set(_fp_lic_dir "$<TARGET_FILE_DIR:${PRODUCT_NAME}_${_fmt}>/licences")
+        endif()
+        add_custom_command(TARGET ${PRODUCT_NAME}_${_fmt} PRE_LINK
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${_fp_lic_dir}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_fp_xz_licence}" "${_fp_lic_dir}"
+            VERBATIM)
+      endif()
+    endif()
+  endforeach()
 
   # The Standalone is our own app (Source/plugin/standalone/): JUCE's custom standalone hook leaves JUCE's out (its
   # drawn title bar and Options button) for macOS's window, the editor's top bar under its buttons, and a menu bar. The

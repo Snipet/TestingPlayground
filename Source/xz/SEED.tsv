@@ -1,0 +1,13 @@
+# Vendored from https://github.com/tukaani-project/xz-embedded by scripts/sync-xz-embedded.sh. Do not edit by hand: rerun the script.
+path	source	tag	commit	sha256	day
+Source/xz/embedded/AUTHORS	xz-embedded	v2024-12-30	ae63ae3a36ed01724674e8f3d750dc47bf125410	1a26599942c5b3e1350ed4e9c2f8da4bb1c59c52f4e0e410545b41b479739247	2026-11-15
+Source/xz/embedded/COPYING	xz-embedded	v2024-12-30	ae63ae3a36ed01724674e8f3d750dc47bf125410	d9ff4f089509582e7b197e86f3d2d66948b89169f27c1f2349eb0d1ed4459309	2026-11-15
+Source/xz/embedded/xz.h	xz-embedded	v2024-12-30	ae63ae3a36ed01724674e8f3d750dc47bf125410	59196b9c8296815f6a029f26d202bcd404078e27fc6e9bc4077db5f6865664c7	2026-11-15
+Source/xz/embedded/xz_crc32.c	xz-embedded	v2024-12-30	ae63ae3a36ed01724674e8f3d750dc47bf125410	e6373b6d1aa11535260e153d8d7c62485ce82fbcb1d9dd66e6d984025771eec6	2026-11-15
+Source/xz/embedded/xz_crc64.c	xz-embedded	v2024-12-30	ae63ae3a36ed01724674e8f3d750dc47bf125410	cc6d80bc48c3d0ae963c5b61ac85f21a26efc733bc2ae61cbb8f39f09f5e85f6	2026-11-15
+Source/xz/embedded/xz_dec_lzma2.c	xz-embedded	v2024-12-30	ae63ae3a36ed01724674e8f3d750dc47bf125410	248dcd23e186b179a3fd1f5150c70cde13670521251e62bc44b15c99241491c4	2026-11-15
+Source/xz/embedded/xz_dec_stream.c	xz-embedded	v2024-12-30	ae63ae3a36ed01724674e8f3d750dc47bf125410	bb5d29c33bd29b7d7993ae6b1a60f1750c509b1935fe2d28d46dfd8c5f46e9ce	2026-11-15
+Source/xz/embedded/xz_lzma2.h	xz-embedded	v2024-12-30	ae63ae3a36ed01724674e8f3d750dc47bf125410	5681cf01bdcfab8907c02194eeaf9d4415166b3b5d48b50a34df809276f63aa1	2026-11-15
+Source/xz/embedded/xz_private.h	xz-embedded	v2024-12-30	ae63ae3a36ed01724674e8f3d750dc47bf125410	9d8d116354cca408ef17a10cd544a955ea5d26e8f9f50885e99adab9135917d5	2026-11-15
+Source/xz/embedded/xz_sha256.c	xz-embedded	v2024-12-30	ae63ae3a36ed01724674e8f3d750dc47bf125410	f8ed3318e56a2dbe2bd95d35e874f9c813bdd2e20212faad6b2bc1197731de59	2026-11-15
+Source/xz/embedded/xz_stream.h	xz-embedded	v2024-12-30	ae63ae3a36ed01724674e8f3d750dc47bf125410	89e80af27003ad39f3122ad447861ec574fa235a0c6339c26bb48a53c3d9e12b	2026-11-15

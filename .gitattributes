@@ -1,0 +1,3 @@
+# plugin.export's xz fixtures are compared byte for byte (Tools/probes/fixtures/fmpack-xz/README.md): never converted.
+Tools/probes/fixtures/fmpack-xz/*.json -text
+Tools/probes/fixtures/fmpack-xz/*.fmpack binary

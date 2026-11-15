@@ -18,7 +18,8 @@
 //              byte 20...  the JSON, compressed
 //            On macOS it is xz, by Apple's Compression framework (COMPRESSION_LZMA writes the .xz format, so `tail -c +21
 //            Name.fmpack | xz -d` prints the JSON): a project's versions are mostly the same text, which LZMA's window
-//            takes as repeats. Elsewhere zlib (JUCE's), and a package in xz is refused there with a why.
+//            takes as repeats. Elsewhere zlib (JUCE's). Every platform reads both: xz by Apple's decoder on macOS, by
+//            XZ Embedded elsewhere (plugin/XzDecode.h, vendored in Source/xz), into a buffer of the header's size.
 //
 //   bundle   several projects at once (PROJECTS' Export with more than one chosen): one .zip of stored entries, each
 //            project's own export as above (all .fmpack or all source .zip) under its own name, and a manifest:
