@@ -2,8 +2,8 @@
 // in Settings, and what the last look found (a look of Settings' Look for git, or the one every git job makes before it
 // runs: plugin/ProcessorGit.cpp), kept in git.json in the folder both products share (factorystore::directory(): the
 // chat's key, factory.json and app.json are there), so that both the effect and the synth, every instance and every
-// later launch show it at once, with no git run to show it. Git never runs by itself: nothing here runs git; a record is
-// only what a run of the user's press found, brought up to date by the next one.
+// later launch show it at once, with no git run to show it. Git never runs by itself: nothing here runs git; a record
+// is only what a run of the user's press found, brought up to date by the next one.
 //
 // The file: {"format": "funk-playground-git-machine", "version": 1, "chosen": "<path>" (a choice made: "" for none,
 // find it as plugin/Git.h finds it), "found": {"path", "version", "ms"} (the last look found git), "none": {"why",
@@ -48,6 +48,7 @@ namespace playground::gitrecord
     bool setChosen(const std::string& path, std::string* why = nullptr);
     // What a run's look found (git::find, with the choice in force then): written when it differs from the record. When
     // none was found and the record remembered one found before (with no choice made), `found.why` comes back in the
-    // words that say so (the git found on this computer before, at <path>, is no longer there), and those are kept.
+    // words that say so ("The git found on this computer before, at <path>, is no longer there: choose one, or look for
+    // git again."), and those are kept.
     void noteFound(git::Found& found, int64_t nowMs);
 }

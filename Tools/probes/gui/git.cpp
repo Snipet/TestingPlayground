@@ -520,11 +520,17 @@ PROBE(gui, git)
         {
             const fs::path machine = root / ("machine" + sfx);
             pg::factorystore::setDirectoryForTests(juce::File(juce::String::fromUTF8(pg::files::utf8Of(machine).c_str())));
+            // The line after the label "Git" (the projects folder's line comes before it, and its path may hold "git").
             const auto lineNow = [&] {
+                bool after = false;
                 for (const pg::ui::SettingsCard::Line& l : panel.settingsCard().places(W, H).lines)
-                    if (l.kind == pg::ui::SettingsCard::Line::Kind::value || l.kind == pg::ui::SettingsCard::Line::Kind::error)
-                        if (has(l.text, "git") || has(l.text, "Not looked") || has(l.text, "chosen") || has(l.text, "Looking"))
-                            return l;
+                {
+                    if (l.kind == pg::ui::SettingsCard::Line::Kind::label)
+                        after = l.text == "Git";
+                    else if (after && (l.kind == pg::ui::SettingsCard::Line::Kind::value
+                                       || l.kind == pg::ui::SettingsCard::Line::Kind::error))
+                        return l;
+                }
                 return pg::ui::SettingsCard::Line{};
             };
             const auto lookNow = [&] {

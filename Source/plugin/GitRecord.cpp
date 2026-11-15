@@ -317,7 +317,7 @@ namespace playground::gitrecord
         const Record before = read();
         if (!found.found() && !before.path.empty() && before.chosen.empty())
             found.why = "The git found on " + std::string(kThisMachine) + " before, at " + before.path
-                      + ", is no longer there: " + found.why;
+                      + ", is no longer there: choose one, or look for git again.";
         (void)write(
             [&](juce::DynamicObject& o) {
                 if (found.found())
