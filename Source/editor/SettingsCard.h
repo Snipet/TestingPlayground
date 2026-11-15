@@ -12,7 +12,8 @@
 // once-a-second read) through revision(), which the Panel's draw key mixes.
 //
 //   General         the theme and the zoom (written where their buttons write), the version
-//   Editor          Format on Run (UiPreferences, as the code's status line writes it)
+//   Editor          the code's text size (a stepper and Reset: codesize, as the keys step it) and Format on Run
+//                   (UiPreferences both, as the code's keys and status line write them)
 //   Audio and MIDI  the Standalone's devices (EditorPort::devices, DevicePort.h), only where there are some:
 //                   OUTPUT (the device, Test, its pairs), INPUT (an effect's: the device, its pairs, Mute input and why),
 //                   AUDIO (the type, the rate, the buffer, the latency), MIDI (an instrument's: each input a switch, a
