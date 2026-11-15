@@ -1185,9 +1185,9 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
   that plays when opened, as an imported project's: pull only from repositories you trust. Settings' **Projects** page
   says which git runs (**Look for git**, **Choose git...**, **Use the one found**), and where the folders are. The git
   chosen and what the last look found are remembered for this computer, the effect's and the synth's alike, in
-  `git.json` in the folder both share (beside the chat's key): every launch shows them at once, with no git run to show
-  them; each press that runs git looks again and brings them up to date, and a git found before that is no longer there
-  is said so the first time a press needs it. A host that keeps plugins in a
+  `git.json` in the folder both share (beside `app.json` and `factory.json`): every launch shows them at once, with no
+  git run to show them; each press that runs git looks again and brings them up to date, and a git found before that is
+  no longer there is said so the first time a press needs it. A host that keeps plugins in a
   sandbox may not let git start, read `~/.ssh` or reach the network: the card shows git's own words and the Standalone
   app can push and pull. An SSH key with a passphrase and no agent fails at once (add it to the agent, or use https
   with a credential helper). The history is the repository's: a version the project lets go (it keeps 100) stays a

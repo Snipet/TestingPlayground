@@ -1,7 +1,7 @@
 // Source/plugin/GitRecord.h: the git this computer runs for the user, remembered (package 05): the git the user chose
 // in Settings, and what the last look found (a look of Settings' Look for git, or the one every git job makes before it
-// runs: plugin/ProcessorGit.cpp), kept in git.json in the folder both products share (factorystore::directory(): the
-// chat's key, factory.json and app.json are there), so that both the effect and the synth, every instance and every
+// runs: plugin/ProcessorGit.cpp), kept in git.json in the folder both products share (factorystore::directory(),
+// beside factory.json and app.json), so that both the effect and the synth, every instance and every
 // later launch show it at once, with no git run to show it. Git never runs by itself: nothing here runs git; a record
 // is only what a run of the user's press found, brought up to date by the next one.
 //
