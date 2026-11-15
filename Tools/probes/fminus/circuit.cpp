@@ -378,6 +378,11 @@ namespace
         double others() const { return process - thread; }      // every thread's but the caller's
     };
 
+    // The most a CPU-time reading lags or steps: one tick of the clocks that count it. Windows counts a thread's and the
+    // process's times in clock ticks (15.6 ms by default); Linux adds another CPU's running thread's time to the
+    // process's clock at that CPU's scheduler tick (at most 10 ms, at the least HZ of 100); macOS's are finer.
+    constexpr double kCpuClockTick = 0.016;
+
     CpuTimes cpuTimes()
     {
         CpuTimes t;
@@ -1103,21 +1108,30 @@ namespace
             P.eq("wait.idle", w == Waited::idle && took < 20.0 ? 1 : 0, 1);
             P.ge("wait.idle_poll_costly", own, kIdleWork);
         }
-        // a thread that spins without end: its CPU limit
+        // a thread that spins without end: its CPU limit. The spinner's CPU is its own thread clock, read as it stops
+        // (after the wait returned), never a second reading of the others' CPU: that one is the process's clock less
+        // this thread's, read one after the other, so this thread's own CPU between the two reads (an interrupt charged
+        // to it too) is taken off, and a reading can step back by tens of microseconds, by a whole tick on Windows,
+        // where both clocks count in ticks; the wait returns at the first reading past the limit, often by less than
+        // that, so a second reading compared with the limit itself could fall just under it. The spinner's clock reaches
+        // the limit, less at most one tick of those clocks (kCpuClockTick); a wait that gave up early falls far short.
         {
+            constexpr double kLimit = 0.3;
             std::atomic<bool> stop{ false };
-            const double others0 = cpuTimes().others();
+            double spinnerCpu = 0.0;
             std::thread spinner([&] {
+                const double own0 = cpuTimes().thread;
                 while (!stop.load())
                 {
                 }
+                spinnerCpu = cpuTimes().thread - own0;
             });
-            const Waited w = untilWorked([] { return false; }, 0.3, 60.0, clock::now() + std::chrono::seconds(60));
-            const double spent = cpuTimes().others() - others0;
+            const Waited w = untilWorked([] { return false; }, kLimit, 60.0, clock::now() + std::chrono::seconds(60));
             stop.store(true);
             spinner.join();
-            std::printf("wait: a thread spinning: %s; its CPU %.2f s\n", nameOf(w), spent);
-            P.eq("wait.spun", w == Waited::spun && spent >= 0.3 ? 1 : 0, 1);
+            std::printf("wait: a thread spinning: %s; its own CPU %.4f s (the limit %.2f s, less a clock tick %.4f s)\n",
+                        nameOf(w), spinnerCpu, kLimit, kCpuClockTick);
+            P.eq("wait.spun", w == Waited::spun && spinnerCpu >= kLimit - kCpuClockTick ? 1 : 0, 1);
         }
         // nothing running and a long idle window: the deadline
         {
