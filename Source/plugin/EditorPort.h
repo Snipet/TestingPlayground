@@ -541,7 +541,7 @@ namespace playground
         bool behind = false, diverged = false;   // ... push refused (pull first); pull found both sides moved
         std::string words;                       // ... in words (git's own when it failed)
         std::string added;                       // ... add: the project made
-        bool looked = false;                     // git looked for (a job ran, or Look for git)
+        bool looked = false;                     // git looked for on this computer: the machine's record (GitRecord.h)
         std::string gitPath, gitVersion;         // ... what was found ("" none)
         std::string gitWhy;                      // ... none found: why, in words
     };

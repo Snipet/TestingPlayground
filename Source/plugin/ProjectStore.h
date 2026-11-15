@@ -480,7 +480,7 @@ namespace playground::projectstore
     // id so a rename keeps its link. Written whole (beside, then moved over) under a mutex of its own, read again only
     // when its time or its size changes, so the listing, the mark and the git card read it on the message thread and
     // read no repository:
-    //   { "format": "funk-playground-git-links", "version": 1, "git": "<the git the user chose, or none>",
+    //   { "format": "funk-playground-git-links", "version": 1, "git": "<an older build's chosen git: taken over>",
     //     "links": [ { "id", "folder": "Glass Bloom-8c1f4e2a", "remote", "branch", "committed": 12, "commit": "<sha>",
     //                  "syncedMs", "ahead": 0, "behind": 0, "checkedMs", "written": [ "project.json", ... ],
     //                  "recent": [ { "sha", "subject", "ms" }, ... ], "theirs": "<sha>" }, ... ] }
@@ -488,7 +488,8 @@ namespace playground::projectstore
     // number last made a commit; "ahead" and "behind" as of the last fetch (-1 unknown); "written" the files the
     // plugin's own last write of the tree listed (ProjectTree.h), the only ones a later write may remove; "recent" the
     // last commits, newest first, for the card; "theirs" a diverged remote's commit, until it is settled. Nothing about
-    // git goes into the project's own file, so an export never carries a remote's address.
+    // git goes into the project's own file, so an export never carries a remote's address. The git the user chose is the
+    // machine's, both products' (plugin/GitRecord.h): an older build's "git" here is taken over by it, then dropped.
     inline constexpr const char* kLinksFile = ".git-links.json";
     inline constexpr const char* kGitFolderName = "Git";
     inline constexpr std::size_t kRecentCommits = 8;
@@ -521,8 +522,10 @@ namespace playground::projectstore
     bool setLink(const Link& link, std::string* why = nullptr);   // added, or over the one of its id
     bool removeLink(std::string_view id, std::string* why = nullptr);
     uint64_t linksRevision();                            // moves when the file is written here or changes on disk
-    std::string gitPath();                               // the git the user chose ("" for none: found as Git.h says)
-    bool setGitPath(const std::string& path, std::string* why = nullptr);
+    // The git chosen as this product kept it before plugin/GitRecord.h (the links file's "git"): read only to be taken
+    // over by the machine's record, then dropped (the record is the one truth: GitRecord.h).
+    std::string legacyGitPath();
+    void dropLegacyGitPath();
 
     // A version brought in from elsewhere (a pull: ProjectTree.h's Tree), added to the project `name` as saveVersion adds
     // one: numbered after its latest, at `savedMs`, its note what changed since the latest after `lead`; `files` the

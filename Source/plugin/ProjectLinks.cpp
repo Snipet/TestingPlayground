@@ -241,19 +241,19 @@ namespace playground::projectstore
         return revision.load(std::memory_order_acquire);
     }
 
-    std::string gitPath()
+    std::string legacyGitPath()
     {
         const std::lock_guard<std::mutex> lock(linksMutex);
         return readLocked().git;
     }
 
-    bool setGitPath(const std::string& path, std::string* why)
+    void dropLegacyGitPath()
     {
         const std::lock_guard<std::mutex> lock(linksMutex);
         LinksFile f = readLocked();
-        if (f.git == path)
-            return true;
-        f.git = path;
-        return writeLocked(std::move(f), why);
+        if (f.git.empty())
+            return;
+        f.git.clear();                                   // taken over by plugin/GitRecord.h: one truth
+        (void)writeLocked(std::move(f), nullptr);
     }
 }
