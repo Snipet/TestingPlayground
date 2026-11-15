@@ -34,6 +34,8 @@ namespace playground::ui::settings
     constexpr float kHeadingH = 26.0f;           // a section's heading and the gap under it
     constexpr float kSectionGap = 14.0f;
     constexpr float kSwitchW = 30.0f, kSwitchH = 17.0f;
+    constexpr float kStepW = 32.0f;              // a stepper's buttons
+    constexpr float kStepValueW = 64.0f;         // a stepper's value between them
     // Why an effect's input starts muted (JUCE's guard), under its switch (and its accessibility help).
     inline constexpr const char* kMuteWhy = "A loop through the speakers would feed back: unmute with headphones on.";
 
@@ -66,6 +68,11 @@ namespace playground::ui::settings
         Control& select(int code, funkgui::Rect r, std::string shown, std::string title, bool enabled = true);
         Control& button(int code, funkgui::Rect r, std::string shown, std::string title, bool enabled = true);
         Control& toggle(int code, funkgui::Rect r, std::string shown, std::string title, bool on);
+        // A stepper at (x, y): a button "-" (code `less`), the value centred in kStepValueW, a button "+" (`more`), each
+        // button disabled at its end (`canLess`, `canMore`); returns its right edge. The value is a line of its own,
+        // which a screen reader reads between the two buttons' titles.
+        float stepper(int less, int more, float x, const std::string& value, std::string lessTitle, std::string moreTitle,
+                      bool canLess, bool canMore);
         // A page that draws (SettingsCard.h, PageHooks): its hooks, for these places.
         void hooks(const SettingsCard::PageHooks& h) { at_.hooks = h; }
 
@@ -104,7 +111,7 @@ namespace playground::ui::settings
     constexpr int kCopyAll = 0, kShowPath = 100;
     // The other pages' codes (Act::item), for the probes.
     constexpr int kTheme = 0, kZoom = 1, kWhatsNew = 2;      // General
-    constexpr int kFormatOnRun = 0;                          // Editor
+    constexpr int kFormatOnRun = 0, kTextSmaller = 1, kTextLarger = 2, kTextReset = 3;   // Editor
     constexpr int kShowProjects = 0;                         // Projects
     constexpr int kLookForGit = 10, kChooseGit = 11, kDefaultGit = 12, kShowGitFolder = 13;   // ... its Git rows
     constexpr int kProviderKey = 0;                          // AI

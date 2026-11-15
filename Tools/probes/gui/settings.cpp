@@ -14,6 +14,8 @@
 //   gui.settings.<page>.png, .<page>.paper.png   each page (general, editor, projects, ai, usage, network, debug,
 //                                                about) in both themes
 //   gui.settings.debug.small.png                 the Debug page at the least size
+//   gui.settings.editor.size.png, .editor.size.paper.png   the Editor page at 16 px, both themes
+//   gui.settings.editor.small.png, .editor.size.small.png  the Editor page at the least size, at 12 px and at 16 px
 // and checks:
 //   HOST     no devices (a host's window): the gear in the top bar opens the card at General, its rail without Audio
 //            and MIDI (which openSettings("audio") does not show either); no notice
@@ -21,7 +23,11 @@
 //            while the card is open and when the gear opens it again; the controls' ids are unique
 //   GENERAL  the theme's select writes UiPreferences' theme (another Panel's card follows: its revision moves), the
 //            zoom's the host's zoom; the version shown
-//   EDITOR   Format on Run's switch writes UiPreferences' codeFormatOnRun, both ways
+//   EDITOR   Format on Run's switch writes UiPreferences' codeFormatOnRun, both ways; the text size's stepper shows the
+//            size in words, - and + step as codesize::step does and write the preference (the open editor's code
+//            follows), each disabled at its end, Reset (enabled off 12 px alone) back to 12 px; a size the keys write
+//            shows on the open page; its buttons titled for a screen reader, the size read between them; its note
+//            says the keys
 //   PROJECTS the projects folder shown; Show in File Manager (Finder, Explorer) asks the processor's launcher for it
 //   AI       the provider, model and key in words; Provider and key... closes the card and opens the key dialog
 //   DEBUG    nothing gathered before the page shows; its sections (Versions, Graphics, Program, Audio, Shaders, Stores,
@@ -56,6 +62,7 @@
 //   GONE     the hooks let go of the devices (the window closing): the card and the notice go
 #include "Probe.h"
 
+#include "editor/CodeAssist.h"
 #include "editor/Panel.h"
 #include "editor/SettingsCard.h"
 #include "editor/SettingsPages.h"
@@ -455,6 +462,121 @@ namespace
             P.eq("editor.switch_shows", t && t->toggle && t->on == (before == 0) ? 1 : 0, 1);
             click(Act::item, st::kFormatOnRun);
             P.eq("editor.format_back", funkgui::UiPreferences::get().getInt("codeFormatOnRun", 0, 0, 1), before);
+        }
+        {
+            // The text size: the same preference and the same steps as the code's keys.
+            namespace cs = pg::ui::codesize;
+            const int kept = cs::read();
+            cs::write(cs::kDefault);
+            settle();
+            const auto sizeShown = [&](int tenths) {   // the stepper's value, exactly (the note says "12 px" too)
+                for (const pg::ui::SettingsCard::Line& l : card.places(W(), H()).lines)
+                    if (l.kind == pg::ui::SettingsCard::Line::Kind::value && l.text == cs::label(tenths))
+                        return 1;
+                return 0;
+            };
+            const auto enabled = [&](int code) {
+                const auto c = controlOf(card, panel, Act::item, code);
+                return c ? (c->enabled ? 1 : 0) : -1;
+            };
+            P.eq("editor.size_row", lineHas(card, panel, "Text size") ? 1 : 0, 1);
+            P.eq("editor.size_shown", sizeShown(cs::kDefault), 1);
+            P.eq("editor.size_reset_off_at_default", enabled(st::kTextReset), 0);
+            P.eq("editor.size_note_keys", lineHas(card, panel, pg::shortcutText("Cmd-= larger")) ? 1 : 0, 1);
+            {
+                std::vector<funkgui::A11yItem> items;
+                panel.accessibility(items);
+                const auto titled = [&](int code, const std::string& title) {
+                    const auto c = controlOf(card, panel, Act::item, code);
+                    for (const funkgui::A11yItem& it : items)
+                        if (c && it.id == c->id)
+                            return it.title == title && it.role == funkgui::A11yRole::button ? 1 : 0;
+                    return 0;
+                };
+                int spoken = 0;
+                for (const funkgui::A11yItem& it : items)
+                    spoken += it.role == funkgui::A11yRole::staticText && it.title == cs::label(cs::kDefault) ? 1 : 0;
+                P.eq("editor.size_a11y_smaller", titled(st::kTextSmaller, "Smaller text"), 1);
+                P.eq("editor.size_a11y_larger", titled(st::kTextLarger, "Larger text"), 1);
+                P.eq("editor.size_a11y_spoken", spoken, 1);
+            }
+            {
+                // Tab order as it reads: smaller, larger, Reset, then Format on Run.
+                std::vector<int> order;
+                for (const pg::ui::SettingsCard::Control& c : card.places(W(), H()).controls)
+                    if (c.act == Act::item)
+                        order.push_back(c.index);
+                P.eq("editor.size_tab_order", order == std::vector<int>{ st::kTextSmaller, st::kTextLarger, st::kTextReset, st::kFormatOnRun } ? 1 : 0, 1);
+            }
+            // Larger, then smaller: codesize::step's steps, written, shown, and the open editor's code follows.
+            click(Act::item, st::kTextLarger);
+            const int up = cs::step(cs::kDefault, 1);
+            P.eq("editor.size_larger_written", cs::read(), up);
+            P.eq("editor.size_larger_shown", sizeShown(up), 1);
+            P.eq("editor.size_editor_follows", panel.codeTextSize(), up);
+            P.eq("editor.size_reset_on", enabled(st::kTextReset), 1);
+            click(Act::item, st::kTextSmaller);
+            click(Act::item, st::kTextSmaller);
+            const int down = cs::step(cs::kDefault, -1);
+            P.eq("editor.size_smaller_written", cs::read(), down);
+            P.eq("editor.size_smaller_shown", sizeShown(down), 1);
+            P.eq("editor.size_editor_follows_down", panel.codeTextSize(), down);
+            // The ends hold: the button that would pass one is disabled there, and a press on it changes nothing.
+            for (int k = 0; k < 16 && cs::read() != cs::kLeast; ++k)
+                click(Act::item, st::kTextSmaller);
+            P.eq("editor.size_least", cs::read(), cs::kLeast);
+            P.eq("editor.size_smaller_off_at_least", enabled(st::kTextSmaller), 0);
+            P.eq("editor.size_larger_on_at_least", enabled(st::kTextLarger), 1);
+            click(Act::item, st::kTextSmaller);
+            P.eq("editor.size_least_holds", cs::read(), cs::kLeast);
+            for (int k = 0; k < 16 && cs::read() != cs::kMost; ++k)
+                click(Act::item, st::kTextLarger);
+            P.eq("editor.size_most", cs::read(), cs::kMost);
+            P.eq("editor.size_larger_off_at_most", enabled(st::kTextLarger), 0);
+            P.eq("editor.size_smaller_on_at_most", enabled(st::kTextSmaller), 1);
+            click(Act::item, st::kTextLarger);
+            P.eq("editor.size_most_holds", cs::read(), cs::kMost);
+            P.eq("editor.size_editor_at_most", panel.codeTextSize(), cs::kMost);
+            // Reset: back to 12 px, then disabled.
+            click(Act::item, st::kTextReset);
+            P.eq("editor.size_reset", cs::read(), cs::kDefault);
+            P.eq("editor.size_reset_shown", sizeShown(cs::kDefault), 1);
+            P.eq("editor.size_reset_off_again", enabled(st::kTextReset), 0);
+            P.eq("editor.size_editor_reset", panel.codeTextSize(), cs::kDefault);
+            // Written from elsewhere (as the keys write it): the open page follows.
+            const uint32_t rev = card.revision();
+            cs::write(160);
+            settle();
+            P.ge("editor.size_elsewhere_redraws", static_cast<double>(card.revision()), static_cast<double>(rev) + 1.0);
+            P.eq("editor.size_elsewhere_shown", sizeShown(160), 1);
+            P.eq("editor.size_elsewhere_reset_on", enabled(st::kTextReset), 1);
+            checkPlaces(P, "editor_size", panel, card);
+            writePng(P, host, "gui.settings.editor.size.png");
+            host.resize(pg::ui::kMinWidth, pg::ui::kMinHeight);
+            settle();
+            checkPlaces(P, "editor_size_least", panel, card);
+            writePng(P, host, "gui.settings.editor.size.small.png");
+            cs::write(cs::kDefault);
+            settle();
+            writePng(P, host, "gui.settings.editor.small.png");
+            host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
+            settle();
+            {
+                funkgui::UiPreferences::get().setTheme(1);
+                cs::write(160);
+                pg::ui::Panel paper(processor.ports(), port);
+                funkgui::HeadlessHost paperHost(paper, 1, 2.0f);
+                paperHost.settle();
+                paper.openSettings("editor");
+                paperHost.tick(2);
+                paperHost.settle();
+                writePng(P, paperHost, "gui.settings.editor.size.paper.png");
+                paperHost.keys("escape");
+                paperHost.tick(2);
+                funkgui::UiPreferences::get().setTheme(0);
+            }
+            cs::write(kept);                             // as it was found: later rows read the preference
+            settle();
         }
 
         // ---- PROJECTS: the folder, shown through the processor's launcher ----------------------------------------------

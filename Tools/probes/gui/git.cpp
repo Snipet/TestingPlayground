@@ -440,14 +440,19 @@ PROBE(gui, git)
         host.keys("escape");
         host.settle();
         P.eq(row + "open.escape_closes", card.isOpen() ? 0 : 1, 1);
-        pump(processor, host, [&] { return false; });  // the explorer's poll, the marks (a few frames)
-        writePng(P, host, "gui.git.mark" + sfx + ".png");
-        {
+        // The items that say the mark (the explorer's row and the pill, once the explorer's poll has landed).
+        const auto linkedSaid = [&] {
             std::vector<funkgui::A11yItem> out;
             panel.accessibility(out);
             int linked = 0;
             for (const funkgui::A11yItem& it : out)
                 linked += has(it.description, "linked to") ? 1 : 0;
+            return linked;
+        };
+        pump(processor, host, [&] { return linkedSaid() >= 2; });   // the explorer's poll, the marks
+        writePng(P, host, "gui.git.mark" + sfx + ".png");
+        {
+            const int linked = linkedSaid();
             std::printf("mark: %d items say linked\n", linked);
             P.ge(row + "mark.said", static_cast<double>(linked), 2.0);   // the explorer's row and the pill
         }
