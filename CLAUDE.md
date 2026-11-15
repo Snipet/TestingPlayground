@@ -1493,8 +1493,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
   was, the counts set aside back) and says so until the next, on every instance's page whichever ran it
   (`usage::lastResetFailed`, the ledger's).
 - **Large work.** `max_tokens` is the model's own limit (from /v1/models, at most 128K); server-side compaction (beta
-  `compact-2026-01-12`, trigger 150K input tokens, instructions that keep the design and leave out code) on the
-  models that take it, the compaction block kept and what came before it dropped: the history then starts at the
+  `compact-2026-01-12`, instructions that keep the design and leave out code) on the models that take it, its trigger
+  the model's (`compactTriggerFor`: `kCompactShare`, half, of its window, /v1/models' `max_input_tokens` kept as
+  `ChatModel::window`, which another provider's model never has; never under `kCompactFloor`, the API's default of
+  150K, also for a window not said; never above the window less a reply), the compaction block kept and what came
+  before it dropped: the history then starts at the
   block, in its assistant message (never at the message before it, which mid-turn is tool results the API refuses
   without their calls; `repairHistory`, also run on a loaded session), and the files go again with whatever follows,
   a message or the turn's next tool results. A compaction block counts only with its summary (`summarized`: its

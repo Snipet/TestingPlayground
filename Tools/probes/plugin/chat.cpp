@@ -15,7 +15,7 @@
 //   REQUEST  each request has the model, max_tokens (the model's own limit, from /v1/models), stream, adaptive
 //            thinking (summarized), the effort, the system prompt cached for an hour, the automatic cache breakpoint,
 //            the twenty-three tools each with eager_input_streaming (add_library_file's name an enum of the library's files), "fallbacks" and server-side compaction (its edit, trigger
-//            and instructions) with their beta headers for a model that takes them, the API version and the key, and
+//            (half the model's million tokens) and instructions) with their beta headers for a model that takes them, the API version and the key, and
 //            no temperature, top_p or top_k; it goes to api.anthropic.com with no other credential; the first message
 //            carries the plugin's state; the history is append-only
 //            (each request's messages begin with the previous request's, unchanged, signatures included) and the
@@ -30,6 +30,9 @@
 //            a note, fast mode still chosen; refused (a 400 about the speed) the turn goes on at standard speed and fast
 //            mode is off; a model that takes no fast mode asks for no speed; Opus 4.8 (in preview) sends fast mode's beta;
 //            Fable 5.2, listed, takes fast mode without a beta, and "fallbacks" (with their beta) at standard speed
+//   TRIGGER  the summaries' trigger follows the model's window (/v1/models' max_input_tokens, kept with the model):
+//            half of a million-token window, the API's default of 150,000 for a 200,000-token window and for a model
+//            whose list says none
 //   INVALID  a tool call whose input is not JSON gets an INVALID_JSON error result, runs nothing, and the turn goes on
 //   THROWN   an exception inside the plugin (fminus/Failure.h's seam): a tool that throws is its error result in words,
 //            the turn going on; a turn that throws ends in words, the chat free, and the next message is answered; an
@@ -876,7 +879,7 @@ PROBE(plugin, chat)
         const juce::Array<juce::var> editList = arr(edits);
         P.eq("request.compaction_edit",
              editList.size() == 1 && str(editList[0], "type") == "compact_20260112"
-                     && static_cast<int>(editList[0].getProperty("trigger", {}).getProperty("value", 0)) == 150000
+                     && static_cast<int>(editList[0].getProperty("trigger", {}).getProperty("value", 0)) == 500000
                      && !str(editList[0], "instructions").empty() ? 1 : 0, 1);
         P.eq("request.stream", static_cast<bool>(b0.getProperty("stream", false)) ? 1 : 0, 1);
         const juce::var thinking = b0.getProperty("thinking", {});
@@ -1083,6 +1086,44 @@ PROBE(plugin, chat)
 
         agent.setFast(false);
         agent.setModel("claude-opus-5-5");
+    }
+
+    // ---- TRIGGER: the summaries' trigger follows the model's window ----------------------------------------------------
+    {
+        const auto lastBody = [&] { return claude::parseJson(script->body(script->postCount() - 1)); };
+        const auto triggerOf = [&](const juce::var& body) {
+            const juce::Array<juce::var> edits = arr(body.getProperty("context_management", {}).getProperty("edits", {}));
+            return edits.size() == 1 ? static_cast<int>(edits[0].getProperty("trigger", {}).getProperty("value", 0)) : 0;
+        };
+        const std::string listed = script->models;
+        script->models = fake::modelsBody({ { "claude-opus-5-5", "Claude Opus 5.5", true, { "low", "medium", "high", "xhigh", "max" } },
+                                            { "claude-sonnet-5-5", "Claude Sonnet 5.5", true, { "low", "medium", "high", "xhigh" }, 128000, true, 200000 },
+                                            { "claude-fable-5-2", "Claude Fable 5.2", true, { "low", "medium", "high", "xhigh", "max" }, 128000, true, 0 } });
+        agent.setTransport(std::make_unique<fake::Transport>(script));   // the models are asked for again
+        int windowOpus = 0, windowFable = -1;
+        const auto send = [&](const std::string& model, const std::string& words) {
+            agent.setModel(model);
+            script->add(fake::Response::ok(fake::Sse().start(model).text("Fine.").end()));
+            agent.send(words);
+            agent.waitIdle();
+            return triggerOf(lastBody());
+        };
+        P.eq("trigger.million", static_cast<int64_t>(send("claude-opus-5-5", "on a million")), 500000);
+        for (const pg::ChatModel& m : agent.chatState().models)
+        {
+            windowOpus = m.id == "claude-opus-5-5" ? m.window : windowOpus;
+            windowFable = m.id == "claude-fable-5-2" ? m.window : windowFable;
+        }
+        P.eq("trigger.window_read", static_cast<int64_t>(windowOpus), 1000000);
+        P.eq("trigger.window_unsaid", static_cast<int64_t>(windowFable), 0);
+        P.eq("trigger.two_hundred", static_cast<int64_t>(send("claude-sonnet-5-5", "on two hundred")), 150000);
+        P.eq("trigger.unsaid", static_cast<int64_t>(send("claude-fable-5-2", "on one unsaid")), 150000);
+        script->models = listed;
+        agent.setTransport(std::make_unique<fake::Transport>(script));
+        agent.setModel("claude-opus-5-5");
+        script->add(fake::Response::ok(fake::Sse().start().text("Listed.").end()));
+        agent.send("back to the list");
+        agent.waitIdle();
     }
 
     // ---- INVALID -------------------------------------------------------------------------------------------------------

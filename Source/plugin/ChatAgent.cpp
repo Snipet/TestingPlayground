@@ -33,6 +33,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <utility>
@@ -67,7 +68,11 @@ namespace playground
         // goes back with the rest of the answer, and the API ignores what came before it. The history then starts at
         // the block (appendAnswer, repairHistory).
         constexpr const char* kCompactBeta = "compact-2026-01-12";
-        constexpr int kCompactTrigger = 150000;   // input tokens (the API's default; 50,000 at least)
+        // The trigger follows the model (compactTriggerFor): kCompactShare percent of what it reads, never under the
+        // API's default (kCompactFloor: also a model whose window /v1/models does not say), never above what leaves a
+        // reply its room in the window.
+        constexpr int kCompactFloor = 150000;      // input tokens (the API's default; 50,000 at least)
+        constexpr int kCompactShare = 50;          // percent of the model's window
         constexpr const char* kCompactInstructions =
             "Summarize the conversation so far between a user and Claude, who builds and changes FMinus DSP programs "
             "inside an audio plugin through tools (read_file, write_file, edit_file, run_program, set_dial, "
@@ -2334,6 +2339,20 @@ namespace playground
         return std::min(kMaxTokensCap, model != models_.end() ? model->maxTokens : kDefaultMaxTokens);
     }
 
+    // The input tokens at which a request to this model summarizes the conversation (mutex held): kCompactShare
+    // percent of its window, never under kCompactFloor and never above what leaves a reply its room (the window less
+    // maxTokensFor), unless that is under the floor itself: the API's default then, as for a model whose window is not
+    // said.
+    int ChatAgent::compactTriggerFor(const std::string& id) const
+    {
+        const auto model = std::find_if(models_.begin(), models_.end(), [&](const ChatModel& m) { return m.id == id; });
+        const int64_t window = model != models_.end() ? model->window : 0;
+        const int64_t share = window * kCompactShare / 100;
+        const int64_t room = window > 0 ? window - maxTokensFor(id) : 0;
+        const int64_t trigger = std::min(share, room);
+        return static_cast<int>(std::max<int64_t>(trigger, kCompactFloor));
+    }
+
     // What Claude is told of a file and remembered to have seen: a netlist's text without its drawing's *@ lines
     // (cir::stripLayout: they change nothing the program does), any other file's whole.
     static std::string seenText(const std::string& name, const std::string& text)
@@ -2940,7 +2959,7 @@ namespace playground
             juce::Array<juce::var> edits;
             edits.add(claude::object({ { "type", "compact_20260112" },
                                        { "trigger", claude::object({ { "type", "input_tokens" },
-                                                                     { "value", kCompactTrigger } }) },
+                                                                     { "value", compactTriggerFor(turnModel_) } }) },
                                        { "instructions", kCompactInstructions } }));
             o->setProperty("context_management", claude::object({ { "edits", edits } }));
             beta += std::string(beta.empty() ? "" : ",") + kCompactBeta;
@@ -3053,6 +3072,8 @@ namespace playground
                 cm.maxTokens = static_cast<int>(m.getProperty("max_tokens", kDefaultMaxTokens));
                 if (cm.maxTokens <= 0)
                     cm.maxTokens = kDefaultMaxTokens;
+                cm.window = static_cast<int>(std::clamp<juce::int64>(static_cast<juce::int64>(m.getProperty("max_input_tokens", 0)),
+                                                                     0, std::numeric_limits<int>::max()));
                 cm.compaction = static_cast<bool>(caps.getProperty("context_management", juce::var())
                                                       .getProperty("compact_20260112", juce::var())
                                                       .getProperty("supported", false));

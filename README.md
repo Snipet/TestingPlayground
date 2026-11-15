@@ -2165,9 +2165,10 @@ answer stays in front of you; one Claude Desktop opens is as if you had opened i
   a voice ends, clicks, NaNs, the CPU cost, at a tempo and, in the synth, with the wheels where it asks;
   `Source/dsp/Measure.h`), since it cannot hear it, and sets the dials. An answer may be as long as the model allows
   (128K tokens, its thinking included), a turn may take 80 requests, a dropped connection or an overloaded server is
-  asked again, and a long conversation is summarized by the API (compaction) when it nears 150K tokens, so it never
-  runs out of room. An answer cut off at its limit goes on by itself, Claude told why; a second one in a row ends the
-  turn (send "continue" to go on). At **Thinking: Max** (and XHigh) Claude thinks the longest, so a hard design is
+  asked again, and a long conversation is summarized by the API (compaction) when it fills half of what the model can
+  read (500K tokens on a model that reads a million; never sooner than 150K), so it never runs out of room. An answer
+  cut off at its limit goes on by itself, Claude told why; a second one in a row ends the turn (send "continue" to go
+  on). At **Thinking: Max** (and XHigh) Claude thinks the longest, so a hard design is
   more likely to reach the limit: **High** leaves it more room to write.
 - **Chats, kept on this Mac only**: a project has its own chats, as many as you like. Opening a project brings back
   its latest chat; opening another keeps this one with its project; saving your work as a project takes the chat along

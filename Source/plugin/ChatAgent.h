@@ -86,8 +86,12 @@
 // speed reads the conversation without the cache once: requests at different speeds share no cached prefix.
 //
 // Large work. A long conversation is compacted server-side (beta compact-2026-01-12, on the models that take it): once
-// a request's input passes kCompactTrigger tokens the API summarizes what came before (with instructions that keep
-// the sound's design and leave out code) and answers from the summary; the compaction block goes into the history, and
+// a request's input passes the trigger the API summarizes what came before (with instructions that keep the sound's
+// design and leave out code) and answers from the summary. The trigger follows the model (compactTriggerFor): half of
+// what it reads (/v1/models' max_input_tokens, ChatModel::window), never under the API's default of 150,000 tokens (a
+// model whose window the list does not say gets that), never above what leaves a reply its room in the window; so a
+// model that reads a million tokens summarizes at 500,000, not at 15 % of its room. The compaction block goes into the
+// history, and
 // what came before it is dropped: the history then starts at the block, in its assistant message, as the API's own
 // examples continue after one. (Not at the user message before it: in the middle of a turn that is the results of
 // tool calls the summary took away, which the API refuses.) A history from a session is repaired the same way when it
@@ -674,6 +678,7 @@ namespace playground
         void repairHistory();                                       // one the API takes (mutex held)
         void dropThinking();                                        // the history without thinking (mutex held)
         int maxTokensFor(const std::string& id) const;              // a request's max_tokens (mutex held)
+        int compactTriggerFor(const std::string& id) const;         // when its conversation is summarized (mutex held)
         static std::string promptPrint();                           // the system prompt's and tools' hash
         void markSeen(const std::string& name, const std::string& text);   // the chat's Claude knows this text (mutex
                                                                     // held; Claude Desktop's views mark nothing here)
