@@ -271,7 +271,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `poll()`. Never read a project's file in the host's program calls. `plugin.presets` and `gui.presets` check it all. `Source/plugin/ProjectExport` writes a project
   as a source .zip (`funk-playground-source`) or a .fmpack (a 20-byte header, then the project's JSON as xz through
   macOS's libcompression, zlib elsewhere; xz read on every platform: Apple's decoder on macOS, `plugin/XzDecode`'s
-  vendored XZ Embedded elsewhere, which `plugin.export` XZ holds to the fixtures and on macOS to Apple's), several
+  vendored XZ Embedded elsewhere, which `plugin.export` XZ holds to the fixtures and on macOS to Apple's; the factory
+  set's packages are zlib by the publisher's rule, and `FactoryStore`'s `unpack` refuses an xz one on every platform),
+  several
   projects as a bundle (`funk-playground-bundle`: a .zip of stored
   entries, `bundle.json` and each project's own export under its own name, unique case aside; `writeBundle`,
   `readAll`, which `importProjects` takes, the other kind's refused one by one), and reads them back; the same rule

@@ -1130,7 +1130,8 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
   samples' files in `samples/`, as they were added),
   and **Export package (.fmpack)**, everything in one compressed file for another playground (xz, by macOS's own
   Compression framework: a project of 30 versions, 33 KB of text, is a 1.3 KB package; the header is 20 bytes and the
-  rest a plain .xz stream; Windows and Linux write zlib, and every platform reads both). Every version goes, or the
+  rest a plain .xz stream; Windows and Linux write zlib, and every platform reads both. The factory projects the
+  plugin fetches are zlib by the publisher's rule, and an xz one among them is refused on every platform). Every version goes, or the
   newest only. With several projects chosen in PROJECTS
   (Cmd-click, Shift-click), **Export...** (or the context menu's **Export N projects...**) exports them all as one
   **bundle**: a .zip holding each project's own export, a .zip or a .fmpack as you choose, so unzipped by hand it is a
