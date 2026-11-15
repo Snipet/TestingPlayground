@@ -17,7 +17,10 @@
 //   gui.git.add.png           Add from Git
 //   gui.git.mark.png          the mark after the project's name in the explorer's PROJECTS and the top bar's pill
 //   gui.git.projects.png      ... and in PROJECTS' rows, with Git... among its buttons
-//   gui.git.settings.png      the Settings card's Projects page: its Git rows
+//   gui.git.settings.png      the Settings card's Projects page: its Git rows, a git found and remembered; and each
+//                             other state of the machine's record (plugin/GitRecord.h): .never (never looked for on
+//                             this computer), .chosen (chosen, never looked at), .chosen.found, .notgit (a chosen path
+//                             that is no git), .gone (a git found before that is no longer there; POSIX)
 //   gui.git.small.png         the least window, linked (graphite only), and gui.git.small.add.png
 // and checks:
 //   OPEN     PROJECTS' Git... opens it for the chosen project (none chosen: Add from Git), the pill's menu's Git... too;
@@ -34,6 +37,8 @@
 //   KEYS     Tab moves between the fields; the card's accessibility: the fields, the buttons, its ids its own
 //   NOGIT    a chosen git that is no git: the card says so, nothing else changes
 //   WHATSNEW What's new never opens over the card, nor the card over What's new; while it is up a click is its own
+//   SETTINGS the page's Git line in each state of the record, its words exact: never, chosen not looked at, chosen
+//            and found, found, a chosen path that is no git (an error), a remembered git that is gone (an error)
 //   ENDED    a job that has ended before the card first looks (the processor joins it inside startGit, probes only):
 //            a Check with a git that cannot run says so and is failed, a Check that works says its outcome, at once;
 //            neither keeps the doing line or Cancel
@@ -45,6 +50,8 @@
 #include "editor/ProjectBrowser.h"
 #include "editor/SettingsCard.h"
 #include "plugin/EditorPort.h"
+#include "plugin/FactoryStore.h"
+#include "plugin/FileReplace.h"
 #include "plugin/Git.h"
 #include "plugin/ProjectStore.h"
 #include "plugin/Processor.h"
@@ -508,14 +515,78 @@ PROBE(gui, git)
         host.keys("escape");
         host.settle();
 
-        // ---- SETTINGS: the Projects page's Git rows -----------------------------------------------------------------------
-        panel.openSettings("projects");
-        host.settle();
-        port.startGit({ pg::GitOp::find, {}, {}, {} }, why);
-        pump(processor, host, [&] { return !port.gitState().busy; });
-        writePng(P, host, "gui.git.settings" + sfx + ".png");
-        panel.settingsCard().close();
-        host.settle();
+        // ---- SETTINGS: the Projects page's Git rows, each state of the machine's record (plugin/GitRecord.h), in a shared
+        // folder of this theme's own ------------------------------------------------------------------------------------
+        {
+            const fs::path machine = root / ("machine" + sfx);
+            pg::factorystore::setDirectoryForTests(juce::File(juce::String::fromUTF8(pg::files::utf8Of(machine).c_str())));
+            const auto lineNow = [&] {
+                for (const pg::ui::SettingsCard::Line& l : panel.settingsCard().places(W, H).lines)
+                    if (l.kind == pg::ui::SettingsCard::Line::Kind::value || l.kind == pg::ui::SettingsCard::Line::Kind::error)
+                        if (has(l.text, "git") || has(l.text, "Not looked") || has(l.text, "chosen") || has(l.text, "Looking"))
+                            return l;
+                return pg::ui::SettingsCard::Line{};
+            };
+            const auto lookNow = [&] {
+                port.startGit({ pg::GitOp::find, {}, {}, {} }, why);
+                pump(processor, host, [&] { return !port.gitState().busy; });
+                host.settle();
+            };
+            const std::string gitExe = found.path;
+            panel.openSettings("projects");
+            host.settle();
+            pg::ui::SettingsCard::Line l = lineNow();
+            std::printf("settings: never \"%s\"\n", l.text.c_str());
+            P.eq(row + "settings.never", has(l.text, std::string("Not looked for on ") + pg::kThisMachine + " yet") ? 1 : 0, 1);
+            writePng(P, host, "gui.git.settings.never" + sfx + ".png");
+            port.setGitChosen(gitExe, why);
+            host.settle();
+            l = lineNow();
+            std::printf("settings: chosen \"%s\"\n", l.text.c_str());
+            P.eq(row + "settings.chosen_not_looked", l.text == gitExe + " (chosen, not looked at yet)" ? 1 : 0, 1);
+            writePng(P, host, "gui.git.settings.chosen" + sfx + ".png");
+            lookNow();
+            l = lineNow();
+            std::printf("settings: chosen, found \"%s\"\n", l.text.c_str());
+            P.eq(row + "settings.chosen_found", l.text == "git " + found.version + " at " + gitExe + " (chosen)" ? 1 : 0, 1);
+            writePng(P, host, "gui.git.settings.chosen.found" + sfx + ".png");
+            port.setGitChosen({}, why);
+            lookNow();
+            l = lineNow();
+            std::printf("settings: found \"%s\"\n", l.text.c_str());
+            P.eq(row + "settings.found", l.text == "git " + found.version + " at " + found.path
+                                             && l.kind == pg::ui::SettingsCard::Line::Kind::value ? 1 : 0, 1);
+            writePng(P, host, "gui.git.settings" + sfx + ".png");
+            port.setGitChosen(notGit.string(), why);
+            lookNow();
+            l = lineNow();
+            std::printf("settings: no git \"%s\"\n", l.text.c_str());
+            P.eq(row + "settings.not_git", l.kind == pg::ui::SettingsCard::Line::Kind::error ? 1 : 0, 1);
+            writePng(P, host, "gui.git.settings.notgit" + sfx + ".png");
+            port.setGitChosen({}, why);
+#if !defined(_WIN32)
+            const fs::path goneGit = root / ("gone-git" + sfx);
+            writeFile(goneGit, "#!/bin/sh\nexec '" + found.path + "' \"$@\"\n");
+            fs::permissions(goneGit, fs::perms::owner_all, ec);
+            const std::string envGit = prefix + "GIT";
+            setenv(envGit.c_str(), pg::files::utf8Of(goneGit).c_str(), 1);
+            lookNow();
+            fs::remove(goneGit, ec);
+            lookNow();
+            l = lineNow();
+            std::printf("settings: gone \"%s\"\n", l.text.c_str());
+            P.eq(row + "settings.gone", l.kind == pg::ui::SettingsCard::Line::Kind::error && has(l.text, "is no longer there")
+                                            ? 1 : 0, 1);
+            writePng(P, host, "gui.git.settings.gone" + sfx + ".png");
+            setenv(envGit.c_str(), found.path.c_str(), 1);
+            lookNow();
+#else
+            probe::skip(P, row + "settings.gone", "the git that goes is a shell script (POSIX)");
+#endif
+            panel.settingsCard().close();
+            host.settle();
+            pg::factorystore::setDirectoryForTests({});
+        }
 
         // ---- The least window ---------------------------------------------------------------------------------------------
         if (theme == 0)

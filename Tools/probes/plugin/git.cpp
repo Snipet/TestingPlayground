@@ -64,8 +64,10 @@
 
 #include "fminus/Failure.h"
 
+#include "plugin/FactoryStore.h"
 #include "plugin/FileReplace.h"
 #include "plugin/Git.h"
+#include "plugin/GitRecord.h"
 #include "plugin/GitProjects.h"
 #include "plugin/Processor.h"
 #include "plugin/ProjectStore.h"
@@ -792,6 +794,178 @@ namespace
         }
         ps::setDirectoryForTests({});
     }
+
+    // The REMEMBER rows: the git chosen and found kept for this computer, both products (plugin/GitRecord.h), through
+    // Processors as a launch makes them. The shared folder (factorystore's, under CTest the probe's sandbox's) is one of
+    // this section's own; two projects folders stand for the two products.
+    void rememberedRows(funkgui::test::Probe& P, const fs::path& root, const pg::git::Found& found)
+    {
+        namespace ps = pg::projectstore;
+        namespace fst = pg::factorystore;
+        using pg::files::pathOf;
+        using pg::files::utf8Of;
+        std::error_code ec;
+        const funkgui::HeadlessGuiScope gui;
+        const auto dirOf = [](const fs::path& p) { return juce::File(juce::String::fromUTF8(utf8Of(p).c_str())); };
+        const fs::path shared = root / "machine", storeA = root / "remember-a", storeB = root / "remember-b";
+        fst::setDirectoryForTests(dirOf(shared));
+        ps::setDirectoryForTests(dirOf(storeA));
+        const std::string envGit = std::string(pg::product::kEnvPrefix) + "GIT";
+        // A look as Settings' Look for git makes it: the job run to its end.
+        const auto look = [&](pg::Processor& proc) {
+            pg::EditorPort& port = proc.editorPort();
+            std::string why;
+            port.startGit({ pg::GitOp::find, {}, {}, {} }, why);
+            const auto until = std::chrono::steady_clock::now() + probe::kWorkWait;
+            while (port.gitState().busy && std::chrono::steady_clock::now() < until)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                proc.poll();
+            }
+            proc.poll();
+            return port.gitState();
+        };
+        const auto linksHasGit = [&](const fs::path& store) {
+            return readFile(store / pathOf(ps::kLinksFile)).find("\"git\"") != std::string::npos;
+        };
+
+        // A new computer: nothing looked for, nothing chosen.
+        {
+            pg::Processor proc;
+            const pg::GitState st = proc.editorPort().gitState();
+            P.eq("remember.never", !st.looked && proc.editorPort().gitChosen().empty() ? 1 : 0, 1);
+        }
+#if !defined(_WIN32)
+        // A git that leaves a marker when it runs, chosen and looked at; then a new launch shows it with nothing run.
+        const fs::path marker = root / "remember-ran";
+        const fs::path marking = root / "remember-git";
+        writeFile(marking, "#!/bin/sh\ntouch '" + utf8Of(marker) + "'\nexec '" + found.path + "' \"$@\"\n");
+        fs::permissions(marking, fs::perms::owner_all, ec);
+        const std::string chosenGit = utf8Of(marking);
+#else
+        const std::string chosenGit = found.path;        // no shell script here: the git itself, chosen
+#endif
+        {
+            pg::Processor proc;
+            std::string why;
+            proc.editorPort().setGitChosen(chosenGit, why);
+            const pg::GitState st = look(proc);
+            std::printf("remember: looked \"%s\" at \"%s\"\n", st.gitVersion.c_str(), st.gitPath.c_str());
+            P.eq("remember.looked", st.looked && st.gitPath == chosenGit && st.gitVersion == found.version ? 1 : 0, 1);
+        }
+#if !defined(_WIN32)
+        fs::remove(marker, ec);
+#endif
+        {
+            pg::Processor proc;                          // a new launch: the same folders
+            pg::EditorPort& port = proc.editorPort();
+            (void)port.gitPolled();
+            const pg::GitState st = port.gitState();
+            P.eq("remember.relaunch_shown", st.looked && st.gitPath == chosenGit && st.gitVersion == found.version
+                                                && port.gitChosen() == chosenGit ? 1 : 0, 1);
+#if !defined(_WIN32)
+            P.eq("remember.relaunch_ran_nothing", there(marker) ? 0 : 1, 1);
+#else
+            probe::skip(P, "remember.relaunch_ran_nothing", "the marking git is a shell script (POSIX)");
+#endif
+        }
+        // The other product: its own projects folder, the same shared folder: the same git, chosen and found.
+        ps::setDirectoryForTests(dirOf(storeB));
+        {
+            pg::Processor proc;
+            const pg::GitState st = proc.editorPort().gitState();
+            P.eq("remember.other_product", st.gitPath == chosenGit && proc.editorPort().gitChosen() == chosenGit ? 1 : 0, 1);
+        }
+        P.eq("remember.one_record", there(shared / pathOf(pg::gitrecord::kFile)) && !linksHasGit(storeA) && !linksHasGit(storeB)
+                                        ? 1 : 0, 1);
+        // Use the one found: the choice forgotten, and what was found under it; the look after finds git itself.
+        {
+            pg::Processor proc;
+            std::string why;
+            proc.editorPort().setGitChosen({}, why);
+            const pg::GitState forgot = proc.editorPort().gitState();
+            P.eq("remember.forget_choice", proc.editorPort().gitChosen().empty() && !forgot.looked ? 1 : 0, 1);
+            const pg::GitState st = look(proc);
+            P.eq("remember.forget_then_found", st.gitPath == found.path && st.gitWhy.empty() ? 1 : 0, 1);
+        }
+        // A chosen path that is no git: said, and remembered as said.
+        const fs::path text = root / "remember-not-git.txt";
+        writeFile(text, "not git\n");
+        {
+            pg::Processor proc;
+            std::string why;
+            proc.editorPort().setGitChosen(utf8Of(text), why);
+            const pg::GitState st = look(proc);
+            std::printf("remember: no git \"%s\"\n", st.gitWhy.c_str());
+            P.eq("remember.not_git", st.looked && st.gitPath.empty() && !st.gitWhy.empty() ? 1 : 0, 1);
+        }
+        {
+            pg::Processor proc;
+            const pg::GitState st = proc.editorPort().gitState();
+            P.eq("remember.not_git_kept", st.looked && st.gitPath.empty() && !st.gitWhy.empty()
+                                              && proc.editorPort().gitChosen() == utf8Of(text) ? 1 : 0, 1);
+            std::string why;
+            proc.editorPort().setGitChosen({}, why);
+        }
+#if !defined(_WIN32)
+        // A git found before (no choice) that is gone: the next job says so, the record follows, a new launch shows it.
+        const fs::path wrapper = root / "remember-gone-git";
+        writeFile(wrapper, "#!/bin/sh\nexec '" + found.path + "' \"$@\"\n");
+        fs::permissions(wrapper, fs::perms::owner_all, ec);
+        setenv(envGit.c_str(), utf8Of(wrapper).c_str(), 1);
+        {
+            pg::Processor proc;
+            const pg::GitState st = look(proc);
+            P.eq("remember.gone_found_first", st.gitPath == utf8Of(wrapper) ? 1 : 0, 1);
+        }
+        fs::remove(wrapper, ec);
+        {
+            pg::Processor proc;
+            const pg::GitState before = proc.editorPort().gitState();
+            P.eq("remember.gone_shown_until_needed", before.gitPath == utf8Of(wrapper) ? 1 : 0, 1);
+            const pg::GitState st = look(proc);
+            std::printf("remember: gone \"%s\"\n", st.words.c_str());
+            P.eq("remember.gone_said", !st.ok && st.words.find("is no longer there") != std::string::npos
+                                           && st.words.find(utf8Of(wrapper)) != std::string::npos ? 1 : 0, 1);
+        }
+        {
+            pg::Processor proc;
+            const pg::GitState st = proc.editorPort().gitState();
+            P.eq("remember.gone_kept", st.looked && st.gitPath.empty() && st.gitWhy.find("is no longer there") != std::string::npos
+                                           ? 1 : 0, 1);
+        }
+        setenv(envGit.c_str(), found.path.c_str(), 1);
+#else
+        for (const char* r : { "remember.gone_found_first", "remember.gone_shown_until_needed", "remember.gone_said", "remember.gone_kept" })
+            probe::skip(P, r, "the git that goes is a shell script (POSIX)");
+#endif
+
+        // The old field: an older build's "git" in a product's links file, taken over once, then dropped.
+        const fs::path shared2 = root / "machine-2", storeC = root / "remember-c", storeD = root / "remember-d";
+        fst::setDirectoryForTests(dirOf(shared2));
+        const auto oldLinks = [&](const fs::path& store, const std::string& git) {
+            writeFile(store / pathOf(ps::kLinksFile),
+                      "{\"format\": \"funk-playground-git-links\", \"version\": 1, \"git\": \"" + git + "\", \"links\": []}\n");
+        };
+        oldLinks(storeC, found.path);
+        ps::setDirectoryForTests(dirOf(storeC));
+        {
+            pg::Processor proc;
+            P.eq("remember.takeover_read", proc.editorPort().gitChosen() == found.path ? 1 : 0, 1);
+            const pg::GitState st = look(proc);
+            const std::string rec = readFile(shared2 / pathOf(pg::gitrecord::kFile));
+            P.eq("remember.takeover_written", st.gitPath == found.path && rec.find("\"chosen\"") != std::string::npos ? 1 : 0, 1);
+            P.eq("remember.takeover_dropped", linksHasGit(storeC) ? 0 : 1, 1);
+        }
+        oldLinks(storeD, utf8Of(text));
+        ps::setDirectoryForTests(dirOf(storeD));
+        {
+            pg::Processor proc;
+            P.eq("remember.takeover_once", proc.editorPort().gitChosen() == found.path && !linksHasGit(storeD) ? 1 : 0, 1);
+        }
+        ps::setDirectoryForTests({});
+        fst::setDirectoryForTests({});
+    }
 }
 
 PROBE(plugin, git)
@@ -1239,5 +1413,6 @@ PROBE(plugin, git)
     // ---- Package 05: TREE, LINKS, CONNECT, PUSH, CLONE, PULL, JOB ---------------------------------------------------------
     projectRows(P, root, found);
     jobRows(P, root, found);
+    rememberedRows(P, root, found);
     return P.finish();
 }
