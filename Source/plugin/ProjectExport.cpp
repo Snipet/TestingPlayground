@@ -3,6 +3,7 @@
 
 #include "Product.h"
 #include "plugin/EditorPort.h"
+#include "plugin/XzDecode.h"
 
 #include "fminus/Failure.h"
 
@@ -219,6 +220,7 @@ namespace playground::projectexport
             }
             case Method::xz:
 #if defined(__APPLE__)
+                // Apple's decoder, as its encoder wrote it (plugin.export holds XzDecode to the same bytes).
                 out.assign(rawSize, '\0');
                 if (rawSize > 0
                     && compression_decode_buffer(reinterpret_cast<uint8_t*>(out.data()), rawSize, data, size, nullptr, COMPRESSION_LZMA)
@@ -226,8 +228,11 @@ namespace playground::projectexport
                     out.clear();
                 break;
 #else
-                fail(why, "it is compressed with xz, which this build does not read");
-                return std::nullopt;
+                // XZ Embedded (plugin/XzDecode.h), into a buffer of exactly the header's size.
+                out.assign(rawSize, '\0');
+                if (!xzdecode::decode(data, size, reinterpret_cast<uint8_t*>(out.data()), rawSize, why))
+                    return std::nullopt;
+                break;
 #endif
         }
         if (out.size() != rawSize)
