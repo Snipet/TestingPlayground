@@ -24,7 +24,7 @@
 #   OBJC_PREFIX  FunkGui's Objective-C class-name root: unique per product, since a host loads both into one process
 set(PRODUCT_NAME        "TestingPlaygroundSynth")
 set(PRODUCT_KIND        "instrument")
-set(PRODUCT_VERSION     "0.1.0")
+set(PRODUCT_VERSION     "0.2.0")
 set(PRODUCT_COMPANY     "Funk")
 set(PRODUCT_MFR_CODE    "Funk")
 set(PRODUCT_CODE        "Tsyn")
