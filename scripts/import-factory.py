@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-The factory projects' import: each chosen project's latest version, renamed, into this repository's factory folders,
-which CMakeLists.txt compiles into the plugin, read-only (Source/plugin/Factory.h; README.md, "Factory projects").
+The factory projects' import: each chosen project's latest version, renamed, into a staging folder of your own, in the
+shape the website's publisher reads and the plugin's store checks (Source/plugin/Factory.h; README.md, "Factory
+projects"). The plugin holds no factory projects: they come from the website, and the staging folder never goes into
+this repository.
 
-  scripts/import-factory.py --source <projects folder> --names <map.tsv> [--dry-run] [--author <name>]
+  scripts/import-factory.py --source <projects folder> --names <map.tsv> --factory <staging folder> [--dry-run]
+                            [--author <name>]
 
 --source  a folder of projects (<name>.fmproject files, as the plugin saves them), or one whose subfolders are the
           products' (<ProductName>/<name>.fmproject: ~/Library/Audio/Presets/<Company>/ holds them so). A row's
@@ -13,13 +16,14 @@ which CMakeLists.txt compiles into the plugin, read-only (Source/plugin/Factory.
           if wanted, category: the factory project's (PROJECTS shows it; its own when the column is empty or missing).
           Blank lines, lines that start with # and a first row naming the columns are skipped. The map is the user's:
           keep it out of the repository (give it by its path).
+--factory the staging folder to write into (required: there is no default, and none in the repository). Check it
+          with the probe plugin.factory (README.md, "Factory projects": <ENV_PREFIX>FACTORY_STAGING names it).
 --dry-run says what it would write and remove, and writes nothing. Either way it prints each project's bytes and its
-          largest text (each text is one string literal in the plugin's source: over 64 KB it still compiles).
+          largest text.
 --author  sets every project's author ("" leaves it empty); by default each keeps its own.
---factory the folder to write into (default: this repository's factory/), and --products where the products' files
-          are (default: this repository's products/): the probes use them.
+--products where the products' files are (default: this repository's products/): the probes use it.
 
-What it writes, for each product the map names (the others are left as they are): factory/<key>/<to>/, a folder a
+What it writes, for each product the map names (the others are left as they are): <factory>/<key>/<to>/, a folder a
 project: project.json (a project file's JSON, as the plugin writes one, of one version, its files' texts left out)
 and each of that version's files beside it, by its name, as its text. Of a project it keeps its latest version only
 (numbered 1, its note "factory version"): its files, the tab shown, its dials (with their values' names) and its
@@ -28,7 +32,7 @@ category, when it has one); and its info (description, author, category, tags, g
 own). Nothing else of the file comes: its older versions, its MIDI learn mappings (the user's controller's), and any
 field this script does not know.
 
-Re-runnable: factory/<key>/imported.txt lists what its last run wrote there, and a run removes those folders before
+Re-runnable: <factory>/<key>/imported.txt lists what its last run wrote there, and a run removes those folders before
 it writes the map's, so it replaces what it wrote and nothing else. A folder of a name the map gives that no import
 wrote (one made by hand) stops it.
 
@@ -64,7 +68,7 @@ MAX_NAME = 40          # ProjectStore.h's kMaxName
 MAX_FILE_NAME = 24     # Sources.h's kMaxNameLength
 NOTE = "factory version"
 MAX_CATEGORY = 24     # ProjectStore.h's kMaxTag: a category's length
-LITERAL_LIMIT = 65536  # a string literal's length a compiler must take: longer ones compile (FactoryProjects.h)
+LITERAL_LIMIT = 65536  # a text this long is said (no limit: the website serves each text as it is)
 
 # What is private (refused): a path on someone's machine, an email address, a key or a token.
 PRIVATE = [
@@ -347,7 +351,8 @@ def main() -> int:
     ap.add_argument("--names", required=True, type=Path, help="the name map: product, from, to (a TSV)")
     ap.add_argument("--dry-run", action="store_true", help="say what it would do, write nothing")
     ap.add_argument("--author", default=None, help="every project's author (\"\" for none)")
-    ap.add_argument("--factory", type=Path, default=PROJECT_ROOT / "factory", help=argparse.SUPPRESS)
+    ap.add_argument("--factory", required=True, type=Path,
+                    help="the staging folder to write into (<factory>/<key>/<name>/); never the repository")
     ap.add_argument("--products", type=Path, default=PROJECT_ROOT / "products", help=argparse.SUPPRESS)
     args = ap.parse_args()
 
@@ -402,7 +407,7 @@ def main() -> int:
             for to, _, _ in plan[key]:
                 target = folder / to
                 if target.exists() and to.lower() not in ours:
-                    errors.append(f"factory/{key}/{to} is there and no import wrote it: rename one of them")
+                    errors.append(f"{target} is there and no import wrote it: rename one of them")
         if errors:
             raise Refusal("\n".join(errors))
     except Refusal as e:

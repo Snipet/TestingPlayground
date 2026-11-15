@@ -14,6 +14,11 @@
 // the name, the description or a tag (case aside), and the tag one of the project's; a group then left with none is
 // left out. A group's key (keyOf: "favourites", "factory", "uncategorised", "category:<its name in lower case>") is
 // what the view keeps of a group folded. Plain C++, no JUCE.
+//
+// While no factory set is in use (EditorPort::factoryNote), FACTORY is kept with no project in it and one row that is
+// no project (Group::note; noteRow's words): never chosen, starred, dragged, counted, opened, exported or given a menu,
+// and left out while a search or a tag filters (it is no result). Where the store's state calls for one, the row is an
+// action (Get them, Try again: pressNote), else text alone.
 #pragma once
 
 #include "plugin/EditorPort.h"
@@ -45,6 +50,7 @@ namespace playground::ui::projectgroups
         std::vector<int> members;                        // the projects shown, as indexes into the list given, in order
         int total = 0;                                   // the group's projects before the filter
         bool folded = false;
+        bool note = false;                               // FACTORY with no set: no project, the note's row instead
     };
 
     struct Options
@@ -56,11 +62,25 @@ namespace playground::ui::projectgroups
         ProjectOrder order = ProjectOrder::name;
         bool reversed = false;
         bool factoryGroup = true;                        // false: a factory project only among the favourites
+        bool factoryNote = false;                        // no set in use: FACTORY kept, its note in place of projects
     };
 
     bool starred(const std::vector<std::string>* favourites, std::string_view name);
     bool matches(const ProjectEntry& e, std::string_view search, std::string_view tag);
     std::vector<Group> arrange(const std::vector<ProjectEntry>& projects, const Options& options);
+
+    // The FACTORY group's row while no set is in use: what it says, and its action ("": text alone), and both in one
+    // line for a screen reader and the status line.
+    struct NoteRow
+    {
+        std::string text;                                // "The factory projects are not on this Mac."
+        std::string action;                              // "Get them", "Try again", or ""
+        std::string spoken;                              // the two together
+    };
+    NoteRow noteRow(const FactoryNote& note);
+    // The row's action, pressed (the message thread: it only tells the store): Get them, a yes; Try again, a fetch now.
+    // What it did, for the status line ("" nothing).
+    std::string pressNote(EditorPort& port, const FactoryNote& note);
 
     // The tags of the projects given (case aside, each once with how many have it), by name; and the user's projects'
     // categories, each once (spelt as its group's title), by name.

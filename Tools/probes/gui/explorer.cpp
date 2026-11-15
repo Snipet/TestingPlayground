@@ -52,6 +52,7 @@
 //             away again; at the default size it shows
 //   SCROLL    at the least size (the chat folded) the list is taller than its card: the wheel scrolls it
 //   CIRCUIT   a netlist's rows (a .cir tab's, the library's) carry the circuit's icon, the program's its own
+#include "FactorySet.h"
 #include "Probe.h"
 
 #include "editor/Explorer.h"
@@ -192,6 +193,7 @@ namespace
 
 PROBE(gui, explorer)
 {
+    probe::useFactorySet();                          // the made-up factory set (a plugin has none until fetched)
     const funkgui::HeadlessGuiScope gui;
     funkgui::UiPreferences::get().setBackend(funkgui::UiPreferences::memoryBackend());   // never the user's file
     funkgui::UiPreferences::get().setTheme(0);

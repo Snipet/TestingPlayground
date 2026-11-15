@@ -145,6 +145,7 @@
 //             callback), each measured once the editor's own check while typing has landed (a change of its own); in
 //             DISPLAYS a frame while the audio plays, and once it stops the displays settle and ask for none; in
 //             PROJECTS the frame the status's notice runs out in
+#include "FactorySet.h"
 #include "Probe.h"
 
 #include "editor/CodeAssist.h"
@@ -393,6 +394,7 @@ namespace
 
 PROBE(gui, dump)
 {
+    probe::useFactorySet();                          // the made-up factory set (a plugin has none until fetched)
     const funkgui::HeadlessGuiScope gui;
     funkgui::UiPreferences::get().setBackend(funkgui::UiPreferences::memoryBackend());   // never the user's file
     pg::Processor processor;

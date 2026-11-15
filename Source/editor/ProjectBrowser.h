@@ -184,11 +184,14 @@ namespace playground::ui
         std::string copyName(const std::string& factory) const;
 
         // For probes. The projects (this Mac's, then the factory's), and the rows of the projects' list: a group's
-        // header (its project -1) or a project of it.
+        // header (its project -1), a project of it, or, in FACTORY while no set is in use, a line of its note (kNoteText,
+        // `line` its line) and its action (kNoteAction: Get them, Try again), which are no project.
+        static constexpr int kNoteText = -2, kNoteAction = -3;
         struct Row
         {
             int group = -1;                              // in groups()
-            int project = -1;                            // in projectList(); -1: the group's header
+            int project = -1;                            // in projectList(); -1: the group's header; kNote*: the note
+            int line = 0;                                // a note's line
         };
         const std::vector<ProjectEntry>& projectList() const noexcept { return projects_; }
         const std::vector<projectgroups::Group>& groups() const noexcept { return groups_; }
@@ -196,6 +199,9 @@ namespace playground::ui
         const ProjectEntry* rowProject(int row) const;   // none for a header
         int rowOf(const std::string& project, bool inFavourites = false) const;   // its row (-1: not shown)
         int headerOf(const std::string& key) const;      // a group's header row (-1: none)
+        int noteRowOf(bool action) const;                // the note's first line, or its action (-1: none shown)
+        const FactoryNote& note() const noexcept { return note_; }
+        bool noteFocused() const noexcept { return noteFocused_; }   // the keys reached its action (Return presses it)
         const std::vector<VersionEntry>& versionList() const noexcept { return versions_; }
         const std::vector<PresetEntry>& presetList() const noexcept { return presets_; }
         int chosen(List l) const noexcept;               // the projects': the chosen project's row (-1: none shown)
@@ -262,6 +268,7 @@ namespace playground::ui
         std::string homeName() const;                    // the field for the program open: its project's (copy's), else its title
         std::string fieldFor(const std::string& project) const;   // the field when `project` is chosen
         bool factoryChosen() const;                      // the chosen project is a factory one
+        void pressNote();                                // the note's action (Get them, Try again)
         void readChosen();                               // the chosen project's versions and presets
         void chooseProject(int row, int rowsShown);      // a project's row: it alone chosen
         void choose(List l, int i, int rowsShown, int step = 1);   // a header skipped in the step's direction
@@ -277,6 +284,9 @@ namespace playground::ui
         std::vector<ProjectEntry> projects_;
         std::vector<projectgroups::Group> groups_;
         std::vector<Row> rows_;
+        FactoryNote note_;                               // EditorPort::factoryNote as last read (poll())
+        std::vector<std::string> noteLines_;             // its text, wrapped to the projects' list
+        bool noteFocused_ = false;                       // Up and Down reached its action (no project chosen)
         ProjectsView view_;                              // as the port had it, and as it changed since
         ProjectsView kept_;                              // as it last read or wrote it (what changed since: view_'s)
         std::vector<std::string> filterFolded_;          // the groups folded while a filter is on

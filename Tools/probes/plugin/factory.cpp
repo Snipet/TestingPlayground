@@ -1,12 +1,16 @@
 // PROBE name=plugin.factory timeout=300
 //
-// plugin.factory: the factory projects (plugin/Factory.h: factory/<key>/ compiled in, read-only) of this product, and
-// the import that writes them (scripts/import-factory.py), in folders of the probe's own:
-//   LIST     every one compiled in reads (no problem), at least one; each named "Factory: <its own name>" (its own a
-//            name the store keeps), one version whose files are names a tab may have, the program first; the port's
-//            factoryProjects() lists them read-only (one version, their presets counted, their info's category, tags
-//            and description, which PROJECTS groups and searches by), projects() none of them;
-//            what was compiled in is counted (bytes, printed)
+// plugin.factory: the factory projects (plugin/Factory.h: none in the binary; a set the store fetched, here the probes'
+// made-up one, Tools/probes/fixtures/factory-set/<key>/, published through the FP_PROBES seam) of this product, and the
+// import that writes a staging folder (scripts/import-factory.py), in folders of the probe's own:
+//   LIST     with no set, none (current() empty, factoryProjects() none); every one of the made-up set reads (no
+//            problem), at least one; each named "Factory: <its own name>" (its own a name the store keeps), one version
+//            whose files are names a tab may have, the program first; the port's factoryProjects() lists them read-only
+//            (one version, their presets counted, their info's category, tags and description, which PROJECTS groups
+//            and searches by), projects() none of them
+//   STAGING  a staging folder of the owner's (<ENV_PREFIX>FACTORY_STAGING: the import's --factory folder, its <key>/
+//            read): every project reads, holds nothing private, and passes RENDER and PRESETS as the made-up set does
+//            (rows staging.*); skipped, saying so, when the variable is not set
 //   PRIVATE  no string of one (its name, its files' names and texts, its version's note, every dial's and preset's
 //            name and label, its circuits' keys and answers, every field of its info) holds what the import refuses: a
 //            path on someone's machine, an email address, a key or a token (the import's own shapes, line by line:
@@ -27,7 +31,9 @@
 //            project open; the factory one is as it was. Saved again from the factory one: "<name> 2", the first copy
 //            untouched (a user project of the same name stays the user's). A new name typed while a factory project
 //            is open: a copy under it. A name of the user's: a version of that project, no copy
-//   SESSION  the session keeps a factory project open by its name; one this build lacks loads as none
+//   SESSION  the session keeps a factory project open by its name; one the set lacks loads as none. With no set at all,
+//            a session naming one plays its program with no project named, a session saved meanwhile keeps the name,
+//            and the name comes back once a set that has it arrives (poll); not for one whose program was edited since
 //   EXPORT   an export of a factory project imports as a project of its own name (no colon)
 //   IMPORT   (python3 on the PATH) the import over made-up projects of two versions: the latest only (version 1, its
 //            files, tab and dials), presets' "from" 1 for the latest's and 0 for an older one's (and their category,
@@ -36,8 +42,9 @@
 //            untouched; the map's fourth column (a
 //            category) over the project's own, one the plugin would change refused; a project holding an email
 //            address, a path in /Users and a key is refused, nothing written, and so is one whose latest version plays
-//            samples; a map naming a hand-made folder refused;
+//            samples; a map naming a hand-made folder refused; no --factory refused (it has no default), nothing written;
 //            each project's largest text said (a dry run of one over 64 KB says so, and writes nothing)
+#include "FactorySet.h"
 #include "Probe.h"
 
 #include "Rig.h"
@@ -55,6 +62,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <map>
 #include <optional>
@@ -305,6 +313,24 @@ namespace
         return juce::var(root);
     }
 
+    // How many strings of these projects hold what the import refuses (each said).
+    int privateLeaks(const PrivateShapes& shapes, const std::vector<pg::projectstore::Project>& set)
+    {
+        int leaks = 0, strings = 0;
+        for (const pg::projectstore::Project& p : set)
+            for (const auto& [where, text] : stringsOf(p))
+            {
+                ++strings;
+                if (const std::string what = shapes.find(text); !what.empty())
+                {
+                    std::printf("  private in %s, %s: %s\n", p.name.c_str(), where.c_str(), what.c_str());
+                    ++leaks;
+                }
+            }
+        std::printf("%d strings looked at\n", strings);
+        return leaks;
+    }
+
     // Runs the import: its exit code (-1: it did not start), its output in `out`.
     int runImport(const juce::File& source, const juce::File& map, const juce::File& factory, std::string& out, bool dryRun = false)
     {
@@ -344,15 +370,22 @@ PROBE(plugin, factory)
     ps::setDirectoryForTests(dir.getChildFile("projects"));
 
     // ---- LIST ----------------------------------------------------------------------------------------------------------
-    for (const std::string& problem : fy::problems())
+    {
+        // A plugin holds none: with no set published, current() is empty, the port lists none.
+        pg::Processor none;
+        P.eq("list.none_built_in", fy::current() != nullptr && fy::current()->projects.empty() && none.editorPort().factoryProjects().empty()
+                                       ? 1 : 0, 1);
+    }
+    std::vector<std::string> problems;
+    const fy::Snapshot made = probe::factorySet(&problems);   // the made-up set (Tools/probes/fixtures/factory-set/)
+    for (const std::string& problem : problems)
         std::printf("problem: %s\n", problem.c_str());
-    P.eq("list.no_problems", static_cast<int64_t>(fy::problems().size()), 0);
-    const fy::Snapshot builtIn = fy::current();         // no set fetched in this probe: the compiled-in one
-    P.eq("list.built_in", builtIn == fy::builtIn() && !builtIn->fetched ? 1 : 0, 1);
-    const std::vector<ps::Project>& all = builtIn->projects;
+    P.eq("list.no_problems", static_cast<int64_t>(problems.size()), 0);
+    fy::publishForTests(made);
+    P.eq("list.published", fy::current() == made ? 1 : 0, 1);
+    const std::vector<ps::Project>& all = made->projects;
     P.ge("list.count", static_cast<double>(all.size()), 1.0);
-    std::printf("%zu factory projects, %zu bytes compiled in\n", all.size(), fy::bytes());
-    P.ge("list.bytes", static_cast<double>(fy::bytes()), 1.0);
+    std::printf("%zu factory projects in the made-up set\n", all.size());
     int named = 0, oneVersion = 0, filesOk = 0;
     for (const ps::Project& p : all)
     {
@@ -391,19 +424,7 @@ PROBE(plugin, factory)
     // ---- PRIVATE -------------------------------------------------------------------------------------------------------
     {
         const PrivateShapes shapes;
-        int leaks = 0, strings = 0;
-        for (const ps::Project& p : all)
-            for (const auto& [where, text] : stringsOf(p))
-            {
-                ++strings;
-                if (const std::string what = shapes.find(text); !what.empty())
-                {
-                    std::printf("  private in %s, %s: %s\n", p.name.c_str(), where.c_str(), what.c_str());
-                    ++leaks;
-                }
-            }
-        std::printf("%d strings looked at\n", strings);
-        P.eq("private.none", leaks, 0);
+        P.eq("private.none", privateLeaks(shapes, all), 0);
         // Each shape on a sample made here (pieces joined, so no line of this file has one whole), and what is none.
         const std::string mixed = "aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bC2eF4hJ6kL8n";
         const std::vector<std::pair<std::string, std::string>> samples{
@@ -454,38 +475,62 @@ PROBE(plugin, factory)
         for (const int note : { 60, 64, 67 })
             chord.push_back({ static_cast<std::size_t>(kFs), pg::EventKind::noteOff, note, 0.0f });
     }
-    int index = 0;
-    for (const ps::Project& p : all)
-    {
-        const std::string key = "project" + std::to_string(++index);
-        std::printf("%s: %s\n", key.c_str(), p.name.c_str());
-        probe::Rig rig(kFs, 512);
-        std::string messages;
-        const bool ok = rig.load(p.latest().files, &messages);
-        if (!messages.empty())
-            std::printf("%s", messages.c_str());
-        P.eq(key + ".compiles", ok ? 1 : 0, 1);
-        if (!ok)
-            continue;
-        P.eq(key + ".dials_named", setByName(rig, p.latest().dials), 0);
-        const probe::Stereo out = rig.run(input, 256, chord);
-        P.eq(key + ".finite", probe::allFinite(out.l) && probe::allFinite(out.r) ? 1 : 0, 1);
-        const double peak = peakDb(out, static_cast<std::size_t>(kFs));
-        std::printf("  peak %.1f dBFS in the first second\n", peak);
-        P.ge(key + ".audible_db", peak, -60.0);
-        P.eq(key + ".no_alerts", static_cast<int64_t>(rig.engine().takeAlerts()), 0);
-        for (const ps::Preset& pr : p.presets)
+    // Every project of a set compiles and plays, its presets too: the made-up set's here, a staging folder's below.
+    const auto renderAll = [&](const std::vector<ps::Project>& set, const std::string& pre) {
+        int index = 0;
+        for (const ps::Project& p : set)
         {
-            const std::string pk = key + ".preset." + juce::String(pr.name).retainCharacters("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789").toLowerCase().toStdString();
-            probe::Rig r(kFs, 512);
-            if (!r.load(p.latest().files))
+            const std::string key = pre + "project" + std::to_string(++index);
+            std::printf("%s: %s\n", key.c_str(), p.name.c_str());
+            probe::Rig rig(kFs, 512);
+            std::string messages;
+            const bool ok = rig.load(p.latest().files, &messages);
+            if (!messages.empty())
+                std::printf("%s", messages.c_str());
+            P.eq(key + ".compiles", ok ? 1 : 0, 1);
+            if (!ok)
                 continue;
-            (void)setByName(r, p.latest().dials);
-            P.eq(pk + ".dials_named", setByName(r, pr.dials), 0);
-            const probe::Stereo o = r.run(kInstrument ? probe::Stereo(n / 4) : probe::noise(n / 4, 0.25), 256, chord);
-            P.eq(pk + ".finite", probe::allFinite(o.l) && probe::allFinite(o.r) ? 1 : 0, 1);
-            P.eq(pk + ".no_alerts", static_cast<int64_t>(r.engine().takeAlerts()), 0);
+            P.eq(key + ".dials_named", setByName(rig, p.latest().dials), 0);
+            const probe::Stereo out = rig.run(input, 256, chord);
+            P.eq(key + ".finite", probe::allFinite(out.l) && probe::allFinite(out.r) ? 1 : 0, 1);
+            const double peak = peakDb(out, static_cast<std::size_t>(kFs));
+            std::printf("  peak %.1f dBFS in the first second\n", peak);
+            P.ge(key + ".audible_db", peak, -60.0);
+            P.eq(key + ".no_alerts", static_cast<int64_t>(rig.engine().takeAlerts()), 0);
+            for (const ps::Preset& pr : p.presets)
+            {
+                const std::string pk = key + ".preset." + juce::String(pr.name).retainCharacters("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789").toLowerCase().toStdString();
+                probe::Rig r(kFs, 512);
+                if (!r.load(p.latest().files))
+                    continue;
+                (void)setByName(r, p.latest().dials);
+                P.eq(pk + ".dials_named", setByName(r, pr.dials), 0);
+                const probe::Stereo o = r.run(kInstrument ? probe::Stereo(n / 4) : probe::noise(n / 4, 0.25), 256, chord);
+                P.eq(pk + ".finite", probe::allFinite(o.l) && probe::allFinite(o.r) ? 1 : 0, 1);
+                P.eq(pk + ".no_alerts", static_cast<int64_t>(r.engine().takeAlerts()), 0);
+            }
         }
+    };
+    renderAll(all, "");
+
+    // ---- STAGING: a folder of the owner's, given from outside (<ENV_PREFIX>FACTORY_STAGING: the --factory folder
+    // scripts/import-factory.py wrote into, its <key>/ read), checked as the made-up set is: every project reads, holds
+    // nothing private, compiles and plays, its presets too. Not set: skipped, saying so.
+    if (const char* staging = std::getenv((std::string(pg::product::kEnvPrefix) + "FACTORY_STAGING").c_str());
+        staging == nullptr || *staging == '\0')
+        probe::skip(P, "staging", std::string(pg::product::kEnvPrefix) + "FACTORY_STAGING is not set: no staging folder to check");
+    else
+    {
+        const juce::File folder(juce::String::fromUTF8(staging));
+        std::vector<std::string> stagingProblems;
+        const fy::Snapshot staged = probe::factoryFolder(folder, &stagingProblems);
+        std::printf("staging: %s, %zu projects\n", folder.getChildFile(pg::product::kKey).getFullPathName().toRawUTF8(), staged->projects.size());
+        for (const std::string& problem : stagingProblems)
+            std::printf("problem: %s\n", problem.c_str());
+        P.eq("staging.found", folder.getChildFile(pg::product::kKey).isDirectory() ? 1 : 0, 1);
+        P.eq("staging.no_problems", static_cast<int64_t>(stagingProblems.size()), 0);
+        P.eq("staging.private_none", privateLeaks(PrivateShapes{}, staged->projects), 0);
+        renderAll(staged->projects, "staging.");
     }
     if (all.empty())
         return P.finish();
@@ -599,6 +644,39 @@ PROBE(plugin, factory)
         }
         else
             P.eq("session.unknown_none", 0, 1);
+
+        // With no set at all (none fetched yet): the session plays its program with no project named, keeps the name
+        // in a session saved meanwhile, and takes it once a set that has it arrives (the generation moves). One whose
+        // program was changed meanwhile, or that opened something else, does not.
+        fy::publishForTests(nullptr);
+        pg::Processor d;
+        d.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+        d.settle();
+        P.eq("session.no_set_plays", d.editorPort().project().name.empty() && d.editorPort().status().ok
+                                         && d.editorPort().running() == first.latest().files ? 1 : 0, 1);
+        juce::MemoryBlock again;
+        d.getStateInformation(again);
+        {
+            const std::unique_ptr<juce::XmlElement> x = juce::AudioProcessor::getXmlFromBinary(again.getData(), static_cast<int>(again.getSize()));
+            const juce::XmlElement* pr = x != nullptr ? x->getChildByName("PROGRAM") : nullptr;
+            P.eq("session.no_set_keeps_name", pr != nullptr && pr->getStringAttribute("project").toStdString() == fkey ? 1 : 0, 1);
+        }
+        pg::Processor e;                                 // the same session, its program edited before the set arrives
+        e.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+        e.settle();
+        pg::Draft edited = e.editorPort().draft();
+        if (!edited.files.empty())
+            edited.files.front().text += "\n// an edit\n";
+        e.editorPort().setDraft(edited);
+        d.poll();
+        P.eq("session.no_set_still_none", d.editorPort().project().name.empty() ? 1 : 0, 1);
+        fy::publishForTests(made);                       // the set arrives
+        d.poll();
+        e.poll();
+        P.eq("session.named_when_set_arrives", d.editorPort().project().name == fkey && d.editorPort().project().version == 1
+                                                   && !d.editorPort().project().edited ? 1 : 0, 1);
+        P.eq("session.files_kept", d.editorPort().draft().files == first.latest().files ? 1 : 0, 1);
+        P.eq("session.edited_not_named", e.editorPort().project().name.empty() ? 1 : 0, 1);
     }
 
     // ---- EXPORT --------------------------------------------------------------------------------------------------------
@@ -628,6 +706,19 @@ PROBE(plugin, factory)
         int code = runImport(src, map, fac, out);
         std::printf("import: %d\n%s", code, out.c_str());
         P.eq("import.runs", code, 0);
+        {
+            // No --factory: refused by its arguments (there is no default folder, in the repository or elsewhere).
+            const juce::File repo = juce::File(PROBE_SOURCE_DIR);
+            juce::ChildProcess q;
+            const bool started = q.start(juce::StringArray{ "python3", repo.getChildFile("scripts/import-factory.py").getFullPathName(),
+                                                            "--source", src.getFullPathName(), "--names", map.getFullPathName(),
+                                                            "--products", repo.getChildFile("products").getFullPathName() },
+                                         juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr);
+            const std::string said = started ? q.readAllProcessOutput().toStdString() : std::string();
+            const bool ended = started && q.waitForProcessToFinish(60000);
+            P.eq("import.factory_required", ended && q.getExitCode() != 0 && said.find("--factory") != std::string::npos
+                                                && !repo.getChildFile("factory").exists() ? 1 : 0, 1);
+        }
         P.eq("import.says_largest", out.find("; the largest text ") != std::string::npos ? 1 : 0, 1);
         juce::File product;
         for (const juce::File& f : fac.findChildFiles(juce::File::findDirectories, false))

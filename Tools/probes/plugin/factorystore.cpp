@@ -32,7 +32,8 @@
 //   CAP       a file larger than its entry says is read no further than a little past it, and refused
 //   REDIRECT  a redirect answer is refused and not followed
 //   CANCEL    destroying a store whose fetch is in flight returns promptly; cancel() ends one and leaves no failure
-//   SEAM      factory::current() is the compiled-in set with no store's set; a processor's store with a set on disk
+//   SEAM      factory::current() is an empty set with no store's set (the binary holds none); a processor's store with a
+//             set on disk
 //             publishes it (current(), the port's FACTORY list, ProjectStore's load, exists, presets, read-only);
 //             a set fetched later replaces it (the generation moves, a withdrawn project is no longer served); the
 //             last processor gone takes it back
@@ -632,7 +633,7 @@ PROBE(plugin, factorystore)
         s->editorOpened();
         (void)settle(*s);
         say("first", s->state());
-        P.eq("first.set", s->state().status == fsx::Status::ready && ownNames(s->set()) == namesOf(good1) && s->set()->fetched
+        P.eq("first.set", s->state().status == fsx::Status::ready && ownNames(s->set()) == namesOf(good1)
                               && s->set()->sequence == 1 ? 1 : 0, 1);
         P.eq("first.generation_moved", s->generation() > before && s->state().generation == s->generation() ? 1 : 0, 1);
         P.eq("first.requests", static_cast<int64_t>(site->requests().size()), static_cast<int64_t>(1 + good1.size()));
@@ -976,7 +977,7 @@ PROBE(plugin, factorystore)
     {
         const juce::File projects = base.getChildFile("projects");
         ps::setDirectoryForTests(projects);
-        P.eq("seam.built_in_without_a_set", fy::current() == fy::builtIn() && !fy::current()->fetched && fsx::process() == nullptr ? 1 : 0, 1);
+        P.eq("seam.empty_without_a_set", fy::current() != nullptr && fy::current()->projects.empty() && fsx::process() == nullptr ? 1 : 0, 1);
 
         // A set on disk, as an earlier session left it.
         const juce::File home = freshHome();
@@ -996,7 +997,7 @@ PROBE(plugin, factorystore)
             if (store != nullptr)
                 (void)settle(*store);
             const fy::Snapshot now = fy::current();
-            P.eq("seam.fetched_set_current", now != nullptr && now->fetched && ownNames(now) == namesOf(good1) && fy::generation() > g0
+            P.eq("seam.fetched_set_current", now != nullptr && store != nullptr && now == store->set() && ownNames(now) == namesOf(good1) && fy::generation() > g0
                                                  ? 1 : 0, 1);
             pg::EditorPort& port = a.editorPort();
             std::vector<std::string> listed;
@@ -1039,7 +1040,7 @@ PROBE(plugin, factorystore)
             P.eq("seam.projects_read_moves", port.projectsRead() >= fy::generation() ? 1 : 0, 1);
         }
         const uint64_t g2 = fy::generation();
-        P.eq("seam.last_processor_takes_it_back", fsx::process() == nullptr && fy::current() == fy::builtIn() && g2 > g0 ? 1 : 0, 1);
+        P.eq("seam.last_processor_takes_it_back", fsx::process() == nullptr && fy::current()->projects.empty() && g2 > g0 ? 1 : 0, 1);
         fsx::useConfigForTests(nullptr);
         ps::setDirectoryForTests(juce::File());
     }

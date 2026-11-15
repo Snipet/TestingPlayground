@@ -1,27 +1,29 @@
-// Source/plugin/Factory.h: the factory projects, which come with the plugin: its own sounds, each a project of one
-// version (the program's files and its dials) with its presets and its info, read-only.
+// Source/plugin/Factory.h: the factory projects, the plugin's own sounds as the website serves them, each a project of
+// one version (the program's files and its dials) with its presets and its info, read-only.
 //
-// In the source tree they are factory/<key>/<name>/ (the product's key: factory/synth/, factory/effect/), a folder a
-// project, named as the project is: project.json, a project file's JSON (ProjectStore.h) of one version whose files'
-// texts are left out, and each of those files beside it, by its name (program.fm, panel.gui, ...), so that a program
-// reads (and diffs) as the file it is. CMakeLists.txt compiles every one into the plugin (FactoryProjects.h, the
-// texts as they were when it was built); scripts/import-factory.py writes them from a projects folder.
+// The binary holds none (the website repository's docs/factory-projects.md, decision D4): the set is the one the
+// process's FactoryStore (plugin/FactoryStore.h) fetched, checked and kept on this computer, and none until it has one.
+// An empty set is a normal state: the FACTORY group then says why, in one row (the store's State).
+//
+// A set's projects come from the shape scripts/import-factory.py writes and the website's publisher reads: a folder a
+// project, named as the project is, holding project.json (a project file's JSON, ProjectStore.h, of one version whose
+// files' texts are left out) and each of those files beside it, by its name (program.fm, panel.gui, ...). fromParts
+// reads one from its parts (the store, from a downloaded package), fromFolder from such a folder (the probes, and the
+// probe plugin.factory, which compiles and plays every project of a folder given to it: README, "Factory projects").
 //
 // The store (ProjectStore.h) serves them by their factory name (EditorPort.h's factoryName: "Factory: Warm Pad"),
-// which no project on this Mac can have: load(), exists() and the presets read them, and every write refuses them (a
-// save makes the user's own copy instead: Processor::saveVersion). A user project of the same own name stays the
-// user's. The probe plugin.factory compiles and plays every one in both products, its presets too.
+// which no project on this computer can have: load(), exists() and the presets read them, and every write refuses them
+// (a save makes the user's own copy instead: Processor::saveVersion). A user project of the same own name stays the
+// user's.
 //
-// The set can change while the plugin runs: the website's (the website repository's docs/factory-projects.md, section
-// 6), which plugin/FactoryStore.h fetches, checks and keeps, takes the place of the compiled-in one once the process's
-// store has one. So the set is handed out as an immutable snapshot (current()) with a generation number that moves
-// with it, never as a reference that lives for the process: a caller holds the snapshot while it uses a project of it,
-// and a list made from one (the editor's FACTORY) is made again when generation() moves.
+// The set can change while the plugin runs (a set fetched, read from disk, replaced by a newer one). So it is handed
+// out as an immutable snapshot (current()) with a generation number that moves with it, never as a reference that
+// lives for the process: a caller holds the snapshot while it uses a project of it, and a list made from one (the
+// editor's FACTORY) is made again when generation() moves.
 #pragma once
 
 #include "plugin/ProjectStore.h"
 
-#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -36,43 +38,48 @@ namespace juce
 
 namespace playground::factory
 {
-    // A factory set: its projects, by name (case aside), each named factoryName(<its own name>), and what was left out
-    // of it with why (the compiled-in set's: a project that does not read). Immutable once made: a new set is a new
-    // Set, so a reader holding one never sees it change.
+    // A factory set: its projects, by name (case aside), each named factoryName(<its own name>). Immutable once made: a
+    // new set is a new Set, so a reader holding one never sees it change.
     struct Set
     {
         std::vector<projectstore::Project> projects;
-        std::vector<std::string> problems;
-        bool fetched = false;                            // from the website (FactoryStore.h), else compiled in
-        int64_t sequence = 0;                            // a fetched set's index's
+        int64_t sequence = 0;                            // its index's
         // The project of that name (its factory name or its own, case aside) in this set, or null.
         const projectstore::Project* find(std::string_view name) const;
     };
     using Snapshot = std::shared_ptr<const Set>;
 
-    // The factory set the plugin shows now: the set fetched from the website when the process's FactoryStore has one
-    // (FactoryStore.h), else the one compiled in. Any thread; it never waits on the store (a lock held for a pointer's
-    // copy). Hold the snapshot for as long as a project of it is used: a later call may give another one.
+    // The factory set the plugin shows now: the set the process's FactoryStore has (FactoryStore.h), else an empty
+    // one (never null). Any thread; it never waits on the store (a lock held for a pointer's copy). Hold the snapshot
+    // for as long as a project of it is used: a later call may give another one.
     Snapshot current();
     // A number that moves whenever current() would give another set (a set fetched, read from disk, or gone with the
     // last processor), so that a list made from it (the editor's FACTORY, PROJECTS) is made again when it moves.
     uint64_t generation();
-    // The set compiled in (read once, on first use, and kept for the process) and what it left out.
-    Snapshot builtIn();
-    const std::vector<std::string>& problems();
     // The factory project of that name in current(), or null: the pointer keeps its snapshot alive.
     std::shared_ptr<const projectstore::Project> find(std::string_view name);
-    std::size_t bytes();                                 // the texts compiled in: what each plugin binary grows by
+    // A set of these projects (each named factoryName(<own>), as fromParts names them), by name, case aside.
+    Snapshot setOf(std::vector<projectstore::Project> projects, int64_t sequence = 0);
 
     // The process's FactoryStore (alone) makes `set` the one current() gives, or with null takes back the one it made
-    // (`owner` says whose: one store's set is never taken back by another). Either moves generation().
+    // (`owner` says whose: one store's set is never taken back by another). Either moves generation(). This is the one
+    // way a set reaches current() in a plugin: through the store's checks, with the built-in keys.
     void publish(const void* owner, Snapshot set);
+
+#if defined(FP_PROBES)
+    // Probes only (the probe executables alone define FP_PROBES, cmake/Probes.cmake; a plugin has no such call): makes
+    // `set` the one current() gives, as a store's would be (Tools/probes/common/FactorySet.h: the made-up projects of
+    // Tools/probes/fixtures/factory-set/<key>/), or with null takes it back. Either moves generation(). A store that
+    // publishes later replaces it, and takes back only its own.
+    void publishForTests(Snapshot set);
+#endif
 
     // A factory project from its parts: its own name, its project.json and its version's files (name, text), as the
     // folder holds them. Nothing, with why, when it is not one: not a project of this plugin's kind, not one version,
-    // a file it names missing, a name ProjectStore would change. The compiled-in ones and the folder's below take it.
+    // a file it names missing, a name ProjectStore would change. The folder's below takes it.
     std::optional<projectstore::Project> fromParts(std::string_view own, const std::string& json, const Sources& files,
                                                    std::string* why = nullptr);
-    // A factory project's folder on disk, as scripts/import-factory.py writes it (probes).
+    // A factory project's folder on disk, as scripts/import-factory.py writes it (the probes; plugin.factory over a
+    // staging folder).
     std::optional<projectstore::Project> fromFolder(const juce::File& folder, std::string* why = nullptr);
 }
