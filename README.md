@@ -1181,7 +1181,11 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
   Connect or an Add that fails removes only the folder it made itself. The links are kept in `.git-links.json` in the
   projects folder; nothing about git goes into the project's file or its exports. What a pull brings is a program
   that plays when opened, as an imported project's: pull only from repositories you trust. Settings' **Projects** page
-  says which git runs (**Look for git**, **Choose git...**), and where the folders are. A host that keeps plugins in a
+  says which git runs (**Look for git**, **Choose git...**, **Use the one found**), and where the folders are. The git
+  chosen and what the last look found are remembered for this computer, the effect's and the synth's alike, in
+  `git.json` in the folder both share (beside the chat's key): every launch shows them at once, with no git run to show
+  them; each press that runs git looks again and brings them up to date, and a git found before that is no longer there
+  is said so the first time a press needs it. A host that keeps plugins in a
   sandbox may not let git start, read `~/.ssh` or reach the network: the card shows git's own words and the Standalone
   app can push and pull. An SSH key with a passphrase and no agent fails at once (add it to the agent, or use https
   with a credential helper). The history is the repository's: a version the project lets go (it keeps 100) stays a
@@ -1539,8 +1543,11 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
   theme (Graphite or Paper) and the zoom, as the top bar's button and the status bar's pill set them, for every editor
   on this Mac; the version. **Editor**: Format on Run, as the code's status line sets it. **Audio and MIDI** (the
   Standalone's alone: below). **Projects**: the projects folder, with **Show in Finder** (Explorer on Windows, the file
-  manager on Linux). **AI**: the chat's provider, model and key in words, and **Provider and key…**, which opens the
-  chat's key dialog. **Usage**: what the chat's requests used and cost, every product's on this Mac, from the usage
+  manager on Linux), and **Git**: the git that runs for Projects and git (above), as this computer remembers it ("git
+  2.43.0 at /usr/bin/git", "Not looked for on this computer yet", or why none was found), **Look for git**, **Choose
+  git...** and **Use the one found**, and the git working folders. **AI**: the chat's provider, model and key in words,
+  and **Provider and key…**, which opens the chat's key dialog. **Usage**: what the chat's requests used and cost, every
+  product's on this Mac, from the usage
   record (above, "The chat"): a range (Last 7 days, Last 30 days, Last 12 months, All time) and **Tokens** or **Cost**;
   a bar a day (a month a bar in the 12-month and all-time views), stacked by model, the most tokens at the bottom, the
   five largest a colour each (the product's own first) and the rest as Other, a legend over them; the pointer over a
