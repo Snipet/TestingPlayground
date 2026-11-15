@@ -345,7 +345,7 @@ PROBE(gui, factory)
             pg::Processor processor;
             pg::EditorPort& port = processor.editorPort();
             pg::ui::Panel panel(processor.ports(), port);
-            funkgui::HeadlessHost host(panel, 0, 2.0f);
+            funkgui::HeadlessHost host(panel, theme, 2.0f);
             host.setZoom({ 100, 125, 150, 200 }, 100);
             host.settle();
             const bool reached = tickUntil(host, [&] {
@@ -555,7 +555,7 @@ PROBE(gui, factory)
             shown.erase(std::unique(shown.begin(), shown.end()), shown.end());
             return shown == good2;
         }) ? 1 : 0, 1);
-        P.eq("update.withdrawn_not_chosen", b.chosenProject().empty() ? 1 : 0, 1);
+        P.eq("update.withdrawn_not_chosen", b.chosenProject().empty() && b.why().empty() ? 1 : 0, 1);
         writePng(P, host, "gui.factory.updated.png");
         host.keys("escape");
         host.settle();

@@ -197,8 +197,12 @@ namespace playground::ui
         selected_.erase(std::remove_if(selected_.begin(), selected_.end(), [&](const std::string& n) { return !listed(n); }), selected_.end());
         if (!chosenName_.empty() && !listed(chosenName_))
         {
+            // Gone (deleted, or a factory project the set withdrew): chosen no more, and what was said of it goes too;
+            // a confirmation asked for over it is withdrawn.
             chosenName_.clear();
             readChosen();
+            why_.clear();
+            ask_ = Ask::none;
         }
         anchor_ = std::min(anchor_, static_cast<int>(rows_.size()) - 1);
         // The list keeps its place, as far as its rows reach (a group folded, a filter: fewer).
