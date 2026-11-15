@@ -1133,8 +1133,9 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
   rest a plain .xz stream; Windows and Linux write zlib, and every platform reads both. The factory projects the
   plugin fetches are zlib by the publisher's rule, and an xz one among them is refused on every platform). Every
   version goes, or the newest only. With several projects chosen in PROJECTS (Cmd-click, Shift-click), **Export...**
-  (or the context menu's **Export N projects...**) exports them all as one **bundle**: a .zip holding each project's own export, a .zip or a .fmpack as you choose, so unzipped by hand it is a
-  folder of ordinary exports, each importable alone (256 projects and 2 GB of project files at most). The card shows
+  (or the context menu's **Export N projects...**) exports them all as one **bundle**: a .zip holding each project's own
+  export, a .zip or a .fmpack as you choose, so unzipped by hand it is a folder of ordinary exports, each importable
+  alone (256 projects and 2 GB of project files at most). The card shows
   how far it has come while it writes (the status line too: EXPORTING 3 OF 12), and **Cancel** stops it, leaving no
   file; closing the card lets it finish, the status line saying how it went. Every export, one project's too, is
   read and written on a thread of its own, so the editor never waits for a large project. **An export never replaces a
