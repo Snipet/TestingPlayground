@@ -95,6 +95,18 @@ namespace playground
             "request, word for word. Do not copy the programs' code: the plugin sends the current files after this "
             "summary, and read_file shows any of them. Plain prose and short lists.";
 
+        // The line that starts the message after a paused summary (runTurn): the user's message follows it again, or
+        // the work goes on from the summary; the files follow whole either way.
+        constexpr const char* kAfterSummaryOwn =
+            "(From the plugin: the conversation was summarized just now, before your answer. The user's last message "
+            "follows again as they sent it, then the plugin's state with every file whole, as it is now: you have them "
+            "in front of you, so do not read them again. Answer the message, carrying on from the summary.)";
+        constexpr const char* kAfterSummaryWork =
+            "(From the plugin: the conversation was summarized just now, in the middle of your work, so the results of "
+            "your last tool calls are in the summary alone. The plugin's state follows with every file whole, as it is "
+            "now: you have them in front of you, so do not read them again. Carry on from where the summary says the "
+            "work stood.)";
+
         const std::vector<std::string> kAllEfforts{ "low", "medium", "high", "xhigh", "max" };
 
         // Before /v1/models answers (or without a key): the current models, which all take adaptive thinking and
@@ -1708,6 +1720,16 @@ namespace playground
             content.add(text(context));
         if ((effort_ == "xhigh" || effort_ == "max") && provider_.kind == "anthropic")
             content.add(text(limitNote(maxTokensFor(model_))));
+        // The user's own part of it (its pictures, its words, the limit's note: not the results or the state), sent
+        // again after a summary that pauses before the answer. A message that joins one of the user's left last
+        // (addMessage) adds to it.
+        const bool joins = !messages_.isEmpty() && str(messages_[messages_.size() - 1], "role") == "user";
+        if (!(joins && ownLast_))
+            ownMessage_.clear();
+        for (const juce::var& b : content)
+            if (str(b, "type") != "tool_result" && !(context.size() > 0 && str(b, "type") == "text" && str(b, "text") == context))
+                ownMessage_.add(b);
+        ownLast_ = true;
         return content;
     }
 
@@ -1789,6 +1811,8 @@ namespace playground
                     break;
                 }
             juce::Array<juce::var> content = missingResults(answerText(qs, given));
+            ownLast_ = false;                      // an answer is a tool result: it cannot go again without its call
+            ownMessage_.clear();
             if (!context.empty())
                 content.add(text(context));
             if ((effort_ == "xhigh" || effort_ == "max") && provider_.kind == "anthropic")
@@ -1862,6 +1886,16 @@ namespace playground
             juce::Array<juce::var> all, results, rest;
             if (const auto* arr = before.getArray())
                 all = *arr;
+            // A state with every file whole (none marked unchanged) makes an earlier one in this message, never
+            // answered, needless: it goes (a chat kept after a summary paused, loaded again: its files went once).
+            const auto isState = [](const juce::var& b) {
+                return str(b, "type") == "text" && str(b, "text").rfind("<plugin_state>", 0) == 0;
+            };
+            const bool whole = std::any_of(content.begin(), content.end(), [&](const juce::var& b) {
+                return isState(b) && str(b, "text").find("unchanged=\"true\"") == std::string::npos;
+            });
+            if (whole)
+                all.removeIf(isState);
             all.addArray(content);
             for (const auto& b : all)
                 (str(b, "type") == "tool_result" ? results : rest).add(b);
@@ -1910,6 +1944,8 @@ namespace playground
     void ChatAgent::clearChat()
     {
         compactRaised_ = 0;
+        ownLast_ = false;
+        ownMessage_.clear();
         messages_.clear();
         entries_.clear();
         ++conversation_;
@@ -2109,6 +2145,8 @@ namespace playground
         historyWeb_ = static_cast<bool>(v.getProperty("web", false));
         compactRaised_ = static_cast<int>(std::clamp<juce::int64>(static_cast<juce::int64>(v.getProperty("compact", 0)), 0,
                                                                   std::numeric_limits<int>::max()));
+        ownLast_ = false;
+        ownMessage_.clear();
         cutNoted_ = false;
         picturesNoted_ = false;
         checks_.clear();
@@ -2211,6 +2249,7 @@ namespace playground
     void ChatAgent::appendAnswer(const juce::Array<juce::var>& content)
     {
         messages_.add(claude::object({ { "role", "assistant" }, { "content", content } }));
+        ownLast_ = false;                          // the user's message is answered (or summarized: runTurn keeps it)
         const bool compacted = std::any_of(content.begin(), content.end(), summarized);
         if (!compacted)
             return;
@@ -3007,12 +3046,15 @@ namespace playground
             o->setProperty("fallbacks", "default");
             beta = kFallbackBeta;
         }
-        if (model != models_.end() && model->compaction)
+        if (model != models_.end() && model->compaction && !turnNoCompact_)
         {
+            // Paused after the summary: the plugin then sends the files and the user's message before Claude goes on
+            // (runTurn, "A summary paused").
             juce::Array<juce::var> edits;
             edits.add(claude::object({ { "type", "compact_20260112" },
                                        { "trigger", claude::object({ { "type", "input_tokens" },
                                                                      { "value", compactTriggerFor(turnModel_) } }) },
+                                       { "pause_after_compaction", true },
                                        { "instructions", kCompactInstructions } }));
             o->setProperty("context_management", claude::object({ { "edits", edits } }));
             beta += std::string(beta.empty() ? "" : ",") + kCompactBeta;
@@ -3251,6 +3293,7 @@ namespace playground
                 historyWeb_ = turnWeb_;
             }
             maxTokens = maxTokensFor(turnModel_);
+            turnNoCompact_ = false;
             plannerAsks_ = 0;
             turnPlanUsage_.clear();
         }
@@ -3552,13 +3595,11 @@ namespace playground
             if (!other && builder != nullptr && !stopped)
             {
                 const claude::Usage& u = builder->usage();
-                int summaries = u.compactions;
-                {
-                    int blocksSummarized = 0;
-                    for (const auto& b : blocks)
-                        blocksSummarized += summarized(b) ? 1 : 0;
-                    summaries = std::max(summaries, blocksSummarized);
-                }
+                // The summaries the reply brought: its compaction blocks with a summary in them (a compaction that made
+                // none, content null, makes no room and counts for nothing, whatever the usage lists).
+                int summaries = 0;
+                for (const auto& b : blocks)
+                    summaries += summarized(b) ? 1 : 0;
                 const std::lock_guard<std::mutex> lock(mutex_);
                 bool raised = false;
                 const int64_t carried = u.sent > 0 ? u.sent : u.input + u.cacheRead + u.cacheWrite;
@@ -3569,11 +3610,14 @@ namespace playground
                     if (carried * 100 >= static_cast<int64_t>(trigger) * kCrowdedShare)
                     {
                         const int64_t want = carried * kRoomFactor;
+                        const int before = compactRaised_;
                         compactRaised_ = static_cast<int>(std::min<int64_t>(std::max<int64_t>(want, compactRaised_),
                                                                             std::numeric_limits<int>::max()));
                         const int now = compactTriggerFor(turnModel_);
                         raised = now > trigger;
                         crowded = now < want;
+                        if (!raised)
+                            compactRaised_ = before;   // the window gave nothing: the chat keeps what it had
                     }
                     else
                         crowded = false;
@@ -3583,6 +3627,68 @@ namespace playground
                 summariesThisTurn += summaries;
                 endSummaries = summaries > 0
                             && ((summariesInARow >= kMaxSummariesInARow && !raised) || summariesThisTurn >= kMaxSummariesATurn);
+            }
+
+            // A summary paused (pause_after_compaction): the reply holds a compaction block and nothing after it (the
+            // block looked for, not the stop reason: "compaction", or "refusal" when safeguards kept the summary).
+            int pausedAt = -1;
+            if (!other && !stopped && complete)
+                for (int i = 0; i < blocks.size(); ++i)
+                    if (str(blocks[i], "type") == "compaction")
+                        pausedAt = i;
+            for (int i = pausedAt + 1; pausedAt >= 0 && i < blocks.size(); ++i)
+                if (!blankText(blocks[i]))
+                    pausedAt = -1;
+            if (pausedAt >= 0 && !summarized(blocks[pausedAt]))
+            {
+                // No summary (content null): the messages stay as they were, and the request goes again without the
+                // compaction edit for the rest of the turn, so that it never asks for a summary that cannot come.
+                const std::lock_guard<std::mutex> lock(mutex_);
+                turnNoCompact_ = true;
+                addEntry(ChatEntry::Kind::note, "The conversation could not be summarized this time, so Claude carries on "
+                                                "with all of it.");
+                touch();
+                continue;
+            }
+            if (pausedAt >= 0)
+            {
+                // The history starts at the block (appendAnswer), and one message follows it before Claude goes on: the
+                // plugin's state with every file whole and, when the request summarized ended in the user's own
+                // message, that message again as it was sent (its pictures too: a summary keeps none); else a line in
+                // place of the tool results the summary took. Claude then has the files in front of it, once.
+                juce::Array<juce::var> own;
+                bool ownWas = false;
+                {
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    ownWas = ownLast_;
+                    own = ownMessage_;
+                    juce::Array<juce::var> block{ blocks[pausedAt] };
+                    appendAnswer(block);
+                }
+                const std::string state = contextBlock();
+                {
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    resendState_ = false;          // in this message
+                    juce::Array<juce::var> next;
+                    next.add(text(ownWas ? kAfterSummaryOwn : kAfterSummaryWork));
+                    if (ownWas)
+                        next.addArray(own);
+                    if (!state.empty())
+                        next.add(text(state));
+                    messages_.add(claude::object({ { "role", "user" }, { "content", next } }));
+                    ownLast_ = ownWas;
+                    ownMessage_ = own;
+                    touch();
+                }
+                if (endSummaries)
+                {
+                    // Ended here: the message waits in the history, and the next one joins it.
+                    const std::string note = summariesNote(carriedAfter, summariesThisTurn, crowded);
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    addEntry(ChatEntry::Kind::note, note);
+                    break;
+                }
+                continue;
             }
 
             if (stopped || !complete || stopReason == "refusal")

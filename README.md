@@ -2166,7 +2166,11 @@ answer stays in front of you; one Claude Desktop opens is as if you had opened i
   `Source/dsp/Measure.h`), since it cannot hear it, and sets the dials. An answer may be as long as the model allows
   (128K tokens, its thinking included), a turn may take 80 requests, a dropped connection or an overloaded server is
   asked again, and a long conversation is summarized by the API (compaction) when it fills half of what the model can
-  read (500K tokens on a model that reads a million; never sooner than 150K), so it never runs out of room. An answer
+  read (500K tokens on a model that reads a million; never sooner than 150K), so it never runs out of room. Right after
+  a summary the plugin gives Claude every file whole and your last message as you sent it (its pictures too), so it
+  carries on without reading them again. A summary that would make no room (when the files and what Claude is told of
+  the plugin fill most of what the model reads) is not made again and again: the turn ends with a note that says what
+  fills the room and what helps (a model that reads more, smaller or fewer files, a new chat). An answer
   cut off at its limit goes on by itself, Claude told why; a second one in a row ends the turn (send "continue" to go
   on). At **Thinking: Max** (and XHigh) Claude thinks the longest, so a hard design is
   more likely to reach the limit: **High** leaves it more room to write.
