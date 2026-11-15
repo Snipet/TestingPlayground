@@ -118,16 +118,14 @@ namespace playground
             const std::lock_guard<std::mutex> lock(gitMutex_);
             st = gitState_;
         }
-        // What a look found is the machine's record (GitRecord.h), remembered across launches, instances and both
-        // products; this process's own look writes it before it ends, so the record is never behind it.
+        // What a look found is the machine's record (GitRecord.h) alone, remembered across launches, instances and both
+        // products: this process's own look writes it before it ends, and a new choice forgets it there, so what this
+        // process saw before is never shown over it.
         const gitrecord::Record r = gitrecord::read();
-        if (r.looked())
-        {
-            st.looked = true;
-            st.gitPath = r.path;
-            st.gitVersion = r.version;
-            st.gitWhy = r.why;
-        }
+        st.looked = r.looked();
+        st.gitPath = r.path;
+        st.gitVersion = r.version;
+        st.gitWhy = r.why;
         return st;
     }
 
@@ -186,11 +184,7 @@ namespace playground
             git::Found found = git::find(gitrecord::read().chosen);
             // What was found, remembered for every launch and both products (written only when it differs); a git found
             // before that is gone now is said so, in found.why, the first time a press needs it.
-            gitrecord::noteFound(found, juce::Time::currentTimeMillis());
-            ended.looked = true;
-            ended.gitPath = found.path;
-            ended.gitVersion = found.version;
-            ended.gitWhy = found.why;
+            gitrecord::noteFound(found, juce::Time::currentTimeMillis());   // gitState() reads the look from there
             gitprojects::Outcome o;
             if (job.op == GitOp::find)
             {
@@ -296,13 +290,6 @@ namespace playground
             gitState_.diverged = ended.diverged;
             gitState_.words = ended.words;
             gitState_.added = ended.added;
-            gitState_.looked = ended.looked || gitState_.looked;
-            if (ended.looked)
-            {
-                gitState_.gitPath = ended.gitPath;
-                gitState_.gitVersion = ended.gitVersion;
-                gitState_.gitWhy = ended.gitWhy;
-            }
             gitState_.doing.clear();
             gitOpen_ = open;
             gitState_.busy = false;
