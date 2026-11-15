@@ -2438,11 +2438,15 @@ place (its `products/<key>.cmake`, and its names in the docs).
   a number changes; its mirror of FunkGui's rasteriser (the sheet's tiles) must follow FunkGui's `SoftRaster.cpp`: the
   sheet's tiles and `gui.dump`'s are the same pixels. A new extension icon raises `FP_MCP_VERSION`.
   A product renamed (`plugin.py rename`) runs it again: the lockups and the README's header carry the names.
-- **A release** (the user's or the lead's: an agent never tags): give CHANGELOG.md its `## Version` heading first, on
-  `main` (`scripts/changelog.py release --version X.Y.Z --date YYYY-MM-DD`: the entries folded, the day cut, the
-  heading over the days since the last release; commit it), then tag `vX.Y.Z` (README, "Releasing"). release.yml
-  refuses a tag whose version has no heading or while an entry waits in `docs/changelog/`
-  (`scripts/changelog.py check-release`); What's new shows the section that heading starts.
+- **A release** (the user's or the lead's: an agent never tags): first set every product's `PRODUCT_VERSION`
+  (`products/<key>.cmake`, both at X.Y.Z; nothing else of the identity) in a pull request of its own; a build whose
+  version has no heading yet is a development build, whose What's new shows Unreleased as "What's new in this build",
+  and the probes hold either state (`gui.updates`, `plugin.updates`: the site's newer version is the build's next
+  minor). Once the release's last pull request has merged, give CHANGELOG.md its `## Version` heading, on `main`
+  (`scripts/changelog.py release --version X.Y.Z --date YYYY-MM-DD`: the entries folded, the day cut, the heading over
+  the days since the last release, an empty Unreleased left on top; commit it), then tag `vX.Y.Z` (README,
+  "Releasing"). release.yml refuses a tag whose version is not the products', or has no heading, or while an entry
+  waits in `docs/changelog/` (`scripts/changelog.py check-release`); What's new shows the section that heading starts.
 - **A product**: `scripts/plugin.py add --from <key> --key <new> --name <Name> --code <Code>` writes
   `products/<new>.cmake` and copies the source product's examples and icon (same kind); CMake builds it with the
   others. Describe it in README.md and here.
