@@ -31,6 +31,7 @@ namespace playground::ui
         constexpr float kRailTop = 76.0f;                // the first page's name, from the card's top
         constexpr float kRailRowH = 30.0f, kRailStep = 32.0f;
         constexpr uint32_t kLineIds = SettingsCard::kA11yBase + 0x30000u;
+        constexpr uint32_t kPageItemIds = SettingsCard::kA11yBase + 0x40000u;   // a drawing page's own items
 
         bool meet(const funkgui::Rect& a, const funkgui::Rect& b)
         {
@@ -405,7 +406,10 @@ namespace playground::ui
             if (c.r.contains(p) && (fixed(c) || at.body.contains(p)))
             {
                 focus_ = { c.act, c.index };
-                act(c, host);
+                Control pressed = c;
+                if (c.custom)
+                    pressed.press = p;                   // its page picks by this press's own point
+                act(pressed, host);
                 break;
             }
         ++revision_;
@@ -469,6 +473,18 @@ namespace playground::ui
         const Places at = places(width, height);
         const int n = static_cast<int>(at.controls.size());
         const int i = focusIndex(at);
+        // A key the card does not use, to a drawing page's control that has the focus.
+        if (i >= 0 && at.hooks.key != nullptr && at.controls[static_cast<std::size_t>(i)].custom && e.key != Key::tab
+            && e.key != Key::up && e.key != Key::down && e.key != Key::enter && e.key != Key::space)
+        {
+            settings::Context ctx{ port_, host, *this };
+            if (at.hooks.key(at.controls[static_cast<std::size_t>(i)], e, ctx))
+            {
+                ring_ = true;
+                ++revision_;
+            }
+            return;
+        }
         if (e.key == Key::tab || e.key == Key::down || e.key == Key::up)
         {
             if (n == 0)
@@ -510,6 +526,12 @@ namespace playground::ui
                             bool hasPointer) const
     {
         const chat::Palette p = chat::palette(th);
+        if (hasPointer != drawnHas_ || (hasPointer && (pointer.x != drawnPointer_.x || pointer.y != drawnPointer_.y)))
+        {
+            ++pointerMoves_;                             // view state (SettingsCard.h): the pointer drawn with
+            drawnPointer_ = pointer;
+            drawnHas_ = hasPointer;
+        }
         const Places at = places(width, height);
         const funkgui::Rect& box = at.box;
         const auto all = settings::pages();
@@ -594,8 +616,8 @@ namespace playground::ui
             for (std::size_t i = 0; i + 1 < at.controls.size(); ++i)   // Done, the last, is outside the body
             {
                 const Control& k = at.controls[i];
-                if (k.act == Act::page)
-                    continue;
+                if (k.act == Act::page || k.custom)
+                    continue;                            // a custom control is its page's to draw
                 const funkgui::Rect& r = k.r;
                 const bool hover = hovered(k);
                 if (k.menu)
@@ -637,6 +659,11 @@ namespace playground::ui
                     if (static_cast<int>(i) == focus)
                         ring(k, r.h * 0.5f);
                 }
+            }
+            if (at.hooks.draw != nullptr)
+            {
+                settings::Context ctx{ port_, host_, const_cast<SettingsCard&>(*this) };
+                at.hooks.draw({ c, th, at, pointer, hasPointer, focus }, ctx);
             }
         }
         // The body's scroll bar, when the window is too short for the page.
@@ -715,9 +742,23 @@ namespace playground::ui
                 it.checkable = true;
                 it.checked = c.on;                       // the page shown
             }
+            else if (c.custom)
+                it.role = funkgui::a11yrole::group;      // its page's items under it
             else
                 it.role = funkgui::A11yRole::button;
             out.push_back(std::move(it));
+        }
+        if (at.hooks.a11y != nullptr)
+        {
+            settings::Context ctx{ port_, host_, const_cast<SettingsCard&>(*this) };
+            uint32_t next = kPageItemIds;
+            for (const Control& c : at.controls)
+                if (c.custom)
+                {
+                    const std::size_t before = out.size();
+                    at.hooks.a11y(c, at, out, next, ctx);
+                    next += static_cast<uint32_t>(out.size() - before);
+                }
         }
     }
 

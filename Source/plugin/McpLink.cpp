@@ -4,6 +4,8 @@
 #include "mcp/McpProtocol.h"
 #include "mcp/McpTarget.h"
 
+#include "fminus/Failure.h"
+
 #include "Product.h"
 
 #include <algorithm>
@@ -300,7 +302,14 @@ namespace playground
             }
             if (scanNow_.exchange(false) || std::chrono::steady_clock::now() >= scanned_ + kScanEvery)
             {
-                scan();
+                try
+                {
+                    failure::at("scan");
+                    scan();
+                }
+                catch (...)
+                {
+                }                                        // (fminus/Failure.h) the view as it was: read again in a second
                 scanned_ = std::chrono::steady_clock::now();
             }
             if (fds[0].revents != 0)
@@ -346,7 +355,14 @@ namespace playground
                         c->spoke = true;
                         ++talking_;
                     }
-                    request(c, line);
+                    try
+                    {
+                        request(c, line);
+                    }
+                    catch (...)
+                    {
+                        refuse(*c, line);                // in words (fminus/Failure.h); the link lives
+                    }
                 }
             }
             for (std::size_t k = dead.size(); k-- > 0;)
@@ -361,9 +377,19 @@ namespace playground
                 if (const int fd = mcp::acceptOn(listen_); fd >= 0)
                 {
                     mcp::noSigpipe(fd);
-                    if (mcp::nonBlocking(fd))
-                        clients.push_back(std::make_shared<Client>(fd));
-                    else
+                    bool kept = false;
+                    try
+                    {
+                        if (mcp::nonBlocking(fd))
+                        {
+                            clients.push_back(std::make_shared<Client>(fd));
+                            kept = true;
+                        }
+                    }
+                    catch (...)
+                    {
+                    }                                    // (out of memory: the connection refused, the link lives)
+                    if (!kept)
                         mcp::closeFd(fd);
                 }
         }
@@ -371,9 +397,24 @@ namespace playground
             closed(c);
     }
 
+    void McpLink::refuse(Client& client, const std::string& line)
+    {
+        try
+        {
+            const juce::var request = juce::JSON::parse(juce::String::fromUTF8(line.c_str()));
+            juce::var reply = replyTo(request.getProperty("id", juce::var()));
+            reply.getDynamicObject()->setProperty("error", juce::String::fromUTF8(failure::sentence("answering").c_str()));
+            answer(client, reply);
+        }
+        catch (...)
+        {
+        }                                                // (out of memory: no answer; the server's deadline answers it)
+    }
+
     // One request: answered here, or (a call that is not live) queued for the worker.
     void McpLink::request(const std::shared_ptr<Client>& client, const std::string& line)
     {
+        failure::at("request");
         const juce::var request = juce::JSON::parse(juce::String::fromUTF8(line.c_str()));
         const juce::var id = request.getProperty("id", juce::var());
         const juce::String method = request["method"].toString();
@@ -513,15 +554,32 @@ namespace playground
         l.call = nextCall_++;
         l.done = std::make_shared<std::atomic<bool>>(false);
         began(name);
-        l.thread = std::thread([this, client, id, name, arguments, call = l.call, done = l.done] {
-            const ChatAgent::McpResult r = hooks_.call(name, arguments, call);
+        try
+        {
+            l.thread = std::thread([this, client, id, name, arguments, call = l.call, done = l.done] {
+                // The call answers an exception in words itself (ChatAgent::mcpCall); the reply's, here, none: the
+                // server's deadline answers (fminus/Failure.h). Either way the poll thread joins it.
+                try
+                {
+                    const ChatAgent::McpResult r = hooks_.call(name, arguments, call);
+                    ended(name);
+                    juce::var reply = replyTo(id);
+                    reply.getDynamicObject()->setProperty("result", resultOf(r));
+                    answer(*client, reply);              // to a connection gone: nothing is read, nothing breaks
+                }
+                catch (...)
+                {
+                }
+                done->store(true);
+                wake();                                  // the poll thread joins it
+            });
+        }
+        catch (...)
+        {
+            listens_.pop_back();                         // no thread: the request's catch answers it (refuse)
             ended(name);
-            juce::var reply = replyTo(id);
-            reply.getDynamicObject()->setProperty("result", resultOf(r));
-            answer(*client, reply);                      // to a connection gone: nothing is read, nothing breaks
-            done->store(true);
-            wake();                                      // the poll thread joins it
-        });
+            throw;
+        }
         return true;
     }
 
@@ -554,18 +612,30 @@ namespace playground
                 runningClient_ = job.client;
                 runningId_ = job.id;
             }
-            began(job.name);
-            const ChatAgent::McpResult r = hooks_.call(job.name, job.arguments, job.call);
-            ended(job.name);
+            // The call answers an exception in words itself (ChatAgent::mcpCall); one in the reply leaves the client to
+            // the server's deadline, and the worker takes the next call (fminus/Failure.h).
+            try
+            {
+                began(job.name);
+                const ChatAgent::McpResult r = hooks_.call(job.name, job.arguments, job.call);
+                ended(job.name);
+                {
+                    const std::lock_guard<std::mutex> lock(jobMutex_);
+                    running_ = 0;
+                    runningClient_.reset();
+                    runningId_ = juce::var();
+                }
+                juce::var reply = replyTo(job.id);
+                reply.getDynamicObject()->setProperty("result", resultOf(r));
+                answer(*job.client, reply);               // to a connection gone: nothing is read, nothing breaks
+            }
+            catch (...)
             {
                 const std::lock_guard<std::mutex> lock(jobMutex_);
                 running_ = 0;
                 runningClient_.reset();
                 runningId_ = juce::var();
             }
-            juce::var reply = replyTo(job.id);
-            reply.getDynamicObject()->setProperty("result", resultOf(r));
-            answer(*job.client, reply);                   // to a connection gone: nothing is read, nothing breaks
         }
     }
 

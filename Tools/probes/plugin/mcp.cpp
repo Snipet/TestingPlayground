@@ -5,7 +5,8 @@
 //            number; skipped, saying why, where a full queue refuses as nobody listening does: macOS); a socket removed by its own instance alone; the folder's claim lock one at a time, a scan
 //            clearing nothing while a claim holds it, and a stale socket once it is free
 //   LINK     a processor listens on a private socket in the folder (0600, the folder 0700) and leaves tools.json and
-//            guide.md there; info names its kind, plugin and files; tools are the chat's, but ask_user and
+//            guide.md there; info names its kind, plugin and files; a request whose handling throws (fminus/Failure.h's
+//            seam) is answered in words and the next is answered; tools are the chat's, but ask_user and
 //            ask_planner, each MCP description its first sentence or paragraph (tools.json's size printed, with the
 //            full descriptions for comparison, and compact), a setting's description given once (view_sound's render
 //            settings, set_checks' goals: not again in a check's or tune_dials'); tune_dials' metric a plain string,
@@ -110,6 +111,7 @@
 #include "Probe.h"
 
 #include "dsp/Measure.h"
+#include "fminus/Failure.h"
 #include "fminus/Patch.h"
 #include "mcp/McpGuide.h"
 #include "mcp/McpProtocol.h"
@@ -622,6 +624,19 @@ PROBE(plugin, mcp)
     P.eq("link.info", info["result"]["id"].toString() == juce::String(link != nullptr ? link->id() : "") && info["result"]["name"].toString() == juce::String(first)
                           && info["result"]["plugin"].toString() == pg::product::kName
                           && info["result"]["kind"].toString() == pg::product::kKind ? 1 : 0, 1);
+    {
+        // A request whose handling throws (fminus/Failure.h's seam): answered in words, and the link lives.
+        pg::failure::plant("request", pg::failure::Kind::runtime);
+        const juce::var thrown = ask(*a, r, 90, "info", {});
+        pg::failure::unplant();
+        const juce::var again = ask(*a, r, 91, "info", {});
+        std::printf("thrown: %s\n", line(thrown).substr(0, 200).c_str());
+        P.eq("link.thrown_answered", static_cast<int>(thrown["id"]) == 90
+                                         && thrown["error"].toString().toStdString()
+                                                == "the plugin itself failed while answering: a planted failure; this is not a fault in "
+                                                   "your program" ? 1 : 0, 1);
+        P.eq("link.thrown_lives", static_cast<int>(again["id"]) == 91 && again["result"]["id"].toString() == juce::String("1") ? 1 : 0, 1);
+    }
     const juce::var tools = ask(*a, r, 2, "tools", {})["result"];
     P.eq("link.tools", hasTool(tools, "write_file") && hasTool(tools, "run_program") && hasTool(tools, "view_panel")
                            && !hasTool(tools, "ask_user") && !hasTool(tools, "ask_planner") ? 1 : 0, 1);

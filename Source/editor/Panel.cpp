@@ -3285,6 +3285,7 @@ namespace playground::ui
                                [] { return TB::Look::outlined; }, [this] { openProjects(); }, "Projects",
                                "PROJECTS   SAVE THE PROGRAM ON THIS MAC, A VERSION EACH SAVE (CMD-S); OPEN AN OLDER ONE; ITS PRESETS");
         static_cast<TB*>(items_[static_cast<std::size_t>(projectsItem_)].get())->setMenu([this] { projectMenu(); });
+        static_cast<TB*>(items_[static_cast<std::size_t>(projectsItem_)].get())->setBranch([this] { return projectBranch(); });
         // The project open's presets, right of the pill: the one before, its name (a click: their list), the next.
         {
             const auto any = [this] { return !cycle_.presets.empty(); };
@@ -3703,10 +3704,30 @@ namespace playground::ui
             sp.icon = [] { return chat::Icon::gear; };
             sp.act = [this] { openSettings(); };
             sp.a11yTitle = "Settings";
-            sp.spec = "SETTINGS   THE THEME, THE ZOOM, THE EDITOR, THE PROJECTS' FOLDER, THE AI, DEBUG";
+            sp.spec = "SETTINGS   THE THEME, THE ZOOM, THE EDITOR, THE PROJECTS' FOLDER, THE AI, THE NETWORK, DEBUG";
             gearItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
         }
         settings_.setHooks(settingsHooks());
+
+        // The website (package 08): the top bar's pill while a newer version is out and not skipped (an editor's Panel
+        // alone), right of the product's name; a click opens the update card (UpdateCards.h). Nothing opens by itself.
+        {
+            TB::Spec sp;
+            sp.shape = TB::Shape::pill;
+            sp.icon = [] { return chat::Icon::arrowUp; };
+            sp.label = [this] { return updateState_.latest + " is out"; };
+            sp.look = [] { return TB::Look::outlined; };
+            sp.shown = [this] { return updatePill_; };
+            sp.act = [this] {
+                if (dialogOpen())
+                    return;
+                update_.open(updateState_);
+                dirty_ = true;
+            };
+            sp.a11yTitle = "A new version is out";
+            sp.specNow = [this] { return "VERSION " + upper(updateState_.latest) + " IS OUT   A CLICK SAYS MORE: DOWNLOAD, SKIP OR LATER"; };
+            updateItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
+        }
 
         // The columns' edges (Columns.h): the explorer's right one and the chat's left one, each a handle that sets its
         // card's width (last of the items: hit by itemAt before the cards' items, drawn over the cards' edges).
@@ -3731,6 +3752,8 @@ namespace playground::ui
         // The processor's files and status, and the chat; the netlists' views the session kept.
         bindFiles();
         claudeSeen_ = port_.claudeNotice().count;        // what Claude did before this editor opened: not said again
+        if (role_ == Role::editor)
+            port_.editorOpened();                        // the website may be reached now, after a yes (package 08)
         saveSeen_ = port_.saving().done;                 // and a save another editor made
         seenDraft_ = port_.draftRevision();
         given_ = port_.draft();
@@ -3893,8 +3916,16 @@ namespace playground::ui
             // The project's pill and, while a project is open, its presets right of it (the arrows and the name), the
             // two centred as one between the product's name and the switch: the pill gives way first, then the name.
             const funkgui::FontAtlasSdf& atlas = funkgui::FontService::get().atlas();
-            const float nameRight = kMargin + 50.0f + buttonsRoom_ + std::max(funkgui::text::width(atlas, product::kName, chat::kStrong),
+            float nameRight = kMargin + 50.0f + buttonsRoom_ + std::max(funkgui::text::width(atlas, product::kName, chat::kStrong),
                                                                funkgui::text::width(atlas, subtitle_.c_str(), chat::kSmall));
+            // The update pill (package 08) right of the name, while it shows: the project's pill gives it the room.
+            if (ButtonItem& pill = at(updateItem_); updatePill_)
+            {
+                pill.setBounds({ 0.0f, barMid - 0.5f * kTopButtonH, 10.0f, kTopButtonH });
+                const float pw = pill.preferredWidth();
+                pill.setBounds({ nameRight + 14.0f, barMid - 0.5f * kTopButtonH, pw, kTopButtonH });
+                nameRight += 14.0f + pw;
+            }
             const float segLeft = segRight - 3.0f - 2.0f * kSegmentW - 3.0f - windowW;
             const float room = segLeft - 24.0f - (nameRight + 24.0f);
             const bool presets = presetsShown();
@@ -4944,7 +4975,9 @@ namespace playground::ui
             factorySeen_ = generation;
             factoryRead_ = true;
         }
-        if (projectsAt_ < 0.0 || now - projectsAt_ > kProjectsPoll || presetsOf_ != st.name || read != projectsReadSeen_)
+        const uint64_t gitNow = port_.gitPolled();       // package 05: a git job or a link changed
+        if (projectsAt_ < 0.0 || now - projectsAt_ > kProjectsPoll || presetsOf_ != st.name || read != projectsReadSeen_
+            || gitNow != gitSeen_)
         {
             // The two lists of one state of the store's cache: a Reader's read that lands between them (the listing as
             // it was, the presets as it is) would make the rows twice, so a poll that saw the revision move is made
@@ -4969,6 +5002,7 @@ namespace playground::ui
             projectsView_ = std::move(view);
             presetsOf_ = st.name;
             projectsAt_ = now;
+            gitSeen_ = gitNow;
         }
         const auto erred = [this](const std::string& file) {
             return std::any_of(problems_.begin(), problems_.end(), [&](const Problem& p) { return p.error && p.file == file; });
@@ -5281,6 +5315,10 @@ namespace playground::ui
                     r.icon = chat::Icon::list;
                     r.active = e.name == st.name;
                     r.key = e.name;
+                    r.git = e.git;                       // package 05: the git mark
+                    r.ahead = e.ahead;
+                    r.behind = e.behind;
+                    r.remote = e.remote;
                     g.rows.push_back(std::move(r));
                 }
             }
@@ -5983,6 +6021,8 @@ namespace playground::ui
         FP_DIRTY_AT("refresh: syncFolder");
         syncMidi();
         FP_DIRTY_AT("refresh: syncMidi");
+        syncUpdates();                                   // the website: the offer, the pill, the notice (package 08)
+        FP_DIRTY_AT("refresh: syncUpdates");
         // The editor's save in flight (Cmd-S, PROJECTS' Save): what came of it, once it has ended.
         syncSave();
         // An export this Panel started (EXPORT): how far it has come, then what came of it.
@@ -5997,6 +6037,8 @@ namespace playground::ui
         if (export_.poll())
             dirty_ = true;
         FP_DIRTY_AT("refresh: PROJECTS' and EXPORT's polls");
+        syncGit();                                       // package 05: the git card, and a job's outcome
+        FP_DIRTY_AT("refresh: syncGit");
         // What Claude's projects tool did (a save, an open, a preset): said once in the status, the lists read again.
         if (role_ == Role::editor)
             if (const ClaudeNotice n = port_.claudeNotice(); n.count != claudeSeen_)
@@ -6530,6 +6572,86 @@ namespace playground::ui
         }
         syncDesktop();
         dirty_ = true;
+    }
+
+    // ---- The website (package 08: UpdateCards.h, EditorPort's "The website") ---------------------------------------------
+
+    void Panel::syncUpdates()
+    {
+        if (role_ != Role::editor)
+            return;                                      // the editor's Panel alone: never a picture's, nor the code window's
+        const uint64_t r = port_.updateRevision();
+        // Until the offer is decided the factory store's answer may land with no move of the check's revision; while it
+        // shows, another editor may answer it.
+        if (offerDecided_ && !offer_.isOpen() && r == updateSeen_)
+        {
+            decideWhatsNew();                            // a card it waited for may have closed meanwhile
+            return;
+        }
+        updateSeen_ = r;
+        updateState_ = port_.updateState();
+        const UpdateState& u = updateState_;
+        if (!offerDecided_ && u.loaded && !dialogOpen())
+        {
+            offerDecided_ = true;
+            if (u.offer)
+                offer_.open();
+        }
+        if (offer_.isOpen() && u.loaded && !u.offer)
+            offer_.close();                              // answered in another editor
+        if (u.newer != updatePill_)
+        {
+            updatePill_ = u.newer;
+            if (!updatePill_ && update_.isOpen() && u.skipped == update_.version())
+                update_.close();
+            layout();                                    // the project's pill gives the pill its room, or takes it back
+        }
+        if (u.newer && port_.announceUpdate(u.latest))
+            notice("VERSION " + upper(u.latest) + " IS OUT");
+        decideWhatsNew();
+        dirty_ = true;
+    }
+
+    // What's new, once per version (app.json's seen, both products'): after the offer is decided and answered (never two
+    // cards at once), never over another card, when app.json was read again since this editor opened.
+    void Panel::decideWhatsNew()
+    {
+        const UpdateState& u = updateState_;
+        if (whatsNewDecided_ || !offerDecided_ || !u.loaded || offer_.isOpen() || dialogOpen())
+            return;
+        if (!u.whatsNewReady)
+            return;                                      // app.json's seen not read again since this editor opened
+        whatsNewDecided_ = true;
+        if (u.whatsNewDue)
+            openWhatsNew();
+    }
+
+    void Panel::openWhatsNew()
+    {
+        if (dialogOpen() && !whatsNew_.isOpen())
+            return;
+        whatsNew_.open(updateState_.whatsNewDue ? updateState_.seen : std::string());
+        updateSeen_ = 0;                                 // seen set: read again at the next frame
+        dirty_ = true;
+    }
+
+    void Panel::afterUpdateCards()
+    {
+        if (std::string n = offer_.takeNotice(); !n.empty())
+            notice(n);
+        if (std::string n = update_.takeNotice(); !n.empty())
+            notice(n);
+        if (std::string n = whatsNew_.takeNotice(); !n.empty())
+            notice(n);
+        updateSeen_ = 0;                                 // an answer given: read again at the next frame
+        dirty_ = true;
+    }
+
+    std::optional<funkgui::Point> Panel::centreOfUpdatePill() const
+    {
+        if (updateItem_ < 0 || !items_[static_cast<std::size_t>(updateItem_)]->shown())
+            return std::nullopt;
+        return centreOf(updateItem_);
     }
 
     void Panel::afterName(bool wasOpen)
@@ -7728,7 +7850,8 @@ namespace playground::ui
         const std::vector<std::string> exportIt = projects_.takeExport();
         const std::pair<std::string, int> abIt = projects_.takeAb();
         const auto [compareIt, compareLeft, compareRight] = projects_.takeCompare();
-        if (wasOpen && !projects_.isOpen() && exportIt.empty() && abIt.first.empty() && compareIt.empty())
+        const std::pair<bool, std::string> gitIt = projects_.takeGit();   // package 05
+        if (wasOpen && !projects_.isOpen() && exportIt.empty() && abIt.first.empty() && compareIt.empty() && !gitIt.first)
         {
             setFocus(focusBeforeProjects_ >= 0 ? focusBeforeProjects_ : editorItem_);
             focusBeforeProjects_ = -1;
@@ -7753,6 +7876,8 @@ namespace playground::ui
         }
         if (!compareIt.empty())
             openCompare(compareIt, compareLeft, compareRight);
+        if (gitIt.first)
+            openGit(gitIt.second);
         dirty_ = true;
     }
 
@@ -7844,6 +7969,7 @@ namespace playground::ui
             request.items.push_back(dropdown::header(ownName(st.name)));
         request.items.push_back({ 1, "Projects..." });
         request.items.push_back({ 2, "Compare with the saved version", compare });
+        request.items.push_back({ 3, "Git...", !st.name.empty() && !isFactoryName(st.name) });   // package 05
         request.anchor = triggerRect(projectsItem_);
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
         host_->showMenu(request, [this, st](int chosen) {
@@ -7851,8 +7977,84 @@ namespace playground::ui
                 openProjects();
             else if (chosen == 2)
                 openCompare(st.name, st.version, DiffCard::kEditor);
+            else if (chosen == 3)
+                openGit(st.name);
             dirty_ = true;
         });
+    }
+
+    // ---- Package 05: GIT (GitCard.h) --------------------------------------------------------------------------------
+    void Panel::openGit(const std::string& project)
+    {
+        if (dialogOpen())
+            return;
+        files().endRename();
+        if (focusBeforeProjects_ < 0)
+            focusBeforeProjects_ = focus_;
+        git_.open(project);
+        setFocus(-1);
+        ring_ = false;
+        dirty_ = true;
+    }
+
+    // Each frame: the card reads the link and the job again when EditorPort::gitPolled moved; a job that ended while
+    // the card was closed (or one it did not start) says its outcome in the status, once.
+    void Panel::syncGit()
+    {
+        // Part 3: COMPARE opened from the Git card's Compare... and closed with no other card open: the card back on that
+        // project (its diverged face), the choice one press away.
+        if (!gitAfterCompare_.empty() && !compare_.isOpen())
+        {
+            const std::string project = std::exchange(gitAfterCompare_, std::string());
+            if (!dialogOpen())
+                openGit(project);
+        }
+        const bool wasOpen = git_.isOpen();
+        if (git_.poll())
+            dirty_ = true;
+        if (const std::string n = git_.takeNotice(); !n.empty())
+        {
+            notice(n);
+            projectsAt_ = -100.0;                        // the explorer's marks, a pulled version
+            projects_.reread();
+        }
+        if (const std::string theirs = git_.takeCompare(); !theirs.empty())
+        {
+            // Part 3: COMPARE, the project's newest version against their side (from memory: DiffCard::kTheirs).
+            int latest = 0;
+            for (const ProjectEntry& e : projectList_)
+                if (e.name == theirs)
+                    latest = e.latest;
+            if (latest == 0)
+                for (const ProjectEntry& e : port_.projectsPolled())
+                    if (e.name == theirs)
+                        latest = e.latest;
+            git_.close();
+            openCompare(theirs, latest, DiffCard::kTheirs);
+            if (compare_.isOpen())
+                gitAfterCompare_ = theirs;
+        }
+        if (wasOpen && !git_.isOpen() && !compare_.isOpen())
+        {
+            setFocus(focusBeforeProjects_ >= 0 ? focusBeforeProjects_ : editorItem_);
+            focusBeforeProjects_ = -1;
+        }
+    }
+
+    chat::BranchMark Panel::projectBranch() const
+    {
+        chat::BranchMark b;
+        if (presetsOf_.empty())
+            return b;
+        for (const ProjectEntry& e : projectList_)
+            if (e.name == presetsOf_ && e.git)
+            {
+                b.on = true;
+                b.ahead = e.ahead;
+                b.behind = e.behind;
+                b.remote = e.remote;
+            }
+        return b;
     }
 
     void Panel::openExport(const std::string& project)
@@ -8050,6 +8252,8 @@ namespace playground::ui
             focusBeforeSettings_ = -1;
             if (std::exchange(keyAfterSettings_, false) && hasChat())
                 openKeyDialog();                         // the AI page's Provider and key...
+            if (std::exchange(whatsNewAfterSettings_, false))
+                openWhatsNew();                          // the General page's What's new
         }
         dirty_ = true;
     }
@@ -8121,6 +8325,7 @@ namespace playground::ui
             return ai;
         };
         h.keyDialog = [this] { keyAfterSettings_ = true; };   // afterSettings opens it, the focus given back first
+        h.whatsNew = [this] { whatsNewAfterSettings_ = true; };   // afterSettings opens it, as the key dialog
         h.graphics = [this] {
             DebugSection g{ "Graphics (FunkGui)", {} };
             if (hostDebug_)
@@ -8858,10 +9063,11 @@ namespace playground::ui
             .mix(recordShownText_).mix(compiling_).mix(lastOk_).mix(edited_).mix(chatOpen_).mix(explorerShown_).mix(panelView_).mix(dropActive_)
             .mix(dropHover_).mix(keyOpen_).mix(renaming_).mix(keyWhy_).mix(keyEdit_.buffer).mix(keyEdit_.caret).mix(keyEdit_.allSelected)
             .mix(dialogField_).mix(dialogControl_).mix(baseEdit_.caret).mix(baseEdit_.allSelected).mix(modelEdit_.caret)
-            .mix(projects_.isOpen()).mix(export_.isOpen()).mix(settings_.isOpen()).mix(settings_.revision())
+            .mix(projects_.isOpen()).mix(export_.isOpen()).mix(git_.isOpen()).mix(settings_.isOpen()).mix(settings_.revision())
             .mix(name_.isOpen()).mix(name_.revision()).mix(desktopBadge_).mix(picker_.isOpen()).mix(picker_.revision())
             .mix(focus_).mix(ring_).mix(pressed_).mix(touched_).mix(hasPointer_).mix(pointer_).mix(width_).mix(height_)
-            .mix(layoutRevision_).mix(buttonsRoom_);
+            .mix(layoutRevision_).mix(buttonsRoom_).mix(offer_.isOpen()).mix(offer_.revision()).mix(update_.isOpen())
+            .mix(update_.revision()).mix(whatsNew_.isOpen()).mix(whatsNew_.key());
         // The footer: the spec line of the control under the hand (a dial's value moves with the host's automation).
         if (!dialogOpen())
         {
@@ -9264,8 +9470,16 @@ namespace playground::ui
             std::snprintf(line, sizeof line, "EXPORT   A FACTORY PROJECT: ITS INFO AS IT IS   ESCAPE CLOSES");
         else if (export_.isOpen())
             std::snprintf(line, sizeof line, "EXPORT   TAB THE NEXT FIELD   A PILL TOGGLES   ESCAPE KEEPS THE INFO AND CLOSES");
+        else if (git_.isOpen())                          // package 05
+            std::snprintf(line, sizeof line, git_.running() ? "GIT   CANCEL STOPS IT   ESCAPE CLOSES (IT GOES ON)"
+                                                            : "GIT   TAB THE NEXT FIELD   RETURN PRESSES THE FIRST BUTTON   ESCAPE CLOSES");
         else if (name_.isOpen())
             std::snprintf(line, sizeof line, "NAME   RETURN SAVES IT (EMPTY: ITS NUMBER'S)   ESCAPE CANCELS");
+        else if (update_.isOpen())
+            std::snprintf(line, sizeof line, "NEW VERSION   RETURN DOWNLOADS   ESCAPE OR A CLICK OUTSIDE: LATER");
+        else if (whatsNew_.isOpen())
+            std::snprintf(line, sizeof line, "WHAT'S NEW   UP, DOWN, SPACE AND THE WHEEL SCROLL   A LINK OPENS IN THE BROWSER   "
+                                             "ESCAPE, RETURN OR A CLICK OUTSIDE CLOSES");
         else if (compare_.isOpen())
             std::snprintf(line, sizeof line, "COMPARE   ] AND [ THE NEXT AND THE PREVIOUS CHANGE   TAB THE NEXT FILE   "
                                              "ESCAPE OR A CLICK OUTSIDE CLOSES");
@@ -9347,6 +9561,21 @@ namespace playground::ui
                    c.capCentreTop(r.centreY() + 14.0f, chat::kStrong), chat::kStrong, dropHover_ ? p.text : p.soft,
                    funkgui::Align::centre);
         }
+        if (offer_.isOpen() && !dialogOpen())
+        {
+            const funkgui::Canvas::Scope s(c, kOfferTag, false);
+            offer_.draw(c, th, width_, height_, pointer_, hasPointer_);
+        }
+        if (update_.isOpen())
+        {
+            const funkgui::Canvas::Scope s(c, kUpdateTag, false);
+            update_.draw(c, th, width_, height_, pointer_, hasPointer_);
+        }
+        if (whatsNew_.isOpen())
+        {
+            const funkgui::Canvas::Scope s(c, kWhatsNewTag, false);
+            whatsNew_.draw(c, th, width_, height_, pointer_, hasPointer_);
+        }
         if (keyOpen_)
             drawKeyDialog(c, th);
         if (projects_.isOpen())
@@ -9358,6 +9587,11 @@ namespace playground::ui
         {
             const funkgui::Canvas::Scope s(c, kExportTag, false);
             export_.draw(c, th, width_, height_, pointer_, hasPointer_);
+        }
+        if (git_.isOpen())
+        {
+            const funkgui::Canvas::Scope s(c, kGitTag, false);
+            git_.draw(c, th, width_, height_, pointer_, hasPointer_);
         }
         if (name_.isOpen())
         {
@@ -9477,9 +9711,18 @@ namespace playground::ui
             else if (export_.isOpen())
                 pressCard([this] { return export_.isOpen(); }, [this] { export_.pointerDown(pointer_, width_, height_); },
                           [this] { afterExport(true); });
+            else if (git_.isOpen())
+                pressCard([this] { return git_.isOpen(); }, [this] { git_.pointerDown(pointer_, width_, height_); },
+                          [this] { syncGit(); });
             else if (name_.isOpen())
                 pressCard([this] { return name_.isOpen(); }, [this] { name_.pointerDown(pointer_, width_, height_); },
                           [this] { afterName(true); });
+            else if (update_.isOpen())
+                pressCard([this] { return update_.isOpen(); }, [this] { update_.pointerDown(pointer_, width_, height_); },
+                          [this] { afterUpdateCards(); });
+            else if (whatsNew_.isOpen())
+                pressCard([this] { return whatsNew_.isOpen(); }, [this] { whatsNew_.pointerDown(pointer_, width_, height_); },
+                          [this] { afterUpdateCards(); });
             else if (compare_.isOpen())
                 pressCard([this] { return compare_.isOpen(); }, [this] { compare_.pointerDown(pointer_, host_, width_, height_); },
                           [this] { afterCompare(true); });
@@ -9495,6 +9738,15 @@ namespace playground::ui
                               projects_.pointerDown(e, host_, width_, height_);
                           },
                           [this] { afterProjects(true); });
+            return;
+        }
+        // The website's offer (not modal): a press in its box is its own, any other goes to the panel behind it.
+        if (offer_.contains(pointer_, width_, height_))
+        {
+            pressed_ = -1;
+            offer_.pointerDown(pointer_, width_, height_);
+            afterUpdateCards();
+            closingPress_ = !offer_.isOpen();            // answered: its double-click's second press ends here too
             return;
         }
         // A .gui interface's bar (Scroll.h): its thumb drags, a press on its track jumps first.
@@ -9575,6 +9827,11 @@ namespace playground::ui
             return;
         }
         // A card's bar's thumb (Scroll.h: each moves only while its own thumb was pressed).
+        if (whatsNew_.isOpen())
+        {
+            whatsNew_.pointerDrag(pointer_, width_, height_);   // its page's thumb
+            return;
+        }
         if (settings_.isOpen() || ab_.isOpen() || picker_.isOpen() || compare_.isOpen())
         {
             if (settings_.isOpen())
@@ -9610,6 +9867,7 @@ namespace playground::ui
             return;
         }
         settings_.pointerUp();                           // a card's thumb let go (none held: nothing)
+        whatsNew_.pointerUp();
         ab_.pointerUp();
         compare_.pointerUp();
         picker_.pointerUp();
@@ -9637,7 +9895,7 @@ namespace playground::ui
             return;
         if (keyOpen_ || settings_.isOpen())
             return;
-        if (export_.isOpen() || ab_.isOpen() || name_.isOpen() || compare_.isOpen())
+        if (export_.isOpen() || ab_.isOpen() || name_.isOpen() || compare_.isOpen() || git_.isOpen())
             return;
         if (projects_.isOpen())
         {
@@ -9663,7 +9921,12 @@ namespace playground::ui
             settings_.wheel(e, width_, height_);
             return true;
         }
-        if (export_.isOpen() || name_.isOpen() || keyOpen_)
+        if (whatsNew_.isOpen())
+        {
+            whatsNew_.wheel(e, width_, height_);
+            return true;
+        }
+        if (export_.isOpen() || name_.isOpen() || keyOpen_ || update_.isOpen() || git_.isOpen())
             return true;                                 // nothing behind a dialog scrolls
         if (compare_.isOpen())
         {
@@ -9759,10 +10022,31 @@ namespace playground::ui
             afterExport(true);
             return true;
         }
+        if (git_.isOpen())
+        {
+            git_.key(e, host_, width_, height_);
+            syncGit();
+            dirty_ = true;
+            return true;
+        }
         if (name_.isOpen())
         {
             name_.key(e, host_, width_, height_);
             afterName(true);
+            return true;
+        }
+        if (update_.isOpen())
+        {
+            update_.key(e, width_, height_);
+            afterUpdateCards();
+            return true;
+        }
+        if (whatsNew_.isOpen())
+        {
+            if (e.mods.cmd)
+                return false;                            // the app's menu keys go on (Cmd-Q), as with Settings
+            whatsNew_.key(e, width_, height_);
+            afterUpdateCards();
             return true;
         }
         if (compare_.isOpen())
@@ -9928,6 +10212,8 @@ namespace playground::ui
         }
         if (export_.isOpen())
             return export_.cursor(pointer_, width_, height_);
+        if (git_.isOpen())
+            return git_.cursor(pointer_, width_, height_);
         if (name_.isOpen())
             return name_.cursor(pointer_, width_, height_);
         if (compare_.isOpen())
@@ -9938,6 +10224,12 @@ namespace playground::ui
             return projects_.cursor(pointer_, width_, height_);
         if (picker_.isOpen())
             return picker_.cursor(pointer_, width_, height_);
+        if (update_.isOpen())
+            return update_.cursor(pointer_, width_, height_);
+        if (whatsNew_.isOpen())
+            return whatsNew_.cursor(pointer_, width_, height_);
+        if (hasPointer_ && offer_.contains(pointer_, width_, height_))
+            return offer_.cursor(pointer_, width_, height_);
         const int i = pressed_ >= 0 ? pressed_ : (hasPointer_ ? itemAt(pointer_) : -1);
         return i >= 0 ? items_[static_cast<std::size_t>(i)]->cursorAt(pointer_) : funkgui::Cursor::normal;
     }
@@ -10031,6 +10323,11 @@ namespace playground::ui
             export_.accessibility(out, width_, height_);
             return;
         }
+        if (git_.isOpen())
+        {
+            git_.accessibility(out, width_, height_);
+            return;
+        }
         if (name_.isOpen())
         {
             name_.accessibility(out, width_, height_);
@@ -10056,6 +10353,18 @@ namespace playground::ui
             picker_.accessibility(out, width_, height_);
             return;
         }
+        if (update_.isOpen())
+        {
+            update_.accessibility(out, width_, height_);
+            return;
+        }
+        if (whatsNew_.isOpen())
+        {
+            whatsNew_.accessibility(out, width_, height_);
+            return;
+        }
+        if (offer_.isOpen())
+            offer_.accessibility(out, width_, height_);  // first: it is over the panel, which stays usable behind it
         for (const auto& item : items_)
             if (item->shown())
                 item->accessibility(out);
@@ -10078,7 +10387,11 @@ namespace playground::ui
         r ^= (projects_.isOpen() ? 0x9E3779B1u : 0u) ^ (projects_.revision() * 0x165667B1u);
         r ^= (picker_.isOpen() ? 0x2545F491u : 0u) ^ (picker_.revision() * 0x61C88647u);
         r ^= (export_.isOpen() ? 0x85EBCA77u : 0u) ^ (export_.revision() * 0xC2B2AE3Du);
+        r ^= (git_.isOpen() ? 0x68E31DA4u : 0u) ^ (git_.revision() * 0xB5297A4Du);
         r ^= (name_.isOpen() ? 0x4CF5AD43u : 0u) ^ (name_.revision() * 0x2127599Bu);
+        r ^= (offer_.isOpen() ? 0x3C6EF372u : 0u) ^ (offer_.revision() * 0x9E3779B9u);
+        r ^= (update_.isOpen() ? 0xA54FF53Au : 0u) ^ (update_.revision() * 0x510E527Fu);
+        r ^= (whatsNew_.isOpen() ? 0x1B873593u : 0u) ^ (whatsNew_.revision() * 0xCC9E2D51u);
         r ^= (ab_.isOpen() ? 0x7FEB352Du : 0u) ^ (ab_.revision() * 0x846CA68Bu);
         r ^= (compare_.isOpen() ? 0x3C6EF372u : 0u) ^ (compare_.revision() * 0xA54FF53Bu);
         r ^= (settings_.isOpen() ? 0x27D4EB2Du : 0u) ^ (settings_.revision() * 0x9E3779B1u) ^ (mutedShown_ ? 0x165667B1u : 0u);
@@ -10141,10 +10454,34 @@ namespace playground::ui
             afterExport(true);
             return;
         }
+        if (git_.isOpen())
+        {
+            git_.a11yAction(id, a, width_, height_);
+            syncGit();
+            dirty_ = true;
+            return;
+        }
         if (name_.isOpen())
         {
             name_.a11yAction(id, a, width_, height_);
             afterName(true);
+            return;
+        }
+        if (update_.isOpen())
+        {
+            (void)update_.a11yAction(id, a, width_, height_);
+            afterUpdateCards();
+            return;
+        }
+        if (whatsNew_.isOpen())
+        {
+            (void)whatsNew_.a11yAction(id, a, width_, height_);
+            afterUpdateCards();
+            return;
+        }
+        if (offer_.isOpen() && offer_.a11yAction(id, a, width_, height_))
+        {
+            afterUpdateCards();
             return;
         }
         if (compare_.isOpen())

@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <string>
 #include <utility>
 
 namespace playground::ui::chat
@@ -55,6 +56,27 @@ namespace playground::ui::chat
         return p;
     }
 
+    // The Usage page's series (UsagePage.h): the product's accent first, then four fixed inks that are neither accent
+    // (the effect's orange, the instrument's blue) nor the errors' colour (`signal`: the effect's cyan, the
+    // instrument's orange): an indigo, a green, a rose and a brown, each its own value in Graphite and in Paper, at
+    // least 3:1 against the card in both, and every pair (the accents too) apart under protanopia, deuteranopia and
+    // tritanopia (gui.usage SERIES), then "Other" in ink52. Never the only way a series is told apart: the stack's
+    // order, the legend and the readout name each.
+    inline constexpr int kSeriesInks = 5;          // the accent and the four; past them, Other
+    inline funkgui::Col seriesInk(const funkgui::Theme& th, int i)
+    {
+        const bool dark = th.ground.r < 128;
+        switch (i)
+        {
+            case 0: return th.accent;
+            case 1: return dark ? funkgui::Col{ 0x7C, 0x83, 0xF2 } : funkgui::Col{ 0x3B, 0x43, 0xB8 };   // indigo
+            case 2: return dark ? funkgui::Col{ 0x5D, 0xBB, 0x7A } : funkgui::Col{ 0x2F, 0x8A, 0x4E };   // green
+            case 3: return dark ? funkgui::Col{ 0xF2, 0xA0, 0xB8 } : funkgui::Col{ 0xA3, 0x37, 0x5E };   // rose
+            case 4: return dark ? funkgui::Col{ 0xC0, 0x8A, 0x5A } : funkgui::Col{ 0x7A, 0x4E, 0x28 };   // brown
+            default: return th.ink52;                                                                  // Other
+        }
+    }
+
     // The one typeface (JetBrains Mono) at a reading size; weight through the SDF threshold (~0.05 reads semibold).
     inline constexpr funkgui::TextStyle kBody{ 12.0f, 0.0f, 0.0f, false };
     inline constexpr funkgui::TextStyle kStrong{ 12.0f, 0.0f, 0.065f, false };
@@ -74,7 +96,7 @@ namespace playground::ui::chat
     {
         none, plus, key, chevronDown, chevronRight, chevronUp, arrowUp, stop, copy, check, file, play, dial, wave, alert,
         pencil, bolt, chevronLeft, bubble, dice, blocks, list, sun, moon, code, book, question, globe, image, cross,
-        snowflake, gear, chip, circuit, probe, window, folder, star, starFilled, search, flag
+        snowflake, gear, chip, circuit, probe, window, folder, star, starFilled, search, flag, branch
     };
 
     // A convex polygon filled (its vertices in order): cut at its vertices' x into the canvas's trapezoids.
@@ -493,6 +515,63 @@ namespace playground::ui::chat
                 fillConvex(c, xs, ys, 3, ink);
                 break;
             }
+            case Icon::branch:
+            {
+                // A branch: a stem with a dot at each end and a second line joining it from a dot at the right (package
+                // 05: a project linked to a git remote).
+                const float r = std::fmax(1.3f, s * 0.2f);
+                const float x0 = cx - s * 0.45f, x1 = cx + s * 0.45f;
+                c.segment(x0, cy - s * 0.55f, x0, cy + s * 0.55f, w, ink);
+                c.disc(x0, cy - s * 0.7f, r, ink);
+                c.disc(x0, cy + s * 0.7f, r, ink);
+                c.disc(x1, cy - s * 0.35f, r, ink);
+                c.segment(x1, cy - s * 0.2f, x1, cy + s * 0.05f, w, ink);
+                c.segment(x1, cy + s * 0.05f, x0, cy + s * 0.45f, w, ink);
+                break;
+            }
         }
+    }
+
+    // ---- Package 05: the git mark, after a linked project's name (the Projects card, the explorer, the top bar) ----------
+    // The branch glyph, then an up arrow with what there is to push and a down arrow with what there is to pull, each when
+    // it is known and more than none. Its width, and drawn with its left at x on the line through cy.
+    // What the mark shows: on while the project is linked; its counts (-1: not known); its remote, to a screen reader
+    // ("linked to github.com/me/pad").
+    struct BranchMark
+    {
+        bool on = false;
+        int ahead = -1, behind = -1;
+        std::string remote;
+    };
+    inline std::string branchCount(int n) { return n > 99 ? std::string("99+") : std::to_string(n); }
+    inline float branchMarkWidth(funkgui::Canvas& c, int ahead, int behind, const funkgui::TextStyle& st)
+    {
+        float w = 12.0f;
+        if (ahead > 0)
+            w += 10.0f + c.textWidth(branchCount(ahead).c_str(), st) + 2.0f;
+        if (behind > 0)
+            w += 10.0f + c.textWidth(branchCount(behind).c_str(), st) + 2.0f;
+        return w;
+    }
+    inline float drawBranchMark(funkgui::Canvas& c, float x, float cy, int ahead, int behind, const funkgui::TextStyle& st,
+                                funkgui::Col ink)
+    {
+        drawIcon(c, Icon::branch, x + 5.0f, cy, 10.0f, ink);
+        float at = x + 12.0f;
+        const auto arrow = [&](bool up, int n) {
+            const float ax = at + 4.0f, h = 3.5f;
+            const float tip = up ? cy - h : cy + h, tail = up ? cy + h : cy - h;
+            c.segment(ax, tail, ax, tip, 1.2f, ink);
+            c.segment(ax - 2.5f, tip + (up ? 2.5f : -2.5f), ax, tip, 1.2f, ink);
+            c.segment(ax + 2.5f, tip + (up ? 2.5f : -2.5f), ax, tip, 1.2f, ink);
+            const std::string t = branchCount(n);
+            c.text(t.c_str(), at + 8.0f, c.capCentreTop(cy, st), st, ink);
+            at += 10.0f + c.textWidth(t.c_str(), st) + 2.0f;
+        };
+        if (ahead > 0)
+            arrow(true, ahead);
+        if (behind > 0)
+            arrow(false, behind);
+        return at - x;
     }
 }

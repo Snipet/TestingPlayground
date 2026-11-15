@@ -4,6 +4,7 @@
 #include "dsp/Engine.h"
 #include "fminus/CirDoc.h"
 #include "fminus/Circuits.h"
+#include "fminus/Failure.h"
 #include "fminus/GuiSpec.h"
 #include "fminus/Patch.h"
 
@@ -102,7 +103,15 @@ namespace playground
                     return;
                 try
                 {
-                    thread_ = std::thread([&cache, tools, guessed = std::move(jobs)] { cache.buildAll(guessed, tools); });
+                    thread_ = std::thread([&cache, tools, guessed = std::move(jobs)] {
+                        try
+                        {
+                            cache.buildAll(guessed, tools);
+                        }
+                        catch (...)
+                        {
+                        }                            // a guess: buildShaders builds them after the compile, and says why
+                    });
                 }
                 catch (const std::system_error&)
                 {
@@ -200,6 +209,13 @@ namespace playground
         {
             return s.sources.empty() ? std::string(kProgramName) : s.sources.front().name;
         }
+
+        // Inside a catch: the error line of a compile that failed inside the plugin, not in the program (fminus/Failure.h),
+        // at the first line of `file` (the program's), as a compile's errors are written.
+        std::string internalError(const std::string& file, const char* doing)
+        {
+            return file + ":1:1: error: " + failure::sentence(doing) + "\n";
+        }
     }
 
     // A compile done and not offered yet: its status, its program (null when it did not compile), and what the compiler
@@ -213,49 +229,67 @@ namespace playground
         bool keepIr = false;
         std::vector<circuits::Job> jobs;             // the self-tests its netlists want
         uint64_t landed = 0;                         // circuits::answers().landed() before it began (a refine's)
+        bool internal = false;                       // the compile failed inside the plugin (an exception): status.errors
+                                                     // say so, and there is no patch
     };
 
     std::unique_ptr<Compiler::Built> Compiler::build(float rate, Sources files, uint64_t id, const ShaderTools& tools,
                                                      ShaderCache& cache, bool keepIr, const CircuitPins* pins,
                                                      const Assets& assets)
     {
-        auto b = std::make_unique<Built>();
-        EarlyShaders early(files, tools, cache);
-        Patch::Result r = Patch::compile(files, rate, keepIr, pins, true, true, assets);
-        b->ir = std::move(r.ir);
-        b->keepIr = keepIr;
-        b->jobs = std::move(r.circuitJobs);
-        CompileStatus& s = b->status;
-        s.request = id;
-        s.ok = r.patch != nullptr;
-        s.stopped = r.stopped != Patch::Method::none;     // an init that ran past its budget (Patch.h)
-        s.bounds = s.stopped && r.bounds.failed;          // or failed a bounds check
-        s.stoppedProgram = s.stopped ? id : 0;
-        s.errors = std::move(r.errors);
-        s.notes = std::move(r.notes);
-        s.ms = r.compileMs;
-        s.sources = std::move(files);
-        s.circuitKeys = std::move(r.circuitKeys);
-        if (r.patch)
+        // An exception (out of memory, anything FMinus or this code throws) fails the compile in words, as a compile
+        // that does not compile fails: nothing of it plays (fminus/Failure.h). `files` stays whole until the end.
+        const std::string program = files.empty() ? std::string(kProgramName) : files.front().name;
+        try
         {
-            s.controls = r.patch->controls();
-            s.panel = r.patch->panel();
-            if (!s.panel.shaders.empty())
+            auto b = std::make_unique<Built>();
+            EarlyShaders early(files, tools, cache);
+            failure::at("compile");
+            Patch::Result r = Patch::compile(files, rate, keepIr, pins, true, true, assets);
+            b->ir = std::move(r.ir);
+            b->keepIr = keepIr;
+            b->jobs = std::move(r.circuitJobs);
+            CompileStatus& s = b->status;
+            s.request = id;
+            s.ok = r.patch != nullptr;
+            s.stopped = r.stopped != Patch::Method::none;     // an init that ran past its budget (Patch.h)
+            s.bounds = s.stopped && r.bounds.failed;          // or failed a bounds check
+            s.stoppedProgram = s.stopped ? id : 0;
+            s.errors = std::move(r.errors);
+            s.notes = std::move(r.notes);
+            s.ms = r.compileMs;
+            s.circuitKeys = std::move(r.circuitKeys);
+            if (r.patch)
             {
-                early.wait();
-                buildShaders(s.panel, s.sources, tools, cache, s.notes);
+                s.controls = r.patch->controls();
+                s.panel = r.patch->panel();
+                if (!s.panel.shaders.empty())
+                {
+                    early.wait();
+                    buildShaders(s.panel, files, tools, cache, s.notes);
+                }
+                r.patch->setProgram(id);
+                s.program = id;
+                b->recipe = r.patch->recipe();
+                s.circuits = b->recipe.pins;
+                s.circuitDials = b->recipe.bindings;
+                s.probes = b->recipe.probes;
+                s.samples = b->recipe.samples;
+                s.assets = b->recipe.assets;
+                b->patch = std::move(r.patch);
             }
-            r.patch->setProgram(id);
-            s.program = id;
-            b->recipe = r.patch->recipe();
-            s.circuits = b->recipe.pins;
-            s.circuitDials = b->recipe.bindings;
-            s.probes = b->recipe.probes;
-            s.samples = b->recipe.samples;
-            s.assets = b->recipe.assets;
-            b->patch = std::move(r.patch);
+            s.sources = std::move(files);
+            return b;
         }
-        return b;
+        catch (...)
+        {
+            auto b = std::make_unique<Built>();    // (should even this fail, the caller's catch has it)
+            b->status.request = id;
+            b->status.errors = internalError(program, "compiling");
+            b->status.sources = std::move(files);
+            b->internal = true;
+            return b;
+        }
     }
 
     Compiler::Compiler(Engine& engine)
@@ -284,6 +318,18 @@ namespace playground
 
     bool Compiler::freeze(const DialState& d)
     {
+        try
+        {
+            return freezeOnce(d);
+        }
+        catch (...)
+        {
+            return false;                          // as a copy that does not compile: none for these values, not tried
+        }                                          // again until a dial moves (the freezer's tried_), the program plays
+    }
+
+    bool Compiler::freezeOnce(const DialState& d)
+    {
         const std::lock_guard<std::mutex> one(freezeMutex_);
         Patch::Recipe recipe;
         bool keepIr = false;
@@ -295,6 +341,7 @@ namespace playground
             keepIr = irWanted_;
         }
         std::string why, ir;
+        failure::at("freeze");
         std::unique_ptr<Patch::Frozen> f = Patch::freeze(recipe, d.plain, why, false, keepIr ? &ir : nullptr);
         if (!f)
             return false;
@@ -464,9 +511,18 @@ namespace playground
             recipe = recipe_;
         }
         std::string text, why;
-        if (Patch::frozenIr(recipe, d.plain, text, why))
-            setFrozenIr(d, text);
-        else
+        bool made = false;
+        try
+        {
+            made = Patch::frozenIr(recipe, d.plain, text, why);
+            if (made)
+                setFrozenIr(d, text);
+        }
+        catch (...)
+        {
+            made = false;                          // as one that does not compile: not tried again for this copy
+        }
+        if (!made)
         {
             irFrozenTried_ = d.program;
             irFrozenValues_ = d.plain;
@@ -504,24 +560,38 @@ namespace playground
 
     CompileStatus Compiler::compileNow(Sources files, bool carry)
     {
+        // Never an exception into the host (its state call, the message thread): one fails this compile in words, as a
+        // RUN's does (fminus/Failure.h), and the program that played plays on.
         uint64_t id = 0;
-        ShaderTools tools;
-        Assets assets;
+        bool claimed = false;
+        CompileStatus s;
+        std::string program;
+        try
         {
-            // One compile offers at a time (above): the thread's (a RUN's, a refine's) ends first, and the thread starts
-            // none while this one compiles, so this program, offered last, is the one that plays.
-            std::unique_lock<std::mutex> lock(mutex_);
-            idle_.wait(lock, [this] { return !compiling_ || stop_; });
-            compiling_ = true;
-            id = ++nextId_;
-            tools = tools_;
-            assets = assets_;
+            program = files.empty() ? std::string(kProgramName) : files.front().name;
+            ShaderTools tools;
+            Assets assets;
+            {
+                // One compile offers at a time (above): the thread's (a RUN's, a refine's) ends first, and the thread
+                // starts none while this one compiles, so this program, offered last, is the one that plays.
+                std::unique_lock<std::mutex> lock(mutex_);
+                idle_.wait(lock, [this] { return !compiling_ || stop_; });
+                compiling_ = true;
+                claimed = true;
+                id = ++nextId_;
+                tools = tools_;
+                assets = assets_;
+            }
+            // Never the IR here (the calling thread may be the message thread): someone looking has it made on the
+            // compiler's thread (tookProgram).
+            const uint64_t landed = circuits::answers().landed();
+            s = land(build(engine_.rate(), std::move(files), id, tools, shaders_, false, nullptr, assets), landed, carry);
         }
-        // Never the IR here (the calling thread may be the message thread): someone looking has it made on the
-        // compiler's thread (tookProgram).
-        const uint64_t landed = circuits::answers().landed();
-        CompileStatus s = land(build(engine_.rate(), std::move(files), id, tools, shaders_, false, nullptr, assets), landed,
-                               carry);
+        catch (...)
+        {
+            s = failed(id, program, "compiling");
+        }
+        if (claimed)
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             compiling_ = false;
@@ -545,37 +615,92 @@ namespace playground
             carryInto(*b, carrier);                // just before the offer: the dials as they are now
         }
         const uint64_t id = b->status.request;
+        const std::string program = fileOf(b->status);
         engine_.offer(std::move(b->patch), watch);
-        if (watch && !firstBlocks(id))
+        // Past the offer the program plays: an exception from here on (Compiler.h, "A program that stops") is said as
+        // a note on its status, never as a compile that failed.
+        try
         {
-            // It stopped in its first blocks, and the Engine went back to the program it replaced, which plays on: the
-            // RUN failed, as a compile that does not compile fails (above, "A program that stops").
-            Engine::Stopped st;
-            bool read = false;
-            for (int k = 0; k < 1000 && !(read = engine_.lastStop(st) && st.program == id); ++k)
-                std::this_thread::yield();        // published just after the Engine claimed the revert
-            CompileStatus s = std::move(b->status);
-            s.ok = false;
-            s.stopped = true;
-            s.stoppedProgram = id;
-            s.bounds = read && st.bounds.failed;
-            s.errors = Patch::stopMessage(s.sources, read ? st.call : Patch::Method::process, engine_.rate(),
-                                          read ? &st.bounds : nullptr);
+            if (watch && !firstBlocks(id))
             {
-                const std::lock_guard<std::mutex> lock(mutex_);
-                stoppedProgram_ = id;
+                // It stopped in its first blocks, and the Engine went back to the program it replaced, which plays on: the
+                // RUN failed, as a compile that does not compile fails (above, "A program that stops").
+                Engine::Stopped st;
+                bool read = false;
+                for (int k = 0; k < 1000 && !(read = engine_.lastStop(st) && st.program == id); ++k)
+                    std::this_thread::yield();        // published just after the Engine claimed the revert
+                CompileStatus s = std::move(b->status);
+                s.ok = false;
+                s.stopped = true;
+                s.stoppedProgram = id;
+                s.bounds = read && st.bounds.failed;
+                s.errors = Patch::stopMessage(s.sources, read ? st.call : Patch::Method::process, engine_.rate(),
+                                              read ? &st.bounds : nullptr);
+                {
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    stoppedProgram_ = id;
+                }
+                return finish(std::move(s));
             }
-            return finish(std::move(s));
+            played(std::move(b->recipe), std::move(b->jobs), landed, carry);
+            failure::at("offered");
+            // Its IR before its status: a view that sees the status has the text.
+            tookProgram(b->status.request, fileOf(b->status), b->keepIr, b->ir);
+            CompileStatus s = finish(std::move(b->status));
+            if (!watch)
+                return s;
+            std::unique_lock<std::mutex> lock(mutex_);
+            checkStops(lock);                          // one that stopped with nothing to go back to: said at once
+            return status_;
         }
-        played(std::move(b->recipe), std::move(b->jobs), landed, carry);
-        // Its IR before its status: a view that sees the status has the text.
-        tookProgram(b->status.request, fileOf(b->status), b->keepIr, b->ir);
-        CompileStatus s = finish(std::move(b->status));
-        if (!watch)
-            return s;
-        std::unique_lock<std::mutex> lock(mutex_);
-        checkStops(lock);                          // one that stopped with nothing to go back to: said at once
-        return status_;
+        catch (...)
+        {
+            return offeredThrew(*b, id, program, watch);
+        }
+    }
+
+    CompileStatus Compiler::offeredThrew(Built& b, uint64_t id, const std::string& program, bool watch) noexcept
+    {
+        try
+        {
+            // It plays unless the Engine went back from it already; settled now, so a later stop is said as one
+            // (checkStops), never gone back from in silence.
+            const bool plays = !watch || engine_.settle(id);
+            const std::string line = program + ":1:1: note: " + failure::sentence("starting the program") + "\n";
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (status_.request != id)
+            {
+                // Its status not out yet: b's (intact until finish() takes it), as it played or not.
+                CompileStatus s = std::move(b.status);
+                if (plays)
+                {
+                    s.ok = true;
+                    s.program = id;
+                    s.notes += line;
+                    if (recipe_.program != id)
+                        s.notes += program + ":1:1: note: the plugin lost track of it as it began: RUN it again before "
+                                             "measuring or saving it\n";
+                }
+                else
+                {
+                    s.ok = false;
+                    s.stopped = true;
+                    s.stoppedProgram = id;
+                    s.program = recipe_.program;
+                    s.errors = program + ":1:1: error: " + failure::sentence("starting the program") + "\n";
+                }
+                status_ = std::move(s);
+            }
+            else
+                status_.notes += line;             // out already (finish ran): the note added
+            status_.revision += 1;
+            revision_.store(status_.revision, std::memory_order_release);
+            return status_;
+        }
+        catch (...)
+        {
+            return {};                             // not even that (out of memory): the status as it stands
+        }
     }
 
     bool Compiler::firstBlocks(uint64_t program)
@@ -718,35 +843,54 @@ namespace playground
             const bool was = compiling_;
             compiling_ = true;
             lock.unlock();
-            std::unique_ptr<Built> b = build(rate, before.files, id, tools, shaders_, keepIr, &before.pins, before.assets);
-            lock.lock();
-            if (b->patch && recipe_.program == st.program)   // (else another program plays now)
+            // An exception drops the restore (fminus/Failure.h): the stop is said, with why nothing plays again.
+            try
             {
-                carryInto(*b, carrier_);           // the dials as they are now, under mutex_ (as a refine's)
-                engine_.offer(std::move(b->patch));
-                s.program = id;
-                s.restored = b->status.sources;
-                s.controls = b->status.controls;
-                s.panel = b->status.panel;
-                s.carry = b->status.carry;
-                s.notes = b->status.notes;
-                s.circuitKeys = b->status.circuitKeys;
-                s.circuits = b->status.circuits;
-                s.circuitDials = b->status.circuitDials;
-                s.probes = b->status.probes;
-                s.samples = b->status.samples;
-                s.assets = b->status.assets;
-                lock.unlock();
-                played(std::move(b->recipe), std::move(b->jobs), landed, false);
-                tookProgram(id, fileOf(b->status), b->keepIr, b->ir);
-                b.reset();
+                std::unique_ptr<Built> b =
+                    build(rate, before.files, id, tools, shaders_, keepIr, &before.pins, before.assets);
                 lock.lock();
+                if (b->internal)
+                    s.errors += b->status.errors;      // the compile failed inside the plugin: said with the stop
+                if (b->patch && recipe_.program == st.program)   // (else another program plays now)
+                {
+                    carryInto(*b, carrier_);           // the dials as they are now, under mutex_ (as a refine's)
+                    engine_.offer(std::move(b->patch));
+                    s.program = id;
+                    s.restored = b->status.sources;
+                    s.controls = b->status.controls;
+                    s.panel = b->status.panel;
+                    s.carry = b->status.carry;
+                    s.notes = b->status.notes;
+                    s.circuitKeys = b->status.circuitKeys;
+                    s.circuits = b->status.circuits;
+                    s.circuitDials = b->status.circuitDials;
+                    s.probes = b->status.probes;
+                    s.samples = b->status.samples;
+                    s.assets = b->status.assets;
+                    lock.unlock();
+                    played(std::move(b->recipe), std::move(b->jobs), landed, false);
+                    tookProgram(id, fileOf(b->status), b->keepIr, b->ir);
+                    b.reset();
+                    lock.lock();
+                }
+                else
+                {
+                    lock.unlock();
+                    b.reset();
+                    lock.lock();
+                }
             }
-            else
+            catch (...)
             {
-                lock.unlock();
-                b.reset();
-                lock.lock();
+                if (!lock.owns_lock())
+                    lock.lock();
+                try
+                {
+                    s.errors += internalError(fileOf(s), "playing the program before it again");
+                }
+                catch (...)
+                {
+                }                                  // (out of memory: the stop alone is said)
             }
             compiling_ = was;
             idle_.notify_all();
@@ -775,6 +919,21 @@ namespace playground
         status_ = std::move(s);
         revision_.store(status_.revision, std::memory_order_release);
         return status_;
+    }
+
+    CompileStatus Compiler::failed(uint64_t id, const std::string& program, const char* doing) noexcept
+    {
+        try
+        {
+            CompileStatus s;
+            s.request = id;
+            s.errors = internalError(program.empty() ? std::string(kProgramName) : program, doing);
+            return finish(std::move(s));
+        }
+        catch (...)
+        {
+            return {};                             // not even that (out of memory): no words, and no status published
+        }
     }
 
     void Compiler::setShaderTools(ShaderTools tools)
@@ -842,87 +1001,141 @@ namespace playground
         std::unique_lock<std::mutex> lock(mutex_);
         while (!stop_)
         {
-            // A RUN waits while compileNow (or selfTestNow's refine) compiles on another thread.
-            wake_.wait_for(lock, std::chrono::milliseconds(100),
-                           [this] { return (hasQueued_ && !compiling_) || hasCheck_ || irDue_ || stop_; });
-            if (stop_)
-                break;
-            bool compiled = false;
-            if (hasQueued_ && !compiling_)
+            try
             {
-                Sources files = std::move(queued_);
-                const uint64_t id = queuedId_;
-                const ShaderTools tools = tools_;
-                const bool keepIr = irWanted_;         // someone looks: this compile keeps the program's IR
-                const bool panelEdits = queuedPanel_;
-                const Assets assets = assets_;
-                hasQueued_ = false;
-                compiling_ = true;
-                lock.unlock();
+                pass(lock);
+            }
+            catch (...)
+            {
+                // What the pieces' own catches did not have (out of memory as one said its failure): this pass ends, the
+                // thread lives, and the next pass is as any (fminus/Failure.h).
+                if (!lock.owns_lock())
+                    lock.lock();
+            }
+        }
+        idle_.notify_all();
+    }
+
+    void Compiler::pass(std::unique_lock<std::mutex>& lock)
+    {
+        // A RUN waits while compileNow (or selfTestNow's refine) compiles on another thread.
+        wake_.wait_for(lock, std::chrono::milliseconds(100),
+                       [this] { return (hasQueued_ && !compiling_) || hasCheck_ || irDue_ || stop_; });
+        if (stop_)
+            return;
+        bool compiled = false;
+        if (hasQueued_ && !compiling_)
+        {
+            Sources files = std::move(queued_);
+            const uint64_t id = queuedId_;
+            const ShaderTools tools = tools_;
+            const bool keepIr = irWanted_;         // someone looks: this compile keeps the program's IR
+            const bool panelEdits = queuedPanel_;
+            const Assets assets = assets_;
+            hasQueued_ = false;
+            compiling_ = true;
+            lock.unlock();
+            // An exception fails this RUN in words, as a compile that does not compile fails (fminus/Failure.h): the
+            // program that plays plays on, and the next RUN is taken as any.
+            try
+            {
                 const uint64_t landed = circuits::answers().landed();
                 // An edit of the panel's files alone plays on (Compiler.h, "A panel's edit"); else a compile.
                 if (!(panelEdits && editPanel(files, id, tools, assets)))
-                    land(build(engine_.rate(), std::move(files), id, tools, shaders_, keepIr, nullptr, assets), landed, true,
-                         true);
-                lock.lock();
-                compiling_ = false;
-                compiled = true;
-                idle_.notify_all();                    // wait() (when no other RUN waits) and compileNow
+                    land(build(engine_.rate(), files, id, tools, shaders_, keepIr, nullptr, assets), landed, true, true);
             }
-            if (hasCheck_ && !hasQueued_ && !stop_)
+            catch (...)
             {
-                // The editor's check, once no RUN waits: its messages only.
-                Sources files = std::move(checkQueued_);
-                hasCheck_ = false;
-                lock.unlock();
-                const Patch::Result r = Patch::check(files);
-                lock.lock();
-                check_.revision += 1;
-                check_.errors = r.errors;
-                check_.ms = r.compileMs;
-                check_.sources = std::move(files);
+                failed(id, files.empty() ? std::string() : files.front().name, "compiling");
             }
-            if (irDue_ && !hasQueued_ && !stop_)
-            {
-                // The IR of the program that plays, which its compile did not keep: compiled again for it alone, nothing
-                // offered. Kept only if that program still plays and someone still looks.
-                irDue_ = false;
-                const Patch::Recipe recipe = recipe_;
-                lock.unlock();
-                Patch::Ir ir;
-                std::string why;
-                const bool made = recipe.program != 0 && Patch::ir(recipe, ir, why);
-                std::shared_ptr<const IrText> lowered = made ? irText(ir.lowered) : nullptr;
-                std::shared_ptr<const IrText> optimised = made ? irText(ir.optimised) : nullptr;
-                lock.lock();
-                if (irWanted_ && recipe.program != 0 && recipe_.program == recipe.program && !irDue_)
-                {
-                    ir_.program = recipe.program;
-                    ir_.file = recipe.files.empty() ? std::string(kProgramName) : recipe.files.front().name;
-                    ir_.lowered = std::move(lowered);
-                    ir_.optimised = std::move(optimised);
-                    ir_.why = made ? std::string() : why;
-                }
-                ir_.making = irDue_;
-                bumpIr();
-            }
-            // A program that stopped as it played (above, "A program that stops"): said, and the one before it played
-            // again.
-            if (!hasQueued_ && !stop_)
-                checkStops(lock);
-            // The self-test's answer for the program that plays, compiled in when it may be (above), at a pass of its
-            // own: never the one whose compile made it due (a RUN's waiter and the processor have that compile's status
-            // first).
-            std::unique_ptr<Built> stale = checkLanded();
-            checkOutcomes();
-            if (selfTesting_ && !compiled && mayRefine())
-                refine(lock);
-            lock.unlock();
-            stale.reset();
-            engine_.collect();                     // what the audio thread handed back
             lock.lock();
+            compiling_ = false;
+            compiled = true;
+            idle_.notify_all();                    // wait() (when no other RUN waits) and compileNow
         }
-        idle_.notify_all();
+        if (hasCheck_ && !hasQueued_ && !stop_)
+        {
+            // The editor's check, once no RUN waits: its messages only.
+            Sources files = std::move(checkQueued_);
+            hasCheck_ = false;
+            lock.unlock();
+            std::string errors;
+            double ms = 0.0;
+            try
+            {
+                failure::at("check");
+                Patch::Result r = Patch::check(files);
+                errors = std::move(r.errors);
+                ms = r.compileMs;
+            }
+            catch (...)
+            {
+                errors.clear();                    // an exception (fminus/Failure.h): no messages for this check
+            }
+            lock.lock();
+            check_.revision += 1;
+            check_.errors = std::move(errors);
+            check_.ms = ms;
+            check_.sources = std::move(files);
+        }
+        if (irDue_ && !hasQueued_ && !stop_)
+        {
+            // The IR of the program that plays, which its compile did not keep: compiled again for it alone, nothing
+            // offered. Kept only if that program still plays and someone still looks.
+            irDue_ = false;
+            const Patch::Recipe recipe = recipe_;
+            lock.unlock();
+            Patch::Ir ir;
+            std::string why;
+            bool made = false;
+            std::shared_ptr<const IrText> lowered, optimised;
+            try
+            {
+                made = recipe.program != 0 && Patch::ir(recipe, ir, why);
+                lowered = made ? irText(ir.lowered) : nullptr;
+                optimised = made ? irText(ir.optimised) : nullptr;
+            }
+            catch (...)
+            {
+                made = false;                      // an exception (fminus/Failure.h): the view says why
+                lowered.reset();
+                optimised.reset();
+                try
+                {
+                    why = failure::sentence("making the IR");
+                }
+                catch (...)
+                {
+                    why.clear();
+                }
+            }
+            lock.lock();
+            if (irWanted_ && recipe.program != 0 && recipe_.program == recipe.program && !irDue_)
+            {
+                ir_.program = recipe.program;
+                ir_.file = recipe.files.empty() ? std::string(kProgramName) : recipe.files.front().name;
+                ir_.lowered = std::move(lowered);
+                ir_.optimised = std::move(optimised);
+                ir_.why = made ? std::string() : why;
+            }
+            ir_.making = irDue_;
+            bumpIr();
+        }
+        // A program that stopped as it played (above, "A program that stops"): said, and the one before it played
+        // again.
+        if (!hasQueued_ && !stop_)
+            checkStops(lock);
+        // The self-test's answer for the program that plays, compiled in when it may be (above), at a pass of its
+        // own: never the one whose compile made it due (a RUN's waiter and the processor have that compile's status
+        // first).
+        std::unique_ptr<Built> stale = checkLanded();
+        checkOutcomes();
+        if (selfTesting_ && !compiled && mayRefine())
+            refine(lock);
+        lock.unlock();
+        stale.reset();
+        engine_.collect();                     // what the audio thread handed back
+        lock.lock();
     }
 
     // ---- the self-test --------------------------------------------------------------------------------------------------
@@ -1028,13 +1241,18 @@ namespace playground
             if (!b->patch)
             {
                 // It compiled before, so this should not happen: say so, and let the provisional configuration play on
-                // (until another answer lands, or another compile).
+                // (until another answer lands, or another compile). One that failed inside the plugin (an exception,
+                // fminus/Failure.h) is dropped so too, its error saying why.
                 CompileStatus s = status_;
                 const std::string& e = b->status.errors;
+                const std::string why = e.substr(0, e.find('\n'));
                 for (const circuits::Job& j : playing_)
                     if (circuits::answers().find(j.key))
-                        s.notes += j.file + ": note: the self-test's configuration does not compile in this program, so the "
-                                   "provisional one plays on: " + e.substr(0, e.find('\n')) + "\n";
+                        s.notes += j.file + (b->internal ? ": note: the self-test's configuration was not brought in, so the "
+                                                           "provisional one plays on: "
+                                                         : ": note: the self-test's configuration does not compile in this "
+                                                           "program, so the provisional one plays on: ")
+                                 + why + "\n";
                 s.revision = status_.revision + 1;
                 status_ = std::move(s);
                 revision_.store(status_.revision, std::memory_order_release);
@@ -1078,9 +1296,26 @@ namespace playground
         engine_.offer(std::move(b->patch));        // under mutex_: no RUN is queued between the look and the offer
         compiling_ = true;                         // nothing else offers before its status is out
         lock.unlock();
-        played(std::move(b->recipe), std::move(b->jobs), b->landed);
-        tookProgram(b->status.request, fileOf(b->status), b->keepIr, b->ir);
-        finishRefine(std::move(b->status), chosen);
+        try
+        {
+            played(std::move(b->recipe), std::move(b->jobs), b->landed);
+            tookProgram(b->status.request, fileOf(b->status), b->keepIr, b->ir);
+            finishRefine(std::move(b->status), chosen);
+        }
+        catch (...)
+        {
+            // An exception once it was offered (fminus/Failure.h): it plays, and the status says what failed.
+            try
+            {
+                const std::lock_guard<std::mutex> again(mutex_);
+                status_.notes += fileOf(status_) + ": note: " + failure::sentence("bringing the self-test's answer in") + "\n";
+                status_.revision += 1;
+                revision_.store(status_.revision, std::memory_order_release);
+            }
+            catch (...)
+            {
+            }                                      // (out of memory: nothing more can be said)
+        }
         b.reset();
         lock.lock();
         compiling_ = false;
@@ -1136,7 +1371,18 @@ namespace playground
             stale = checkLanded();
             checkOutcomes();
             if (mayRefine())
-                offered = refine(lock);
+            {
+                try
+                {
+                    offered = refine(lock);
+                }
+                catch (...)
+                {
+                    if (!lock.owns_lock())
+                        lock.lock();
+                    offered = false;               // dropped (fminus/Failure.h), as the compiler's thread drops one
+                }
+            }
         }
         return offered;
     }

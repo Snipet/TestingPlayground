@@ -79,6 +79,13 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "$TAG: version $version"
 
+      # The plugins compile CHANGELOG.md in (their What's new): a release's version has its `## Version` heading, and no
+      # entry waits in docs/changelog/ (scripts/changelog.py release folds them in and makes the heading). On a pushed
+      # tag only: a run by hand attaches files to a release made before this rule.
+      - name: The changelog's heading
+        if: github.event_name == 'push'
+        run: python3 scripts/changelog.py check-release --tag "$TAG"
+
       - name: The draft release
         env:
           GH_TOKEN: ${{ github.token }}

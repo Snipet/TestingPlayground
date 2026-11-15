@@ -13,6 +13,12 @@ pull request's link out: the fold adds it from the merge.
 they would make, and on `main` `fold` moves them into `CHANGELOG.md` and removes them; `cut --date YYYY-MM-DD` folds
 and makes the day's section. This file is never an entry.
 
+A release gives the days since the one before a heading of their own, `## Version 0.2.0 (2026-11-20)`, under
+`## Unreleased`: `scripts/changelog.py release --version 0.2.0 --date 2026-11-20` on `main` folds what waits here, cuts
+the day's section and adds the heading, before the tag. The plugins compile `CHANGELOG.md` in and show their version's
+section as What's new, so the release workflow refuses a tag whose version has no heading, or any tag while an entry
+waits here (`scripts/changelog.py check-release --tag v0.2.0`).
+
 fold's order: the entries not yet committed come first, by name; then the others, newest first by the time of the
 commit that brought each file onto the current branch (along its first-parent line: a pull request's merge, or a
 commit made on the branch itself; the newest such commit when a file was removed and added again), ties by name.

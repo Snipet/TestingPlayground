@@ -231,6 +231,8 @@ namespace playground::projectstore
         int64_t createdMs = 0;                           // Project::createdMs (worked out for an older file)
         int64_t bytes = 0;                               // its file's size, as the cache's look found it (a factory
                                                          // project's: 0)
+        std::string id = {};                             // Project::id ("" before ids; a factory project's: none):
+                                                         // what its git link (below) is found by
     };
 
     // `name` as a project or a preset may have it: printable ASCII but / \ : * ? " < > | and a leading '.', its spaces
@@ -471,4 +473,64 @@ namespace playground::projectstore
                                const std::vector<SampleRef>* samples = nullptr);
     // Why a project's sample files do not fit (kMaxSampleBytes), in words; "" when they do.
     std::string samplesRefusal(const Project& p);
+
+    // ---- Package 05: projects linked to git remotes (plugin/GitProjects.h) -----------------------------------------
+    // Which project has which working folder, remote and branch, and what was last synced: one small hidden file in the
+    // folder, kLinksFile (never listed: no project's name starts with a '.'), beside the view's, keyed by the project's
+    // id so a rename keeps its link. Written whole (beside, then moved over) under a mutex of its own, read again only
+    // when its time or its size changes, so the listing, the mark and the git card read it on the message thread and
+    // read no repository:
+    //   { "format": "funk-playground-git-links", "version": 1, "git": "<the git the user chose, or none>",
+    //     "links": [ { "id", "folder": "Glass Bloom-8c1f4e2a", "remote", "branch", "committed": 12, "commit": "<sha>",
+    //                  "syncedMs", "ahead": 0, "behind": 0, "checkedMs", "written": [ "project.json", ... ],
+    //                  "recent": [ { "sha", "subject", "ms" }, ... ], "theirs": "<sha>" }, ... ] }
+    // "folder" is the working folder's name under gitFolder() (<projects folder>/Git); "committed" the store's version
+    // number last made a commit; "ahead" and "behind" as of the last fetch (-1 unknown); "written" the files the
+    // plugin's own last write of the tree listed (ProjectTree.h), the only ones a later write may remove; "recent" the
+    // last commits, newest first, for the card; "theirs" a diverged remote's commit, until it is settled. Nothing about
+    // git goes into the project's own file, so an export never carries a remote's address.
+    inline constexpr const char* kLinksFile = ".git-links.json";
+    inline constexpr const char* kGitFolderName = "Git";
+    inline constexpr std::size_t kRecentCommits = 8;
+    struct LinkCommit
+    {
+        std::string sha;
+        std::string subject;
+        int64_t ms = 0;
+        friend bool operator==(const LinkCommit&, const LinkCommit&) = default;
+    };
+    struct Link
+    {
+        std::string id;
+        std::string folder;
+        std::string remote;
+        std::string branch = "main";
+        int committed = 0;
+        std::string commit;
+        int64_t syncedMs = 0;
+        int ahead = -1, behind = -1;
+        int64_t checkedMs = 0;
+        std::vector<std::string> written;
+        std::vector<LinkCommit> recent;
+        std::string theirs;
+        friend bool operator==(const Link&, const Link&) = default;
+    };
+    juce::File gitFolder();                              // <the folder>/Git: the working folders' (made by Connect)
+    std::vector<Link> links();
+    std::optional<Link> linkOf(std::string_view id);
+    bool setLink(const Link& link, std::string* why = nullptr);   // added, or over the one of its id
+    bool removeLink(std::string_view id, std::string* why = nullptr);
+    uint64_t linksRevision();                            // moves when the file is written here or changes on disk
+    std::string gitPath();                               // the git the user chose ("" for none: found as Git.h says)
+    bool setGitPath(const std::string& path, std::string* why = nullptr);
+
+    // A version brought in from elsewhere (a pull: ProjectTree.h's Tree), added to the project `name` as saveVersion adds
+    // one: numbered after its latest, at `savedMs`, its note what changed since the latest after `lead`; `files` the
+    // sample files its refs name; the presets the tree has join the project's (a preset of a name the project has keeps
+    // the project's own when its dials are the same, else the tree's); the info, when given, replaces the project's.
+    // None added (Saved::unchanged) when it is the latest as it is. Nothing, with why, when it cannot be written.
+    std::optional<Saved> addVersion(std::string_view name, Version v, const std::vector<SampleFile>& files, int64_t savedMs,
+                                    std::string_view lead, const std::vector<Preset>& presets, const Info* info,
+                                    std::string* why = nullptr);
 }
+

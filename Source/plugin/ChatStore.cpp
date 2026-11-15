@@ -1,5 +1,6 @@
 // Source/plugin/ChatStore.cpp: see ChatStore.h.
 #include "plugin/ChatStore.h"
+#include "plugin/FileReplace.h"
 #include "plugin/SecretStore.h"
 #include "fminus/Xdg.h"
 
@@ -30,6 +31,7 @@
 #endif
 
 #include <algorithm>
+#include <filesystem>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -272,24 +274,15 @@ namespace playground::chatstore
 
         // `from` renamed over `to` in one step: the old file stays whole until the new one takes its place (never JUCE's
         // moveFileTo, which deletes the old file first). Windows: MoveFileExW, tried again for up to half a second while
-        // a reader holds `to` without sharing its deletion (mcp::replacePath's way).
+        // a reader holds `to` without sharing its deletion (plugin/FileReplace.h, the stores' one rule).
         bool replaceFile(const juce::File& from, const juce::File& to)
         {
-#if defined(_WIN32)
-            const std::wstring f = from.getFullPathName().toWideCharPointer(), t = to.getFullPathName().toWideCharPointer();
-            for (int tries = 0; tries < 100; ++tries)
-            {
-                if (MoveFileExW(f.c_str(), t.c_str(), MOVEFILE_REPLACE_EXISTING) != 0)
-                    return true;
-                const DWORD e = GetLastError();
-                if (e != ERROR_SHARING_VIOLATION && e != ERROR_ACCESS_DENIED && e != ERROR_LOCK_VIOLATION)
-                    return false;
-                Sleep(5);
-            }
-            return false;
-#else
-            return std::rename(from.getFullPathName().toRawUTF8(), to.getFullPathName().toRawUTF8()) == 0;
-#endif
+            const auto pathOf = [](const juce::File& f) {
+                const std::string u = f.getFullPathName().toStdString();   // UTF-8
+                return std::filesystem::path(std::u8string(u.begin(), u.end()));
+            };
+            std::error_code ec;
+            return files::replace(pathOf(from), pathOf(to), ec);
         }
 
         // Writes `bytes` to `file` (0600) through a temporary beside it, renamed over it once the temporary is known to

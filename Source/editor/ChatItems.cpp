@@ -348,12 +348,27 @@ namespace playground::ui
         const std::string label = spec_.label ? spec_.label() : std::string();
         const float tw = funkgui::text::width(funkgui::FontService::get().atlas(), label.c_str(), chat::kSmall);
         const bool icon = spec_.icon && spec_.icon() != chat::Icon::none;
-        return std::ceil(12.0f + (icon ? 18.0f : 0.0f) + tw + (spec_.chevron ? 16.0f : 0.0f) + 10.0f);
+        float mark = 0.0f;                                // package 05: the git mark's room
+        if (spec_.branch)
+            if (const chat::BranchMark b = spec_.branch(); b.on)
+            {
+                const auto& atlas = funkgui::FontService::get().atlas();
+                mark = 18.0f;
+                for (const int n : { b.ahead, b.behind })
+                    if (n > 0)
+                        mark += 12.0f + funkgui::text::width(atlas, chat::branchCount(n).c_str(), chat::kSmall);
+            }
+        return std::ceil(12.0f + (icon ? 18.0f : 0.0f) + tw + mark + (spec_.chevron ? 16.0f : 0.0f) + 10.0f);
     }
 
     uint64_t ButtonItem::drawKey() const
     {
         DrawKey k;
+        if (spec_.branch)                                 // package 05: the git mark
+        {
+            const chat::BranchMark b = spec_.branch();
+            k.mix(b.on).mix(b.ahead).mix(b.behind);
+        }
         k.mix(spec_.label ? spec_.label() : std::string())
             .mix(spec_.detail ? spec_.detail() : std::string())
             .mix(spec_.dot && spec_.dot())
@@ -394,8 +409,14 @@ namespace playground::ui
             const std::string detail = spec_.detail ? spec_.detail() : std::string();
             const bool dot = spec_.dot && spec_.dot();
             const float detailW = detail.empty() ? 0.0f : c.textWidth(detail.c_str(), chat::kSmall) + 10.0f;
-            const std::string shown = fitText(c, label, chat::kSmall, dropdown::labelRoom(r, lx) - detailW - (dot ? 12.0f : 0.0f));
+            const chat::BranchMark branch = spec_.branch ? spec_.branch() : chat::BranchMark{};   // package 05: the git mark
+            const float markW = branch.on ? chat::branchMarkWidth(c, branch.ahead, branch.behind, chat::kSmall) + 6.0f : 0.0f;
+            const std::string shown =
+                fitText(c, label, chat::kSmall, dropdown::labelRoom(r, lx) - detailW - (dot ? 12.0f : 0.0f) - markW);
             c.text(shown.c_str(), lx, c.capCentreTop(r.centreY(), chat::kSmall), chat::kSmall, labelInk);
+            if (branch.on)
+                chat::drawBranchMark(c, lx + c.textWidth(shown.c_str(), chat::kSmall) + 6.0f, r.centreY(), branch.ahead,
+                                     branch.behind, chat::kSmall, labelInk);
             if (dot)                                  // the modified dot
                 c.disc(lx + c.textWidth(shown.c_str(), chat::kSmall) + 7.0f, r.centreY(), 3.0f, on ? p.accent : p.faint);
             if (!detail.empty())
@@ -495,6 +516,10 @@ namespace playground::ui
             if (spec_.dot && spec_.dot())
                 item.value += ", edited";
         }
+        if (spec_.branch)                                 // package 05: the git mark
+            if (const chat::BranchMark b = spec_.branch(); b.on)
+                item.description = "linked to " + b.remote + (b.ahead > 0 ? ", " + std::to_string(b.ahead) + " to push" : "")
+                                 + (b.behind > 0 ? ", " + std::to_string(b.behind) + " to pull" : "");
         item.enabled = enabled();
         out.push_back(std::move(item));
     }

@@ -124,6 +124,8 @@
 //             second under its parenthesis, that join back to it; one of forty on kHoverLines lines, the last cut with
 //             " ..."; an unfolded constant of a long expression one line cut with " ..."; a short one as it was; a cut
 //             never splits a UTF-8 character (lang::headOf; a field's attribute of "µ" cut inside one)
+//   MEMBER    a usage header's lines for a member (lang::memberDoc: its usage, then what it says, joined); an empty
+//             member none, at once
 #include "Probe.h"
 
 #include "dsp/Measure.h"
@@ -2330,6 +2332,15 @@ PROBE(fminus, lang)
             kept += mu;
         P.eq("hovers.cut_utf8", lu.size() == 2 && fits(lu) && validUtf8(hu->code) && lu[0] == "float spans"
                                     && lu[1] == std::string(12, ' ') + "[[ui::label(\"" + kept + " ..." ? 1 : 0, 1);
+    }
+
+    // ---- MEMBER --------------------------------------------------------------------------------------------------------
+    {
+        // A usage header's line for a member, and for an empty member none, at once (finding "" never moved on).
+        const std::string doc = "Usage:\n  y = filter.tick(x);   one sample\n      through the filter\n  filter.lp   the low pass\n";
+        P.eq("member.found", lg::memberDoc(doc, "tick") == "y = filter.tick(x);\none sample through the filter" ? 1 : 0, 1);
+        P.eq("member.other", lg::memberDoc(doc, "lp") == "filter.lp\nthe low pass" ? 1 : 0, 1);
+        P.eq("member.empty", lg::memberDoc(doc, "").empty() && lg::memberDoc("", "").empty() ? 1 : 0, 1);
     }
     return P.finish();
 }

@@ -97,4 +97,33 @@ namespace playground
         out.note = "the editor's files and dials as they are now";
         return out;
     }
+
+    // ---- Package 05, part 3: a diverged project's other side, as the git job read it (ProcessorGit.cpp) -------------------
+    // Its dials worded as a version's are (dialTexts, the program that plays), so COMPARE says both sides alike. The read
+    // copied under gitMutex_, which is let go before programMutex_ is taken.
+    VersionContent Processor::gitTheirs(const std::string& project) const
+    {
+        VersionContent out;
+        std::vector<projectstore::Dial> dials;
+        {
+            const std::lock_guard<std::mutex> lock(gitMutex_);
+            if (gitTheirs_.project.empty() || !projectstore::sameName(gitTheirs_.project, project))
+            {
+                out.read = out.missing = true;
+                return out;
+            }
+            out = gitTheirs_.content;
+            dials = gitTheirs_.dials;
+        }
+        Controls cs;
+        std::array<std::vector<std::string>, kMaxControls> options;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            cs = controls_;
+            options = panel_.options;
+        }
+        out.dials = dialTexts(dials, cs, options);
+        return out;
+    }
 }
+

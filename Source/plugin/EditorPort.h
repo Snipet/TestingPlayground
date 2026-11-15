@@ -352,6 +352,10 @@ namespace playground
         int64_t savedMs = 0;                     // its latest version's save, ms since 1970 (the newest first: by it)
         int64_t createdMs = 0;                   // when the project was made (ProjectStore.h's "created"), ms since 1970
         int64_t bytes = 0;                       // its file's size (a factory project's: 0)
+        bool git = false;                        // package 05: linked to a git remote (the links file, no repository read)
+        int ahead = -1, behind = -1;             // ... to push (versions and commits) and to pull, as of the last fetch
+                                                 // (-1: not known)
+        std::string remote = {};                 // ... its remote, shortened ("github.com/me/pad")
         friend bool operator==(const ProjectEntry&, const ProjectEntry&) = default;
     };
 
@@ -494,6 +498,54 @@ namespace playground
         std::string why;                         // why not (!ok)
     };
 
+    // ---- Package 05: projects and git (plugin/GitProjects.h, plugin/ProcessorGit.cpp, editor/GitCard.h) -------------
+    // One git job at a time, on a thread of the processor's own, only when the user pressed its button: find (git
+    // --version alone: the Settings card's Look for git), connect, push, pull, check, add (a clone made a project).
+    // Part 3: keepMine, takeTheirs (a diverged project settled), theirs (their side read into memory for COMPARE).
+    enum class GitOp : uint8_t { find, connect, push, pull, check, add, keepMine, takeTheirs, theirs };
+    struct GitJob
+    {
+        GitOp op = GitOp::check;
+        std::string project;                     // connect, push, pull, check
+        std::string remote;                      // connect, add
+        std::string branch;                      // connect ("" main), add ("" the remote's default)
+    };
+    struct GitCommitEntry
+    {
+        std::string sha;
+        std::string subject;
+        std::string when;                        // "2026-11-13 14:02"
+        friend bool operator==(const GitCommitEntry&, const GitCommitEntry&) = default;
+    };
+    // A project's link, from the links file and the store's cache (no repository read).
+    struct GitLink
+    {
+        bool linked = false;
+        std::string remote, shortRemote, branch;
+        std::string folder;                      // the working folder, its full path
+        int toPush = 0;                          // versions newer than the last commit
+        int ahead = -1, behind = -1;             // commits, as of the last fetch (-1: not known)
+        std::string checked;                     // when it was last fetched ("" never)
+        std::vector<GitCommitEntry> recent;      // newest first
+        bool diverged = false;                   // both sides moved: the next pull settles it
+        friend bool operator==(const GitLink&, const GitLink&) = default;
+    };
+    struct GitState
+    {
+        bool busy = false;                       // a job runs
+        uint64_t ended = 0;                      // how many have ended: a new outcome when it moves
+        GitOp op = GitOp::find;                  // the last one started
+        std::string project;                     // ... its project ("" for find and add)
+        std::string doing;                       // while busy: what it does now, in words
+        bool ok = false, cancelled = false;      // the last one's outcome
+        bool behind = false, diverged = false;   // ... push refused (pull first); pull found both sides moved
+        std::string words;                       // ... in words (git's own when it failed)
+        std::string added;                       // ... add: the project made
+        bool looked = false;                     // git looked for (a job ran, or Look for git)
+        std::string gitPath, gitVersion;         // ... what was found ("" none)
+        std::string gitWhy;                      // ... none found: why, in words
+    };
+
     // What an import brought in (importProjects): the projects added (their names now) and those refused, each "<name>:
     // <why>" (a bundle's of the other kind, say).
     struct Imported
@@ -544,6 +596,40 @@ namespace playground
     {
         std::string title;                       // "Versions", "Graphics (FunkGui)", ...
         std::vector<DebugRow> rows;
+    };
+
+    // The website (package 08: plugin/UpdateCheck.h, plugin/FactoryStore.h), as the offer, the top bar's pill, the
+    // update card and the Network page show it (EditorPort::updateState). Plain data, read where it lives.
+    struct UpdateState
+    {
+        // The update check: off (<ENV_PREFIX>UPDATES=off, or the answer no or later), unanswered, idle, checking, failed.
+        enum class Check : uint8_t { off, unanswered, idle, checking, failed };
+        Check check = Check::off;
+        bool loaded = false;                     // the answers have been read (app.json, factory.json)
+        bool envOff = false;                     // <ENV_PREFIX>UPDATES=off: never checks, and no offer
+        bool updatesOn = false;                  // the answer is yes
+        bool updatesAnswered = false;            // yes, no or later
+        std::string current;                     // this plugin's version
+        std::string latest, date, summary;       // the site's last good answer ("" none yet)
+        bool newer = false;                      // latest is above current, not skipped, and the check is on
+        std::string skipped;
+        int64_t checkedMs = 0;                   // the site's last answer, ms since 1970 (0: never)
+        std::string why;                         // the last check's failure, in words
+        // The factory projects (FactoryStore.h): the answer (0 not asked, 1 yes, 2 no), <ENV_PREFIX>FACTORY=off, and
+        // the store's state in a few words ("12 projects, checked today", "not fetched yet", "failed: no connection").
+        int factory = 0;
+        bool factoryOff = false;
+        std::string factoryWords;
+        // The offer (editor/OfferCard.h): due when both are read, neither question answered, and envOff is false.
+        bool offer = false;
+        // What's new (editor/UpdateCards.h, plugin/Changelog.h): the version whose card was last shown, both products'
+        // ("" never); due once an editor opened and app.json was read again since, when seen is not this version, the
+        // changelog has something to show, and <ENV_PREFIX>WHATSNEW is not "off" (the probes' environment sets it).
+        std::string seen;
+        bool whatsNewOff = false;
+        bool whatsNewReady = false;              // app.json read, and read again since an editor last opened
+        bool whatsNewDue = false;
+        uint64_t revision = 0;
     };
 
     // The Standalone window's close, minimise and zoom buttons, together (EditorPort::windowButtons).
@@ -950,6 +1036,54 @@ namespace playground
             return false;
         }
 
+        // ---- The website (package 08: UpdateState above; plugin/ProcessorUpdates.cpp) -----------------------------------
+        //   updateState()      the update check's state and the factory projects' answer (UpdateState); its revision
+        //                      moves with the check's (a Panel reads the state again only then)
+        //   editorOpened()     an editor's Panel was made (never a picture's): the factory store and the update check
+        //                      may now reach the website, each only after a yes and only when one is due
+        //   answerOffer()      the offer's Allow (each ticked line a yes, each unticked one a no) or Not now (allow
+        //                      false: the update check "later", the factory projects left unasked, the offer not made
+        //                      again by itself)
+        //   setUpdates(), setFactoryProjects()   the Network page's switches (a yes asks for a check or a fetch)
+        //   checkForUpdates()  Check now; skipUpdate() the pill and the card no longer show that version
+        //   announceUpdate()   true the first time this process asks for `version`: the status line's notice, once
+        //   openDownloadPage() the site's fixed download page in the browser (updates::kDownloadPath: never an address
+        //                      from the site), through the processor's hook under a probe; false with why
+        //   whatsNewShown()    What's new was shown (by itself or from Settings): app.json's seen is this version
+        //   openLink()         a link of What's new in the browser: only an https:// address of the repository or the
+        //                      website (changelog::linkAllowed), through the same hook as the download page; false
+        //                      with why (refused, or nothing opens under a probe)
+        virtual UpdateState updateState() const { return {}; }
+        virtual uint64_t updateRevision() const { return 0; }
+        virtual void editorOpened() {}
+        virtual void answerOffer(bool allow, bool factory, bool updates)
+        {
+            (void)allow;
+            (void)factory;
+            (void)updates;
+        }
+        virtual void setUpdates(bool on) { (void)on; }
+        virtual void setFactoryProjects(bool on) { (void)on; }
+        virtual void checkForUpdates() {}
+        virtual void skipUpdate(const std::string& version) { (void)version; }
+        virtual bool announceUpdate(const std::string& version)
+        {
+            (void)version;
+            return false;
+        }
+        virtual bool openDownloadPage(std::string& why)
+        {
+            why = "nothing opens here";
+            return false;
+        }
+        virtual void whatsNewShown() {}
+        virtual bool openLink(const std::string& url, std::string& why)
+        {
+            (void)url;
+            why = "nothing opens here";
+            return false;
+        }
+
         // MIDI learn (above; plugin/MidiLearn.h). learnMidi: false when the slot has no dial (or nothing learns here);
         // forgetMidi: false when the dial had no control; forgetAllMidi: how many went.
         virtual bool midiLearnable() const { return false; }
@@ -979,6 +1113,55 @@ namespace playground
             (void)name;
             why = "no samples here";
             return false;
+        }
+
+        // ---- Package 05: projects and git ---------------------------------------------------------------------------
+        //   gitLink()       a project's link (GitLink): the links file and the store's cache, never a repository
+        //   startGit()      a job (GitJob) on the processor's git thread; false, with why, when one runs or it cannot;
+        //                   `endsAt` (when given) the GitState::ended its job will end at, set under the lock that starts
+        //                   it, so that a job that ends before the caller looks is still known as its own
+        //   gitState()      the job under way or the last one's outcome; gitPolled() moves with it and with the links
+        //   cancelGit()     the running git killed (what a Connect or an Add made is removed again)
+        //   disconnectGit() the link removed, the project and its folder kept (no git runs)
+        //   gitChosen()     the git the user chose in Settings ("" none: found as Git.h says); setGitChosen() sets it
+        //   gitFolder()     <projects folder>/Git, where the working folders are
+        virtual GitLink gitLink(const std::string& project) const
+        {
+            (void)project;
+            return {};
+        }
+        virtual bool startGit(const GitJob& job, std::string& why, uint64_t* endsAt = nullptr)
+        {
+            (void)job;
+            (void)endsAt;
+            why = "no git here";
+            return false;
+        }
+        virtual GitState gitState() const { return {}; }
+        virtual void cancelGit() {}
+        virtual uint64_t gitPolled() const { return 0; }
+        virtual bool disconnectGit(const std::string& project, std::string& why)
+        {
+            (void)project;
+            why = "no git here";
+            return false;
+        }
+        virtual std::string gitChosen() const { return {}; }
+        virtual bool setGitChosen(const std::string& path, std::string& why)
+        {
+            (void)path;
+            why = "no git here";
+            return false;
+        }
+        virtual std::string gitFolder() const { return {}; }
+        // Part 3: a diverged project's other side as the last GitOp::theirs job read it, from memory (never a file or a
+        // repository read here): `missing` when none was read for that project.
+        virtual VersionContent gitTheirs(const std::string& project) const
+        {
+            (void)project;
+            VersionContent v;
+            v.read = v.missing = true;
+            return v;
         }
 
         // ---- One version's content (the Compare card, editor/DiffCard.h; the A/B card's sides) ----------------------

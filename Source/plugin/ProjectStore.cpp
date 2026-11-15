@@ -3,6 +3,7 @@
 
 #include "plugin/EditorPort.h"
 #include "plugin/Factory.h"
+#include "fminus/Failure.h"
 #include "fminus/Xdg.h"
 
 #include "Product.h"
@@ -585,6 +586,7 @@ namespace playground::projectstore
             c.entry.description = p.info.description;
             c.entry.createdMs = p.createdMs;
             c.entry.bytes = static_cast<int64_t>(size);
+            c.entry.id = p.id;                           // package 05: what its git link is found by
             for (const Version& v : p.versions)
                 c.versions.push_back({ v.number, v.savedMs, v.note });
             c.info = p.info;
@@ -1984,13 +1986,34 @@ namespace playground::projectstore
                                 ++it;
                     }
                 }
-                if (job.number >= 0)
-                    readVersions(job.path, numbers);
-                else
-                    read(job.path);
+                try
+                {
+                    if (job.number >= 0)
+                        readVersions(job.path, numbers);
+                    else
+                        read(job.path);
+                }
+                catch (...)
+                {
+                }                                        // (out of memory keeping it: asked again, the next poll)
                 const std::lock_guard<std::mutex> lock(mutex);
                 for (const std::string& k : keys)
                     asked.erase(k);
+            }
+        }
+
+        // parse(), an exception (out of memory: fminus/Failure.h) read as a file it cannot read (Cached::broken), as a
+        // damaged one is: never the process's end.
+        static std::optional<Project> parsed(const juce::File& f)
+        {
+            try
+            {
+                failure::at("reader");
+                return parse(f, nullptr);
+            }
+            catch (...)
+            {
+                return std::nullopt;
             }
         }
 
@@ -2011,7 +2034,7 @@ namespace playground::projectstore
                     return;
             }
             readerParsed.fetch_add(1, std::memory_order_relaxed);
-            const std::optional<Project> p = parse(f, nullptr);
+            const std::optional<Project> p = parsed(f);
             const std::lock_guard<std::mutex> lock(cacheMutex);
             keepRead(f, p, modified, size);
             revision.fetch_add(1, std::memory_order_release);
@@ -2039,7 +2062,7 @@ namespace playground::projectstore
                     return;
             }
             readerParsed.fetch_add(1, std::memory_order_relaxed);
-            const std::optional<Project> p = parse(f, nullptr);
+            const std::optional<Project> p = parsed(f);
             const std::lock_guard<std::mutex> lock(cacheMutex);
             keepRead(f, p, modified, size);
             keepVersions(f, p, modified, size, numbers);
@@ -2113,4 +2136,96 @@ namespace playground::projectstore
         }
         return r;
     }
+
+    // ---- Package 05: a version brought in from a git remote (plugin/GitProjects.h) --------------------------------------
+    std::optional<Saved> addVersion(std::string_view name, Version v, const std::vector<SampleFile>& files, int64_t savedMs,
+                                    std::string_view lead, const std::vector<Preset>& presets, const Info* info, std::string* why)
+    {
+        if (readOnly(name, why))
+            return std::nullopt;
+        const std::lock_guard<std::recursive_mutex> writing(writeMutex);
+        std::optional<Project> loaded = load(name, why);
+        if (!loaded)
+            return std::nullopt;
+        Project p = std::move(*loaded);
+        if (v.files.empty())
+        {
+            fail(why, "there is no program to save");
+            return std::nullopt;
+        }
+        v.midi = midilearn::tidy(v.midi);
+        Saved saved;
+        saved.id = p.id;
+        bool changed = false;
+        // The presets: the tree's join the project's; one of a name the project has, with other dials, is the tree's.
+        for (const Preset& theirs : presets)
+        {
+            const std::string pn = tidyName(theirs.name);
+            if (pn.empty())
+                continue;
+            auto it = std::find_if(p.presets.begin(), p.presets.end(), [&](const Preset& mine) { return sameName(mine.name, pn); });
+            if (it == p.presets.end())
+            {
+                Preset added = theirs;
+                added.name = pn;
+                added.savedMs = added.savedMs > 0 ? added.savedMs : juce::Time::currentTimeMillis();
+                p.presets.push_back(std::move(added));
+                changed = true;
+            }
+            else if (!sameDials(it->dials, theirs.dials) || it->category != theirs.category)
+            {
+                it->dials = theirs.dials;
+                it->category = theirs.category;
+                changed = true;
+            }
+        }
+        if (info != nullptr && !(tidyInfo(*info) == p.info))
+        {
+            p.info = tidyInfo(*info);
+            changed = true;
+        }
+        const Version& last = p.latest();
+        if (last.files == v.files && last.active == v.active && sameDials(last.dials, v.dials) && last.midi == v.midi
+            && sameSamples(last.samples, v.samples))
+        {
+            saved.number = last.number;
+            saved.unchanged = true;
+            if (changed && !write(std::move(p), why))
+                return std::nullopt;
+            return saved;
+        }
+        v.number = last.number + 1;
+        v.savedMs = savedMs > 0 ? savedMs : juce::Time::currentTimeMillis();
+        v.note = describeChange(&last, v.files, v.dials, &v.midi, &v.samples);
+        if (const std::string l = noteLead(lead); !l.empty())
+            v.note = l + " (" + v.note + ")";
+        v.active = std::clamp(v.active, 0, static_cast<int>(v.files.size()) - 1);
+        v.circuits = mergedAnswers({}, v.circuits);
+        for (const SampleFile& f : files)
+            if (p.sample(f.hash) == nullptr)
+                p.samples.push_back(f);
+        p.versions.push_back(std::move(v));
+        if (p.versions.size() > static_cast<std::size_t>(kMaxVersions))
+        {
+            const std::size_t cut = p.versions.size() - static_cast<std::size_t>(kMaxVersions);
+            saved.dropped = static_cast<int>(cut);
+            saved.droppedFrom = p.versions.front().number;
+            saved.droppedTo = p.versions[cut - 1].number;
+            p.versions.erase(p.versions.begin(), p.versions.end() - kMaxVersions);
+        }
+        keepNamedSamples(p);
+        if (const std::string refused = samplesRefusal(p); !refused.empty())
+        {
+            fail(why, refused);
+            return std::nullopt;
+        }
+        saved.number = p.latest().number;
+        if (p.id.empty())
+            p.id = newProjectId();
+        saved.id = p.id;
+        if (!write(std::move(p), why))
+            return std::nullopt;
+        return saved;
+    }
 }
+

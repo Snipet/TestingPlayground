@@ -6,8 +6,8 @@
 # entries in on main (docs/changelog/README.md). This test holds the entries to what `scripts/changelog.py check`
 # holds them to, as far as CMake's string functions go, so that a machine with no Python checks them too: the name
 # (lower-case letters, digits and hyphens), one `### ` heading, a **Added**, **Fixed** or **Changed** list, no `# ` or
-# `## ` heading, no tab; and CHANGELOG.md has its `## Unreleased` heading. `check` also holds the lists' items, the
-# extension's line, the columns and the last newline.
+# `## ` heading, no tab; and CHANGELOG.md has its `## Unreleased` heading and its releases' headings well formed.
+# `check` also holds the lists' items, the extension's line, the columns, the last newline and the releases' order.
 if(NOT FP_SOURCE_DIR)
   message(FATAL_ERROR "LintChangelog.cmake: pass -DFP_SOURCE_DIR=<project root>")
 endif()
@@ -50,6 +50,17 @@ else()
   if(NOT _log MATCHES "(^|\n)## Unreleased[ \t]*(\n|$)")
     list(APPEND _bad "CHANGELOG.md: no `## Unreleased` heading (the entries are folded in under it)")
   endif()
+  # A release's heading, `## Version X.Y.Z (YYYY-MM-DD)` (the plugins' What's new reads them: plugin/Changelog.h);
+  # `check` also holds their order and their dates to the calendar.
+  string(REGEX MATCHALL "(^|
+)## Version[^
+]*" _releases "${_log}")
+  foreach(_r IN LISTS _releases)
+    string(STRIP "${_r}" _r)
+    if(NOT _r MATCHES "^## Version [0-9]+\\.[0-9]+\\.[0-9]+ \\([0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\\)[ \t]*$")
+      list(APPEND _bad "CHANGELOG.md: `${_r}` is not a release's heading (`## Version X.Y.Z (YYYY-MM-DD)`)")
+    endif()
+  endforeach()
 endif()
 if(_bad)
   list(JOIN _bad "\n  " _msg)

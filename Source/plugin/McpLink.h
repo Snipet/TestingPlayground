@@ -125,6 +125,7 @@ namespace playground
         bool listen(const std::shared_ptr<Client>& client, const juce::var& id, const std::string& name, const juce::var& arguments);
         void reap();                                     // the listens done, joined (jobMutex_ held)
         void request(const std::shared_ptr<Client>& client, const std::string& line);
+        void refuse(Client& client, const std::string& line);   // inside a catch: the request's error, in words
         void cancel(const std::shared_ptr<Client>& client, const juce::var& id, bool& found);
         void closed(const std::shared_ptr<Client>& client);   // its calls dropped or cancelled
         void answer(Client& client, const juce::var& reply);   // a whole line, into its outbox (outMutex_), sent now

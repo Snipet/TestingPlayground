@@ -383,13 +383,51 @@ namespace playground::run
         CloseHandle(pi.hThread);
 
         Kept out{ {}, r.outLimit, false, false }, err{ {}, r.errLimit, true, false };
+        // A reader that throws (out of memory keeping what it read: fminus/Failure.h) drains the rest unkept, so the
+        // program never blocks on a full pipe and the thread ends as any; an exception leaving it would end the process.
         const auto reader = [](HANDLE h, Kept* k) {
             char buffer[8192];
             DWORD n = 0;
-            while (ReadFile(h, buffer, sizeof buffer, &n, nullptr) && n > 0)
-                k->add(buffer, n);
+            try
+            {
+                while (ReadFile(h, buffer, sizeof buffer, &n, nullptr) && n > 0)
+                    k->add(buffer, n);
+            }
+            catch (...)
+            {
+                while (ReadFile(h, buffer, sizeof buffer, &n, nullptr) && n > 0)
+                {
+                }
+            }
         };
-        std::thread outThread(reader, outRead, &out), errThread(reader, errRead, &err);
+        // Both readers, or neither: one made and the other not (no thread to be had) is stopped and joined, never left
+        // joinable to be destroyed, and the program is ended, as one that could not start.
+        std::thread outThread, errThread;
+        try
+        {
+            outThread = std::thread(reader, outRead, &out);
+            errThread = std::thread(reader, errRead, &err);
+        }
+        catch (...)
+        {
+            if (job != nullptr)
+                TerminateJobObject(job, 1);
+            else
+                TerminateProcess(pi.hProcess, 1);
+            for (std::thread* t : { &outThread, &errThread })
+                if (t->joinable())
+                {
+                    CancelSynchronousIo(static_cast<HANDLE>(t->native_handle()));
+                    t->join();
+                }
+            CloseHandle(outRead);
+            CloseHandle(errRead);
+            CloseHandle(pi.hProcess);
+            if (job != nullptr)
+                CloseHandle(job);
+            res.why = r.args[0] + " could not be read (no thread for its output)";
+            return res;
+        }
 
         const auto stop = [&] {
             if (job != nullptr)

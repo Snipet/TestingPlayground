@@ -39,7 +39,7 @@ namespace playground::ui
         constexpr uint32_t kBoxId = ProjectBrowser::kA11yBase, kListId = kBoxId + 1,   // + the list
                            kFieldId = kBoxId + 4, kSaveId = kBoxId + 5, kOpenId = kBoxId + 6, kRemoveId = kBoxId + 7,
                            kCloseId = kBoxId + 8, kImportId = kBoxId + 9, kExportId = kBoxId + 10, kAbId = kBoxId + 11,
-                           kCompareId = kBoxId + 16, kPreviewId = kBoxId + 17,
+                           kCompareId = kBoxId + 16, kPreviewId = kBoxId + 17, kGitId = kBoxId + 18,
                            kSearchId = kBoxId + 12, kClearId = kBoxId + 13, kTagId = kBoxId + 14, kSortId = kBoxId + 15,
                            kRowId = kBoxId + 0x100,                                     // + the list * 0x1000 + the row
                            kGroupId = kBoxId + 0x4000,                                  // + the group
@@ -881,6 +881,13 @@ namespace playground::ui
         return a;
     }
 
+    std::pair<bool, std::string> ProjectBrowser::takeGit()
+    {
+        std::pair<bool, std::string> g{ false, "" };
+        g.swap(git_);
+        return g;
+    }
+
     std::tuple<std::string, int, int> ProjectBrowser::takeCompare()
     {
         std::tuple<std::string, int, int> c{ "", 0, 0 };
@@ -1076,6 +1083,8 @@ namespace playground::ui
         at.exportIt = { at.importIt.right() + 8.0f, by, 96.0f, kButtonH };
         at.ab = { at.exportIt.right() + 8.0f, by, 72.0f, kButtonH };
         at.compare = { at.ab.right() + 8.0f, by, 96.0f, kButtonH };
+        // Package 05: Git..., the chosen project's, on the versions' caption line at its right (the bottom row has no room).
+        at.git = { at.versions.right() - 64.0f, at.versions.y - 22.0f, 64.0f, 20.0f };
         // The top: the search field after the title, then the tag's dropdown and the order's at the right.
         const float ty = at.box.y + 21.0f;
         at.sort = { at.box.right() - kPad - kSortW, ty, kSortW, kTopH };
@@ -1702,6 +1711,20 @@ namespace playground::ui
         }
         else if (at.compare.contains(p))
             compareChosen(0);
+        else if (at.git.contains(p))
+        {
+            // Package 05: the chosen project's git card; none chosen, Add from Git.
+            if (!chosenName_.empty() && factoryChosen())
+            {
+                ask_ = Ask::none;
+                why_ = "A factory project is not linked to git: save your own copy, and link that.";
+            }
+            else
+            {
+                git_ = { true, chosenName_ };
+                close();
+            }
+        }
         else if (at.ab.contains(p))
         {
             if (chosenName_.empty() || versions_.empty())
@@ -1926,7 +1949,7 @@ namespace playground::ui
                        : funkgui::Cursor::grabbing;
         }
         if (at.save.contains(p) || at.open.contains(p) || at.remove.contains(p) || at.close.contains(p) || at.importIt.contains(p)
-            || at.exportIt.contains(p) || at.ab.contains(p) || at.compare.contains(p) || at.tag.contains(p) || at.sort.contains(p)
+            || at.exportIt.contains(p) || at.ab.contains(p) || at.compare.contains(p) || at.git.contains(p) || at.tag.contains(p) || at.sort.contains(p)
             || (!search_.buffer.empty() && at.clear.contains(p)))
             return funkgui::Cursor::pointingHand;
         for (const List l : { L::projects, L::versions, L::presets })
@@ -2022,7 +2045,7 @@ namespace playground::ui
             c.text(fitText(c, text, st, r.w).c_str(), r.x + 2.0f, c.capCentreTop(r.y - 11.0f, st), st, focus_ == l ? p.text : p.faint);
         };
         caption(at.projects, L::projects, selected_.size() > 1 ? "PROJECTS   " + std::to_string(selected_.size()) + " CHOSEN" : "PROJECTS");
-        caption(at.versions, L::versions, "VERSIONS" + of);
+        caption({ at.versions.x, at.versions.y, at.versions.w - at.git.w - 8.0f, at.versions.h }, L::versions, "VERSIONS" + of);
         caption(at.presets, L::presets, "PRESETS" + of);
         // The preview (package 04): the chosen version's panel, fitted, under a caption of its own; the words while it
         // comes or when there is none. A click on it does nothing (the double-click and Open open).
@@ -2125,8 +2148,13 @@ namespace playground::ui
             const std::string right = rowFacts(e);   // what the list is sorted by: the date, or the size
             const float rightW = c.textWidth(right.c_str(), chat::kSmall);
             const funkgui::TextStyle& st = chosen ? chat::kStrong : chat::kBody;
-            c.text(fitText(c, asciiText(ownName(e.name)), st, rr.w - rightW - 48.0f - kStarW).c_str(), rr.x + 24.0f, c.capCentreTop(rr.centreY(), st), st,
-                   p.text);
+            // Package 05: the git mark after a linked project's name (its arrows: to push, to pull, when known).
+            const float markW = e.git ? chat::branchMarkWidth(c, e.ahead, e.behind, chat::kSmall) + 8.0f : 0.0f;
+            const std::string shownName = fitText(c, asciiText(ownName(e.name)), st, rr.w - rightW - 48.0f - kStarW - markW);
+            c.text(shownName.c_str(), rr.x + 24.0f, c.capCentreTop(rr.centreY(), st), st, p.text);
+            if (e.git)
+                chat::drawBranchMark(c, rr.x + 24.0f + c.textWidth(shownName.c_str(), st) + 8.0f, rr.centreY(), e.ahead, e.behind,
+                                     chat::kSmall, p.dim);
             c.text(right.c_str(), rr.right() - kStarW - 4.0f, c.capCentreTop(rr.centreY(), chat::kSmall), chat::kSmall, p.faint, funkgui::Align::right);
             const funkgui::Rect s = starRect(rr);
             const bool overStar = hasPointer && s.contains(pointer) && !dragging_;
@@ -2225,6 +2253,7 @@ namespace playground::ui
         button(at.exportIt, "Export...", 1, !chosenName_.empty());
         button(at.ab, "A/B...", 1, !chosenName_.empty() && !versions_.empty());
         button(at.compare, "Compare...", 1, !chosenName_.empty() && !versions_.empty());
+        button(at.git, "Git...", 1, true);
 
         // A drag: what it carries, at the pointer.
         if (dragging_ && !dragged_.empty())
@@ -2364,6 +2393,9 @@ namespace playground::ui
             row.role = funkgui::A11yRole::listItem;
             row.title = ownName(e.name);
             row.value = value;
+            if (e.git)                                   // package 05: the git mark's words
+                row.description = "linked to " + e.remote + (e.ahead > 0 ? ", " + std::to_string(e.ahead) + " to push" : "")
+                                + (e.behind > 0 ? ", " + std::to_string(e.behind) + " to pull" : "");
             row.help = shortcutText("Chooses it; a double-click opens it; Cmd-click chooses more; the context menu sets the category");
             funkgui::A11yItem s;                         // its star, a toggle in the row
             s.id = kStarId + static_cast<uint32_t>(i);
@@ -2430,6 +2462,7 @@ namespace playground::ui
         button(kExportId, at.exportIt, "Export...");
         button(kAbId, at.ab, "A/B...");
         button(kCompareId, at.compare, "Compare...");
+        button(kGitId, at.git, "Git...");
     }
 
     bool ProjectBrowser::a11yAction(uint32_t id, funkgui::A11yAction a, funkgui::HostServices* host, float width, float height)
@@ -2455,8 +2488,8 @@ namespace playground::ui
             remove();
         else if (id == kCloseId)
             close();
-        else if (id == kImportId || id == kExportId || id == kAbId || id == kCompareId)
-            press(id == kImportId ? at.importIt : id == kExportId ? at.exportIt : id == kAbId ? at.ab : at.compare);
+        else if (id == kImportId || id == kExportId || id == kAbId || id == kCompareId || id == kGitId)
+            press(id == kImportId ? at.importIt : id == kExportId ? at.exportIt : id == kAbId ? at.ab : id == kGitId ? at.git : at.compare);
         else if (id == kSearchId)
         {
             searching_ = true;

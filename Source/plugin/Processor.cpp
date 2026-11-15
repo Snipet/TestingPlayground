@@ -3,6 +3,7 @@
 
 #include "plugin/ChatStore.h"
 #include "plugin/Factory.h"
+#include "plugin/GitProjects.h"
 #include "plugin/Launch.h"
 #include "plugin/ProjectExport.h"
 #include "plugin/ProjectStore.h"
@@ -12,6 +13,7 @@
 #include "Product.h"
 
 #include "fminus/CirDoc.h"
+#include "fminus/Failure.h"
 #include "fminus/Circuits.h"
 #include "fsdsp/core/Sanitize.h"
 
@@ -525,6 +527,7 @@ namespace playground
     Processor::~Processor()
     {
         finishExport();                                          // an export in flight cancelled, its thread joined
+        finishGit();                                             // package 05: a git job cancelled, its thread joined
         finishPreviews();                                        // the previews' thread stopped and joined
         finishSave();                                            // a save in flight writes its file, then goes
         mcp_.reset();                                            // no call comes in while the rest goes
@@ -1435,6 +1438,7 @@ namespace playground
         picturesIdle();                                          // the pictures' GPU context, let go when idle
         pollSave();                                              // the editor's save, its file written: it lands
         pollExport();                                            // an export that ended: its thread joined
+        pollGit();                                               // package 05: a git job that ended, a pulled version
         journalPoll();                                           // what moved since the last poll (ProcessorLive.cpp)
         abSessionLoaded();                                       // a session loaded since ends the A/B (ProcessorAb.cpp)
         if (compiler_.revision() != seen_)
@@ -2398,6 +2402,18 @@ namespace playground
         for (const projectstore::Entry& e : list)
             out.push_back({ e.name, whenOf(e.savedMs), e.latest, e.versions, static_cast<int>(e.presets.size()), false,
                             e.category, e.tags, e.description, e.savedMs, e.createdMs, e.bytes });
+        // ---- Package 05: each project's git link, from the links file (no repository read) ----
+        if (const std::vector<projectstore::Link> links = projectstore::links(); !links.empty())
+            for (std::size_t i = 0; i < out.size() && i < list.size(); ++i)
+                for (const projectstore::Link& l : links)
+                    if (!list[i].id.empty() && l.id == list[i].id)
+                    {
+                        out[i].git = true;
+                        out[i].remote = gitprojects::shortRemote(l.remote);
+                        const int pending = std::clamp(list[i].latest - l.committed, 0, list[i].versions);
+                        out[i].ahead = l.ahead < 0 ? (pending > 0 ? pending : -1) : l.ahead + pending;
+                        out[i].behind = l.behind;
+                    }
         const std::lock_guard<std::mutex> lock(programMutex_);
         for (const projectstore::Entry& e : list)
             if (projectstore::sameName(e.name, projectName_))
@@ -2883,13 +2899,39 @@ namespace playground
     // (a version added to another project, a new project, one from before ids): its file read here, never at landing.
     void Processor::runSave(SaveJob& job)
     {
-        job.result = projectstore::saveVersion(job.name, job.files, job.active, job.dials, job.answers, job.midi, job.samples.get(),
-                                               &job.why, job.lead);
+        // An exception (fminus/Failure.h; the saver's thread, or a caller's) fails the save in words, as the store's own
+        // refusals do; once the version is written, it only leaves the chats' owner to be looked up again at landing.
+        try
+        {
+            failure::at("save");
+            job.result = projectstore::saveVersion(job.name, job.files, job.active, job.dials, job.answers, job.midi,
+                                                   job.samples.get(), &job.why, job.lead);
+        }
+        catch (...)
+        {
+            job.result.reset();
+            try
+            {
+                job.why = failure::sentence("saving the project");
+            }
+            catch (...)
+            {
+                job.why.clear();
+            }
+            return;
+        }
         if (!job.result)
             return;
-        const std::string tidy = projectstore::tidyName(job.name);
-        if (job.result->id.empty() || job.result->id != job.knownId || !projectstore::sameName(tidy, job.knownIdName))
-            job.ownerId = projectstore::idOf(tidy);
+        try
+        {
+            const std::string tidy = projectstore::tidyName(job.name);
+            if (job.result->id.empty() || job.result->id != job.knownId || !projectstore::sameName(tidy, job.knownIdName))
+                job.ownerId = projectstore::idOf(tidy);
+        }
+        catch (...)
+        {
+            job.ownerId.clear();
+        }
     }
 
     // The message thread's part once the file is written: the journal's note, and the project open made the one saved,

@@ -2,6 +2,7 @@
 #include "plugin/AbMatch.h"
 
 #include "dsp/Measure.h"
+#include "fminus/Failure.h"
 #include "fminus/Patch.h"
 
 #include "Product.h"
@@ -189,10 +190,30 @@ namespace playground::ab
             waiting_.reset();
             running_ = true;
             lock.unlock();
-            const std::optional<Result> r = measure(job, [this, id = job.id] {
-                const std::lock_guard<std::mutex> l(mutex_);
-                return stop_ || wanted_ != id;
-            });
+            // An exception (fminus/Failure.h) leaves the job unmatched, saying why, as a side that does not compile
+            // does: never the process. No exception, nothing here costs a thing (the same results, the same time).
+            std::optional<Result> r;
+            try
+            {
+                r = measure(job, [this, id = job.id] {
+                    const std::lock_guard<std::mutex> l(mutex_);
+                    return stop_ || wanted_ != id;
+                });
+            }
+            catch (...)
+            {
+                try
+                {
+                    Result failed;
+                    failed.id = job.id;
+                    failed.why = failure::sentence("matching the loudness");
+                    r = std::move(failed);
+                }
+                catch (...)
+                {
+                    r.reset();
+                }
+            }
             lock.lock();
             running_ = false;
             if (r && wanted_ == job.id && !stop_)

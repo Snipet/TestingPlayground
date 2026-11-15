@@ -79,6 +79,7 @@
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
 #include "plugin/FactoryStore.h"
+#include "plugin/UpdateCheck.h"
 #include "plugin/FolderSync.h"
 #include "plugin/Journal.h"
 #include "plugin/McpLink.h"
@@ -189,6 +190,11 @@ namespace playground
         FolderSync& folderSync() noexcept { return folder_; }
         using FolderLauncher = std::function<bool(FolderApp app, const std::string& path, std::string& why)>;
         void setFolderLauncher(FolderLauncher launcher) { folderLauncher_ = std::move(launcher); }
+        // What opens the website's download page and What's new's links (EditorPort::openDownloadPage, openLink;
+        // ProcessorUpdates.cpp): the probes' records the address and opens nothing; the default opens nothing under a
+        // probe's sandbox either. Message thread.
+        using PageLauncher = std::function<bool(const std::string& url, std::string& why)>;
+        void setPageLauncher(PageLauncher launcher) { pageLauncher_ = std::move(launcher); }
         capture::Recorder& recorder() noexcept { return capture_; }   // the capture tool's recorder (the probes)
         // The most samples one Engine::process call got since prepareToPlay (never more than it announced).
         int largestEngineCall() const noexcept { return largestCall_; }
@@ -201,11 +207,20 @@ namespace playground
         static constexpr std::size_t kPreviewsKept = 12;
         uint64_t previewsDrawn() const noexcept { return previewsDrawn_.load(); }
         std::size_t previewsKept() const;
-        bool previewsWaiting() const;
-        std::size_t previewsQueued() const;                      // waiting for previewThread_
+        bool previewsWaiting() const;                            // one queued, being prepared, or prepared and not drawn
+        std::size_t previewsQueued() const;                      // not prepared yet: queued, or being prepared
         std::size_t previewsToDraw() const;                      // prepared, waiting for poll()
         bool pictureWaiting() const;                             // a picture for Claude asked for, not drawn yet
         bool previewsSettle(double seconds = 60.0);
+#if defined(FP_PROBES)
+        // Probes only: shut, previewThread_ waits once it has taken a job and before it prepares it (so that a job in
+        // flight can be looked at); previewGateHeld() says it waits there now.
+        void setPreviewGate(bool shut);
+        bool previewGateHeld() const;
+        // Probes only: startGit joins the job's thread before it returns, so the job has ended when the caller first
+        // looks (a race a loaded machine can make; gui.git ENDED).
+        void setGitJoinForTests(bool on) noexcept { gitJoinForTests_ = on; }
+#endif
         // For the probes: the editor's save in flight (startSave) waits before the store's work while shut, so that what
         // shows meanwhile can be checked; open, it goes on (poll() lands it). saveWritten: the last one started has done
         // its store's work (the next poll() lands it), so a probe can time the landing alone.
@@ -345,6 +360,17 @@ namespace playground
         ExportState exporting() const override;
         void cancelExport() override;
         std::string exportFolder() const override;
+        // Package 05: projects and git (ProcessorGit.cpp).
+        GitLink gitLink(const std::string& project) const override;
+        bool startGit(const GitJob& job, std::string& why, uint64_t* endsAt = nullptr) override;
+        GitState gitState() const override;
+        void cancelGit() override;
+        uint64_t gitPolled() const override;
+        bool disconnectGit(const std::string& project, std::string& why) override;
+        std::string gitChosen() const override;
+        bool setGitChosen(const std::string& path, std::string& why) override;
+        std::string gitFolder() const override;
+        VersionContent gitTheirs(const std::string& project) const override;
         AbState ab() const override;
         uint64_t abRevision() const override { return ab_.st.revision; }
         bool startAb(const std::string& project, int a, int b, std::string& why) override;
@@ -405,6 +431,22 @@ namespace playground
         std::vector<DebugSection> debugRows() const override;
         uint64_t debugGathers() const override { return debugGathers_; }
         bool showPath(const std::string& path, std::string& why) override;
+
+        // ---- The website: the offer, the update check (ProcessorUpdates.cpp; EditorPort's "The website") ---------------
+        UpdateState updateState() const override;
+        uint64_t updateRevision() const override { return updateCheck_ != nullptr ? updateCheck_->revision() : 0; }
+        void editorOpened() override;
+        void answerOffer(bool allow, bool factory, bool updates) override;
+        void setUpdates(bool on) override;
+        void setFactoryProjects(bool on) override;
+        void checkForUpdates() override;
+        void skipUpdate(const std::string& version) override;
+        bool announceUpdate(const std::string& version) override;
+        bool openDownloadPage(std::string& why) override;
+        void whatsNewShown() override;
+        bool openLink(const std::string& url, std::string& why) override;
+        bool openPage(const std::string& url, std::string& why);   // the browser, through pageLauncher_ (or nothing)
+
         bool midiLearnable() const override;
         midilearn::View midi() const override { return learn_.view(); }
         uint64_t midiRevision() const override { return learn_.revision(); }
@@ -541,6 +583,10 @@ namespace playground
         // first processor starts it (its thread reads the set on disk) and the last one gone stops and joins its thread,
         // before a host may unload the plugin. Nothing here fetches: that waits for an editor and the user's yes.
         std::shared_ptr<factorystore::Store> factoryStore_ = factorystore::attach();
+        // The update check (the process's, UpdateCheck.h), held the same way: the first processor starts it (its thread
+        // reads app.json), the last one gone joins it. Nothing here checks: that waits for an editor and the user's yes.
+        std::shared_ptr<updates::Check> updateCheck_ = updates::attach();
+        bool editorSeen_ = false;                                // an editor of this processor opened (editorOpened)
         std::vector<ProjectEntry> entriesOf(const std::vector<projectstore::Entry>& list) const;
         // The presets in turn (EditorPort::presetCycle; the host's programs; MIDI's program change): the project open's
         // presets as the store's cache has them (presetsCached: never a file read whole here; one not in the cache
@@ -642,6 +688,25 @@ namespace playground
         std::atomic<bool> exportCancel_{ false };
         bool exportGateShut_ = false;                            // under exportMutex_ (setExportGate)
         std::condition_variable exportGateOpen_;
+        // Package 05: the git job (ProcessorGit.cpp): one at a time on gitThread_, which writes gitState_ under gitMutex_
+        // (and catches whatever its work throws, failing the job in words); poll() joins it once it has ended and opens a
+        // pulled version when the project is open with no change (gitOpen_); the destructor cancels and joins it.
+        void runGit(const GitJob& job);
+        void pollGit();
+        void finishGit();
+        std::thread gitThread_;
+        mutable std::mutex gitMutex_;
+        GitState gitState_;                                      // under gitMutex_
+        std::pair<std::string, int> gitOpen_;                    // under gitMutex_: a pulled version to open
+        std::atomic<bool> gitCancel_{ false };
+        std::atomic<uint64_t> gitRevision_{ 1 };
+        struct GitTheirs                                         // part 3: a GitOp::theirs job's read (under gitMutex_)
+        {
+            std::string project, sha;
+            VersionContent content;                              // its dials worded by gitTheirs() (ProcessorVersions.cpp)
+            std::vector<projectstore::Dial> dials;
+        };
+        GitTheirs gitTheirs_;
         bool openProjectAs(const std::string& name, int version, std::optional<Journal::Who> who, std::string& why);
         bool savePresetAs(const std::string& preset, std::optional<Journal::Who> who, std::string& why);
         int programCount() const;
@@ -816,6 +881,8 @@ namespace playground
             PreviewState state;
             std::shared_ptr<const preview::Prepared> prepared;   // set by previewThread_; drawn by poll()
             bool queued = false;                                 // waits for previewThread_
+            bool inFlight = false;                               // taken by previewThread_, not landed yet: never
+                                                                 // erased (the cap, the hold), and where it lands
             uint64_t used = 0;                                   // previewUse_ when last asked for
             std::shared_ptr<const preview::Request> request;     // until prepared
         };
@@ -831,6 +898,11 @@ namespace playground
         std::thread previewThread_;                              // started by the first preview asked for
         ShaderTools previewTools_;                               // the Compiler's (the constructor's)
         std::atomic<uint64_t> previewsDrawn_{ 0 };
+#if defined(FP_PROBES)
+        bool gitJoinForTests_ = false;                           // setGitJoinForTests (the message thread's)
+        bool previewGateShut_ = false;                           // previewMutex_ (setPreviewGate)
+        bool previewGateHeld_ = false;                           // previewMutex_
+#endif
 
         uint64_t seen_ = 0;                                      // the compiler's revision poll() last applied
         uint64_t journaled_ = 0;                                 // the editor's RUN poll() last journalled
@@ -983,6 +1055,7 @@ namespace playground
                                                 [this](const Draft& now, const Draft& next) { return folderDraftIf(now, next); },
                                                 [this](const Sources& files) { run(files); } } };
         FolderLauncher folderLauncher_;
+        PageLauncher pageLauncher_;
         struct FolderKept
         {
             bool on = false;
