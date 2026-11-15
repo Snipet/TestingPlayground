@@ -90,8 +90,14 @@
 // design and leave out code) and answers from the summary. The trigger follows the model (compactTriggerFor): half of
 // what it reads (/v1/models' max_input_tokens, ChatModel::window), never under the API's default of 150,000 tokens (a
 // model whose window the list does not say gets that), never above what leaves a reply its room in the window; so a
-// model that reads a million tokens summarizes at 500,000, not at 15 % of its room. The compaction block goes into the
-// history, and
+// model that reads a million tokens summarizes at 500,000, not at 15 % of its room. A summary helps only when it makes
+// room, and what every request carries (the system prompt, the tools, the program's files) is not summarized: a
+// request right after a summary that already carries 60 % of the trigger (kCrowdedShare) raises this conversation's
+// trigger to twice what it carried (kRoomFactor; compactRaised_, kept in the chat's file as "compact", forgotten by a
+// new chat), as far as the window allows. A turn whose requests bring a new summary twice in a row with the trigger not
+// raised, or three times in all (kMaxSummariesInARow, kMaxSummariesATurn), ends with a note that says what fills the
+// room, in numbers, and what helps (summariesNote): never summary after summary, each a request the user pays for. The
+// compaction block goes into the history, and
 // what came before it is dropped: the history then starts at the block, in its assistant message, as the API's own
 // examples continue after one. (Not at the user message before it: in the middle of a turn that is the results of
 // tool calls the summary took away, which the API refuses.) A history from a session is repaired the same way when it
@@ -679,6 +685,7 @@ namespace playground
         void dropThinking();                                        // the history without thinking (mutex held)
         int maxTokensFor(const std::string& id) const;              // a request's max_tokens (mutex held)
         int compactTriggerFor(const std::string& id) const;         // when its conversation is summarized (mutex held)
+        std::string summariesNote(int64_t carried, int summaries, bool crowded);   // a turn that kept summarizing ends
         static std::string promptPrint();                           // the system prompt's and tools' hash
         void markSeen(const std::string& name, const std::string& text);   // the chat's Claude knows this text (mutex
                                                                     // held; Claude Desktop's views mark nothing here)
@@ -782,6 +789,8 @@ namespace playground
         uint64_t versionsGiven_ = 0;                                // keepVersion's count
         uint64_t lastSignature_ = 0;                                // the plugin's state as Claude last got it
         bool resendState_ = false;                                  // a summary came: the state goes with what follows
+        int compactRaised_ = 0;                                     // the summaries' trigger this conversation raised
+                                                                    // (0: the model's own; the chat's file "compact")
         bool busy_ = false;
         std::string asking_;                                        // the open question's tool_use id ("" for none)
         std::vector<measure::Check> checks_;                        // Claude's checks (set_checks), in the session

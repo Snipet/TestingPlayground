@@ -73,6 +73,15 @@ namespace playground
         // reply its room in the window.
         constexpr int kCompactFloor = 150000;      // input tokens (the API's default; 50,000 at least)
         constexpr int kCompactShare = 50;          // percent of the model's window
+        // Never a loop of summaries (ChatAgent.h, "Large work"). A request right after a summary that carries
+        // kCrowdedShare percent of the trigger or more leaves no room to work: the conversation's trigger is raised to
+        // kRoomFactor times what it carried, as far as the model's window allows. A turn whose requests bring a new
+        // summary kMaxSummariesInARow times in a row with the trigger not raised, or kMaxSummariesATurn times in all,
+        // ends with a note.
+        constexpr int kCrowdedShare = 60;          // percent of the trigger
+        constexpr int kRoomFactor = 2;
+        constexpr int kMaxSummariesInARow = 2;
+        constexpr int kMaxSummariesATurn = 3;
         constexpr const char* kCompactInstructions =
             "Summarize the conversation so far between a user and Claude, who builds and changes FMinus DSP programs "
             "inside an audio plugin through tools (read_file, write_file, edit_file, run_program, set_dial, "
@@ -1900,6 +1909,7 @@ namespace playground
     // The conversation forgotten (mutex held): what a new chat starts without.
     void ChatAgent::clearChat()
     {
+        compactRaised_ = 0;
         messages_.clear();
         entries_.clear();
         ++conversation_;
@@ -2036,6 +2046,8 @@ namespace playground
         if (!asking_.empty())
             state.getDynamicObject()->setProperty("asking", juce::String(asking_));
         state.getDynamicObject()->setProperty("web", historyWeb_);
+        if (compactRaised_ > 0)
+            state.getDynamicObject()->setProperty("compact", compactRaised_);   // the trigger this conversation raised
         if (!checks_.empty())
         {
             // Each check as set_checks takes it, so loadState reads it back the same way.
@@ -2095,6 +2107,8 @@ namespace playground
         asking_.clear();
         activity_.clear();
         historyWeb_ = static_cast<bool>(v.getProperty("web", false));
+        compactRaised_ = static_cast<int>(std::clamp<juce::int64>(static_cast<juce::int64>(v.getProperty("compact", 0)), 0,
+                                                                  std::numeric_limits<int>::max()));
         cutNoted_ = false;
         picturesNoted_ = false;
         checks_.clear();
@@ -2340,17 +2354,56 @@ namespace playground
     }
 
     // The input tokens at which a request to this model summarizes the conversation (mutex held): kCompactShare
-    // percent of its window, never under kCompactFloor and never above what leaves a reply its room (the window less
-    // maxTokensFor), unless that is under the floor itself: the API's default then, as for a model whose window is not
-    // said.
+    // percent of its window, or the higher trigger this conversation raised (compactRaised_), never under
+    // kCompactFloor and never above what leaves a reply its room (the window less maxTokensFor), unless that is under
+    // the floor itself: the API's default then, as for a model whose window is not said.
     int ChatAgent::compactTriggerFor(const std::string& id) const
     {
         const auto model = std::find_if(models_.begin(), models_.end(), [&](const ChatModel& m) { return m.id == id; });
         const int64_t window = model != models_.end() ? model->window : 0;
         const int64_t share = window * kCompactShare / 100;
         const int64_t room = window > 0 ? window - maxTokensFor(id) : 0;
-        const int64_t trigger = std::min(share, room);
+        const int64_t trigger = std::min(std::max<int64_t>(share, compactRaised_), room);
         return static_cast<int>(std::max<int64_t>(trigger, kCompactFloor));
+    }
+
+    // The note that ends a turn that kept summarizing (runTurn): what fills the room each request carries (the program's
+    // files, and what Claude is told of the plugin and its tools, at about four bytes a token), the model's room, and
+    // what the user can do. `carried`: what the last request after a summary held (0: none came); `crowded`: the window
+    // could not give it room.
+    std::string ChatAgent::summariesNote(int64_t carried, int summaries, bool crowded)
+    {
+        const Draft d = host_.chatDraft();
+        std::size_t fileBytes = 0;
+        for (const SourceFile& f : d.files)
+            fileBytes += f.text.size();
+        const std::size_t told = systemPrompt().size() + claude::toJson(toolDefinitions()).size();
+        const std::lock_guard<std::mutex> lock(mutex_);
+        const auto model = std::find_if(models_.begin(), models_.end(), [&](const ChatModel& m) { return m.id == turnModel_; });
+        const int window = model != models_.end() ? model->window : 0;
+        const auto larger = std::max_element(models_.begin(), models_.end(),
+                                             [](const ChatModel& a, const ChatModel& b) { return a.window < b.window; });
+        std::string out = crowded || summaries < kMaxSummariesATurn
+                              ? "The conversation no longer fits this model's room, so the turn ends here: summarizing it "
+                                "again would make no room, and each summary is a request you pay for."
+                              : "The conversation was summarized " + std::to_string(summaries)
+                                    + " times in this turn, so the turn ends here: each summary is a request you pay for, and "
+                                      "keeps less of the detail.";
+        if (carried > 0)
+            out += " Right after a summary a request still holds about " + thousands(carried)
+                 + " tokens, and this model summarizes at " + thousands(compactTriggerFor(turnModel_))
+                 + (window > 0 ? " (it reads " + thousands(window) + " in all, with room kept for its reply)."
+                               : " (the plugin does not know how much it reads).");
+        out += " Each request carries the program's files (about " + thousands(static_cast<int64_t>(fileBytes / 4))
+             + " tokens) and what Claude is told about the plugin and its tools (about "
+             + thousands(static_cast<int64_t>(told / 4)) + " tokens). To go on: ";
+        if (larger != models_.end() && larger->window > window)
+            out += "choose a model that reads more (" + larger->name + " reads " + thousands(larger->window) + " tokens), ";
+        else
+            out += "choose a model that reads more, ";
+        out += "make the program's files smaller or fewer (a large panel or shader split, or what is no longer used "
+               "deleted), or start a new chat. Send \"continue\" to let Claude go on from the summary as it is.";
+        return out;
     }
 
     // What Claude is told of a file and remembered to have seen: a netlist's text without its drawing's *@ lines
@@ -3210,6 +3263,13 @@ namespace playground
             planTurn();
 
         int cutOffs = 0;                           // replies cut off at max_tokens in a row, this turn
+        // The summaries this turn (ChatAgent.h, "Large work"): the last request brought one (the next one is the
+        // first to start at it, whose size tells the room left), how many requests in a row brought one, how many
+        // there were in all, and what the last request after one carried.
+        bool afterSummary = false;
+        int summariesInARow = 0, summariesThisTurn = 0;
+        int64_t carriedAfter = 0;
+        bool crowded = false;                      // a request after a summary left no room the window could give
         int checkNudges = 0;                       // times this turn went on because a check failed
         bool worked = false;                       // a tool changed the program, the dials or the checks this turn
         // The web pages the turn's answers cite (url, title), in order: listed under its last answer.
@@ -3486,6 +3546,45 @@ namespace playground
                 touch();
             }
 
+            // The summaries (Anthropic's alone): what a request starting at a new summary carried raises this
+            // conversation's trigger when it leaves no room, and a turn that keeps summarizing ends (summariesEnd).
+            bool endSummaries = false;
+            if (!other && builder != nullptr && !stopped)
+            {
+                const claude::Usage& u = builder->usage();
+                int summaries = u.compactions;
+                {
+                    int blocksSummarized = 0;
+                    for (const auto& b : blocks)
+                        blocksSummarized += summarized(b) ? 1 : 0;
+                    summaries = std::max(summaries, blocksSummarized);
+                }
+                const std::lock_guard<std::mutex> lock(mutex_);
+                bool raised = false;
+                const int64_t carried = u.sent > 0 ? u.sent : u.input + u.cacheRead + u.cacheWrite;
+                if (afterSummary && carried > 0)
+                {
+                    carriedAfter = carried;
+                    const int trigger = compactTriggerFor(turnModel_);
+                    if (carried * 100 >= static_cast<int64_t>(trigger) * kCrowdedShare)
+                    {
+                        const int64_t want = carried * kRoomFactor;
+                        compactRaised_ = static_cast<int>(std::min<int64_t>(std::max<int64_t>(want, compactRaised_),
+                                                                            std::numeric_limits<int>::max()));
+                        const int now = compactTriggerFor(turnModel_);
+                        raised = now > trigger;
+                        crowded = now < want;
+                    }
+                    else
+                        crowded = false;
+                }
+                afterSummary = summaries > 0;
+                summariesInARow = summaries > 0 ? summariesInARow + 1 : 0;
+                summariesThisTurn += summaries;
+                endSummaries = summaries > 0
+                            && ((summariesInARow >= kMaxSummariesInARow && !raised) || summariesThisTurn >= kMaxSummariesATurn);
+            }
+
             if (stopped || !complete || stopReason == "refusal")
             {
                 // The turn ends here. The answer goes back as its text alone (an empty one as a short note), so the
@@ -3555,6 +3654,15 @@ namespace playground
                     appendAnswer(blocks);
                 }
                 touch();
+            }
+            if (endSummaries)
+            {
+                // Summarized request after request: the reply is in the history (its calls are answered with the
+                // next message), and the turn ends with what fills the room and what helps.
+                const std::string note = summariesNote(carriedAfter, summariesThisTurn, crowded);
+                const std::lock_guard<std::mutex> lock(mutex_);
+                addEntry(ChatEntry::Kind::note, note);
+                break;
             }
             // A reply cut off at max_tokens (its thinking counts toward it): the turn goes on, Claude told so, unless
             // the reply before it was cut off too, since a reply that only thinks costs a whole reply each time.

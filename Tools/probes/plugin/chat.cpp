@@ -295,6 +295,11 @@
 //            is repaired when it loads, and works; a Stop after a compaction block started and before its summary came
 //            keeps the history as it was (no block without a summary in it or in the next request), and a chat kept
 //            cut at such a block by an earlier build loads without it, its next request valid
+//   LOOP     a scripted API that summarizes on every request: on a model that reads a million, a request right after
+//            a summary that carries most of the trigger raises the conversation's trigger (the next request's shows
+//            it), kept with the chat and opened again with it; the turn's third summary ends it with a note; on one that
+//            reads 200,000 nothing can raise it, and two requests in a row that summarize end the turn with the note
+//            (what fills the room, in numbers, and what helps), the history whole and the next message valid
 //   EMPTY    a reply with nothing to keep (no block, white space alone, thinking alone) goes into the history with
 //            "(no answer)" after what it has (its thinking as it came), and the chat shows "(no answer)"; the next
 //            request has no empty message and no blank text; thinking alone cut off at max_tokens goes back as it came,
@@ -5879,6 +5884,104 @@ PROBE(plugin, chat)
         const juce::Array<juce::var> m2 = messagesOf(script->body(script->postCount() - 1));
         P.eq("compactstop.mended_request", !summaryless(m2) && filled(m2) && alternates(m2) && says(m2[m2.size() - 1], "go on")
                                                ? 1 : 0, 1);
+        agent.loadState(kept);                     // the conversation the sections below go on with
+    }
+
+    // ---- LOOP: a scripted API that summarizes on every request ----------------------------------------------------------
+    // Each reply is a summary, a line and a call that keeps the turn going; the first request's input is the whole
+    // conversation, each later one what a request starting at a summary carried.
+    {
+        const std::string kept = agent.saveState();
+        const auto summarizing = [&](const std::string& model, int carried) {
+            script->add(fake::Response::ok(fake::Sse()
+                                               .start(model)
+                                               .compaction("The user wants a big panel; the files are as they were.")
+                                               .text("Reading the status again.")
+                                               .tool("toolu_loop" + std::to_string(script->postCount()) + "_" + std::to_string(carried),
+                                                     "get_status", input({}))
+                                               .endCompacted(carried, 2500, 3000, 120, "tool_use")));
+        };
+        const auto triggerOf = [&](int i) {
+            const juce::Array<juce::var> edits =
+                arr(claude::parseJson(script->body(i)).getProperty("context_management", {}).getProperty("edits", {}));
+            return edits.size() == 1 ? static_cast<int>(edits[0].getProperty("trigger", {}).getProperty("value", 0)) : 0;
+        };
+        const auto turnNotes = [&](std::size_t from) {
+            std::string notes;
+            const pg::ChatState st = agent.chatState();
+            for (std::size_t i = from; i < st.entries.size(); ++i)
+                if (st.entries[i].kind == pg::ChatEntry::Kind::note)
+                    notes += st.entries[i].text + "\n";
+            return notes;
+        };
+
+        // A model that reads a million: the second request carries 400,000 after its summary, 80 % of the trigger
+        // (500,000), so the trigger goes to 800,000 (what it carried twice over, under the window less a reply);
+        // the third carries 450,000, under 60 % of that, and is the turn's third summary: the turn ends.
+        agent.setModel("claude-opus-5-5");
+        summarizing("claude-opus-5-5", 600000);
+        summarizing("claude-opus-5-5", 400000);
+        summarizing("claude-opus-5-5", 450000);
+        script->add(fake::Response::ok(fake::Sse().start().text("Never asked.").end()));
+        int before = script->postCount();
+        std::size_t shown = agent.chatState().entries.size();
+        agent.send("redesign the panel");
+        agent.waitIdle();
+        P.eq("loop.raised_requests", static_cast<int64_t>(script->postCount() - before), 3);
+        P.eq("loop.first_trigger", static_cast<int64_t>(triggerOf(before)), 500000);
+        P.eq("loop.same_trigger", static_cast<int64_t>(triggerOf(before + 1)), 500000);
+        P.eq("loop.raised", static_cast<int64_t>(triggerOf(before + 2)), 800000);
+        P.eq("loop.raised_note", has(turnNotes(shown), "summarized 3 times in this turn") ? 1 : 0, 1);
+        P.eq("loop.raised_kept", static_cast<int64_t>(static_cast<int>(claude::parseJson(agent.saveState()).getProperty("compact", 0))),
+             800000);
+        // The chat kept and opened again keeps the raised trigger; a new chat starts with the model's own.
+        const std::string raisedChat = agent.saveState();
+        agent.loadState(kept);
+        agent.loadState(raisedChat);
+        script->add(fake::Response::ok(fake::Sse().start().text("Carrying on.").end()));
+        agent.send("go on");
+        agent.waitIdle();
+        P.eq("loop.raised_loaded", static_cast<int64_t>(triggerOf(script->postCount() - 1)), 800000);
+        const juce::Array<juce::var> goOn = messagesOf(script->body(script->postCount() - 1));
+        P.eq("loop.raised_next_valid", alternates(goOn) && filled(goOn) && !summaryless(goOn) ? 1 : 0, 1);
+
+        // A model that reads 200,000: its trigger is the API's default, and no window can raise it (its room, less a
+        // reply of 128,000, is under it). Two requests in a row that summarize end the turn with the note.
+        agent.loadState(kept);
+        agent.setModel("claude-sonnet-5-5");
+        const std::string listed = script->models;
+        script->models = fake::modelsBody({ { "claude-opus-5-5", "Claude Opus 5.5", true, { "low", "medium", "high", "xhigh", "max" } },
+                                            { "claude-sonnet-5-5", "Claude Sonnet 5.5", true, { "low", "medium", "high", "xhigh" }, 128000, true, 200000 } });
+        agent.setTransport(std::make_unique<fake::Transport>(script));   // the models are asked for again
+        summarizing("claude-sonnet-5-5", 160000);
+        summarizing("claude-sonnet-5-5", 140000);
+        script->add(fake::Response::ok(fake::Sse().start().text("Never asked.").end()));
+        before = script->postCount();
+        shown = agent.chatState().entries.size();
+        agent.send("redesign the panel");
+        agent.waitIdle();
+        P.eq("loop.crowded_requests", static_cast<int64_t>(script->postCount() - before), 2);
+        P.eq("loop.crowded_trigger", static_cast<int64_t>(triggerOf(before + 1)), 150000);
+        const std::string notes = turnNotes(shown);
+        P.eq("loop.crowded_note", has(notes, "no longer fits") && has(notes, "140K tokens") && has(notes, "summarizes at 150K")
+                                          && has(notes, "it reads 200K") && has(notes, "program's files (about")
+                                          && has(notes, "the plugin and its tools (about") && has(notes, "Claude Opus 5.5 reads 1000K")
+                                          && has(notes, "new chat") ? 1 : 0, 1);
+        P.eq("loop.crowded_not_kept", claude::parseJson(agent.saveState()).hasProperty("compact") ? 1 : 0, 0);
+        const juce::Array<juce::var> history = arr(claude::parseJson(agent.saveState()).getProperty("messages", {}));
+        const juce::Array<juce::var> first = arr(history.isEmpty() ? juce::var() : history[0].getProperty("content", {}));
+        P.eq("loop.crowded_history", !history.isEmpty() && str(history[0], "role") == "assistant" && !first.isEmpty()
+                                         && str(first[0], "type") == "compaction" && alternates(history) && filled(history) ? 1 : 0, 1);
+        // Nothing lost: the next message goes after the summary, its call answered.
+        script->add(fake::Response::ok(fake::Sse().start("claude-sonnet-5-5").text("Carrying on.").end()));
+        agent.send("continue");
+        agent.waitIdle();
+        const juce::Array<juce::var> next = messagesOf(script->body(script->postCount() - 1));
+        P.eq("loop.crowded_next_valid", alternates(next) && filled(next) && says(next[next.size() - 1], "continue") ? 1 : 0, 1);
+
+        script->models = listed;
+        agent.setTransport(std::make_unique<fake::Transport>(script));
+        agent.setModel("claude-opus-5-5");
         agent.loadState(kept);                     // the conversation the sections below go on with
     }
 

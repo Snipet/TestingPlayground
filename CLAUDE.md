@@ -1496,8 +1496,12 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `compact-2026-01-12`, instructions that keep the design and leave out code) on the models that take it, its trigger
   the model's (`compactTriggerFor`: `kCompactShare`, half, of its window, /v1/models' `max_input_tokens` kept as
   `ChatModel::window`, which another provider's model never has; never under `kCompactFloor`, the API's default of
-  150K, also for a window not said; never above the window less a reply), the compaction block kept and what came
-  before it dropped: the history then starts at the
+  150K, also for a window not said; never above the window less a reply). Never a loop: a request right after a
+  summary that carries `kCrowdedShare` (60 %) of the trigger raises the conversation's (`compactRaised_`, the chat
+  file's `"compact"`) to `kRoomFactor` (twice) what it carried, as far as the window allows; a turn whose requests
+  summarize `kMaxSummariesInARow` (2) in a row with nothing raised, or `kMaxSummariesATurn` (3) in all, ends with
+  `summariesNote` (what fills the room, in numbers, and what helps; `plugin.chat` LOOP). The compaction block is kept
+  and what came before it dropped: the history then starts at the
   block, in its assistant message (never at the message before it, which mid-turn is tool results the API refuses
   without their calls; `repairHistory`, also run on a loaded session), and the files go again with whatever follows,
   a message or the turn's next tool results. A compaction block counts only with its summary (`summarized`: its
