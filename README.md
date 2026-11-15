@@ -2341,8 +2341,9 @@ It follows no redirect, and nothing in the update file is an address the plugin 
 **The offer.** The first time an editor opens, a card over the lower middle of the editor asks **Use the website?**,
 with both lines ticked: **The factory projects, kept up to date** and **A note when a new version is out**. **Allow**
 says yes to each ticked line and no to the other; **Not now** says no to the update note and leaves the factory projects
-unasked, and the card is not shown again by itself (FACTORY's **Get them** asks again). It stops nothing: the plugin plays and the editor takes your keys
-and clicks behind it. Both answers are this computer's, shared by the effect and the synth.
+unasked, and the card is not shown again by itself (FACTORY's **Get them** asks again). It stops nothing: the plugin
+plays and the editor takes your keys and clicks behind it. Both answers are this computer's, shared by the effect and
+the synth.
 
 **Settings, Network** changes either answer at any time: **Check for updates** (when the last check was, and what it
 found, or why it failed: no connection, a reply it could not read), **Check now**, and **Get the factory projects** with
