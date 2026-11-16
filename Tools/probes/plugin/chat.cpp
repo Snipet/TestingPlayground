@@ -32,7 +32,7 @@
 //            Fable 5.2, listed, takes fast mode without a beta, and "fallbacks" (with their beta) at standard speed
 //   TRIGGER  the summaries' trigger follows the model's window (/v1/models' max_input_tokens, kept with the model):
 //            half of a million-token window, the API's default of 150,000 for a 200,000-token window and for a model
-//            whose list says none
+//            whose list says none; before the list answers (or when it cannot be read) the built-in models' million
 //   INVALID  a tool call whose input is not JSON gets an INVALID_JSON error result, runs nothing, and the turn goes on
 //   THROWN   an exception inside the plugin (fminus/Failure.h's seam): a tool that throws is its error result in words,
 //            the turn going on; a turn that throws ends in words, the chat free, and the next message is answered; an
@@ -304,7 +304,8 @@
 //            user's own message again (its picture too) and the state with every file whole, each once; after tool
 //            results, a line in their place; the next tool results carry no second state; kept and opened again, the
 //            next request is valid and the files go once; a pause with no summary, or a refusal with none, keeps the
-//            messages and goes again once without the compaction edit (the next turn asks for it again); a turn the
+//            messages and goes again as it was, the edit and its beta kept; two in a row end the turn after two
+//            requests with a note, the next turn valid and asking again; the instructions ask for text alone; a turn the
 //            summaries' bound ends after a pause keeps that message, which the next one joins, the files once; with
 //            web search, a request with two summaries starts the history at the last
 //   EMPTY    a reply with nothing to keep (no block, white space alone, thinking alone) goes into the history with
@@ -893,7 +894,8 @@ PROBE(plugin, chat)
              editList.size() == 1 && str(editList[0], "type") == "compact_20260112"
                      && static_cast<int>(editList[0].getProperty("trigger", {}).getProperty("value", 0)) == 500000
                      && static_cast<bool>(editList[0].getProperty("pause_after_compaction", false))
-                     && !str(editList[0], "instructions").empty() ? 1 : 0, 1);
+                     && has(str(editList[0], "instructions"), "Do not call any tools while writing this summary; respond "
+                                                              "with text only.") ? 1 : 0, 1);
         P.eq("request.stream", static_cast<bool>(b0.getProperty("stream", false)) ? 1 : 0, 1);
         const juce::var thinking = b0.getProperty("thinking", {});
         P.eq("request.thinking_adaptive", str(thinking, "type") == "adaptive" && str(thinking, "display") == "summarized" ? 1 : 0, 1);
@@ -1137,6 +1139,20 @@ PROBE(plugin, chat)
         P.eq("trigger.window_unsaid", static_cast<int64_t>(windowFable), 0);
         P.eq("trigger.two_hundred", static_cast<int64_t>(send("claude-sonnet-5-5", "on two hundred")), 150000);
         P.eq("trigger.unsaid", static_cast<int64_t>(send("claude-fable-5-2", "on one unsaid")), 150000);
+        // Before the models list answers (here it cannot be read): the built-in list, whose models read a million.
+        {
+            pg::Processor fresh;
+            auto unlisted = std::make_shared<fake::Script>();
+            unlisted->modelsStatus = 529;
+            fresh.chatAgent().setTransport(std::make_unique<fake::Transport>(unlisted));
+            unlisted->add(fake::Response::ok(fake::Sse().start().text("Built in.").end()));
+            fresh.chatAgent().send("before the list");
+            fresh.chatAgent().waitIdle();
+            const juce::Array<juce::var> edits =
+                arr(claude::parseJson(unlisted->body(0)).getProperty("context_management", {}).getProperty("edits", {}));
+            P.eq("trigger.built_in", static_cast<int64_t>(edits.size() == 1 ? static_cast<int>(edits[0].getProperty("trigger", {}).getProperty("value", 0)) : 0),
+                 500000);
+        }
         script->models = listed;
         agent.setTransport(std::make_unique<fake::Transport>(script));
         agent.setModel("claude-opus-5-5");
@@ -5977,7 +5993,7 @@ PROBE(plugin, chat)
         const std::string notes = turnNotes(shown);
         P.eq("loop.crowded_note", has(notes, "no longer fits") && has(notes, "140K tokens") && has(notes, "summarizes at 150K")
                                           && has(notes, "it reads 200K") && has(notes, "program's files (about")
-                                          && has(notes, "the plugin and its tools (about") && has(notes, "Claude Opus 5.5 reads 1000K")
+                                          && has(notes, "the plugin and its tools (about") && has(notes, "Claude Opus 5.5 reads 1M tokens") && !has(notes, "1000K")
                                           && has(notes, "new chat") ? 1 : 0, 1);
         P.eq("loop.crowded_not_kept", claude::parseJson(agent.saveState()).hasProperty("compact") ? 1 : 0, 0);
         const juce::Array<juce::var> history = arr(claude::parseJson(agent.saveState()).getProperty("messages", {}));
@@ -6100,7 +6116,8 @@ PROBE(plugin, chat)
                                           && count(claude::toJson(claude::parseJson(script->body(before + 3)).getProperty("messages", {})), "<plugin_state>") == 1 && alternates(m) ? 1 : 0, 1);
 
         // A pause with no summary (content null), and one that safeguards refused: the messages stay as they were,
-        // and the request goes again without the compaction edit, once; the next turn asks for it again.
+        // and the request goes again as it was, the compaction edit and its beta still there (this history starts at
+        // a summary's block, which needs the beta).
         for (const char* stop : { "compaction", "refusal" })
         {
             const std::string key = std::string("pause.null_") + stop;
@@ -6114,7 +6131,10 @@ PROBE(plugin, chat)
             P.eq(key + "_requests", static_cast<int64_t>(script->postCount() - before), 2);
             P.eq(key + "_same_messages", claude::toJson(b0.getProperty("messages", {})) == claude::toJson(b1.getProperty("messages", {}))
                                              ? 1 : 0, 1);
-            P.eq(key + "_no_edit", b0.hasProperty("context_management") && !b1.hasProperty("context_management") ? 1 : 0, 1);
+            P.eq(key + "_edit_kept", b0.hasProperty("context_management") && claude::toJson(b1.getProperty("context_management", {}))
+                                                                                  == claude::toJson(b0.getProperty("context_management", {}))
+                                         && has(script->lastHeader("POST /v1/messages", "anthropic-beta"), "compact-2026-01-12")
+                                         ? 1 : 0, 1);
             bool error = false, noted = false;
             const pg::ChatState st = agent.chatState();
             for (std::size_t i = shown; i < st.entries.size(); ++i)
@@ -6125,10 +6145,24 @@ PROBE(plugin, chat)
             P.eq(key + "_answered", !error && noted && lastText(st, pg::ChatEntry::Kind::assistant) == "Carried on whole." ? 1 : 0, 1);
             P.eq(key + "_history", !summaryless(arr(claude::parseJson(agent.saveState()).getProperty("messages", {}))) ? 1 : 0, 1);
         }
+        // Twice in a row: the turn ends after exactly two requests, with the note, the history as the API takes it.
+        script->add(fake::Response::ok(fake::Sse().start().compactionNull().endPaused(600000, 0)));
+        script->add(fake::Response::ok(fake::Sse().start().compactionNull().endPaused(600000, 0)));
+        before = script->postCount();
+        agent.send("and once more");
+        agent.waitIdle();
+        P.eq("pause.null_twice_requests", static_cast<int64_t>(script->postCount() - before), 2);
+        P.eq("pause.null_twice_note", has(lastText(agent.chatState(), pg::ChatEntry::Kind::note), "could not be summarized, twice in a row")
+                                          && has(lastText(agent.chatState(), pg::ChatEntry::Kind::note), "continue") ? 1 : 0, 1);
+        const juce::Array<juce::var> twice = arr(claude::parseJson(agent.saveState()).getProperty("messages", {}));
+        P.eq("pause.null_twice_history", alternates(twice) && filled(twice) && !summaryless(twice) ? 1 : 0, 1);
         script->add(fake::Response::ok(fake::Sse().start().text("Asked again.").end()));
         agent.send("and the next turn");
         agent.waitIdle();
-        P.eq("pause.null_next_turn", claude::parseJson(script->body(script->postCount() - 1)).hasProperty("context_management") ? 1 : 0, 1);
+        const juce::Array<juce::var> nextTurn = messagesOf(script->body(script->postCount() - 1));
+        P.eq("pause.null_next_turn", claude::parseJson(script->body(script->postCount() - 1)).hasProperty("context_management")
+                                         && alternates(nextTurn) && filled(nextTurn) && !summaryless(nextTurn)
+                                         && lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "Asked again." ? 1 : 0, 1);
 
         // A turn ended by the summaries' bound right after a pause (a 200,000-token model): the message after the block
         // waits in the history with the user's words and the files; kept and opened again, the next message joins it

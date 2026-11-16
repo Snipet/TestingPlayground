@@ -1511,8 +1511,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   history's start, and one message follows it before Claude goes on: the state with every file whole, then the user's
   own message again as sent, pictures too (`ownMessage_`, when the request ended in it: `ownLast_`), else a line in
   place of the tool results (`kAfterSummaryOwn`, `kAfterSummaryWork`); the next tool results carry no second state; a
-  pause with a null summary (or a refusal with one) keeps the messages and goes again without the compaction edit for
-  the turn (`turnNoCompact_`); a reply that did not pause goes back as it came and the files go with what follows; a
+  pause with a null summary (or a refusal with one) keeps the messages and goes again as it was, the edit and its beta
+  still there (never a request without them while the model takes compaction), a second in a row ending the turn
+  (`kMaxNullSummaries`); a reply that did not pause goes back as it came and the files go with what follows; a
   message joining one left last with every file whole drops the state that one held (`addMessage`; `plugin.chat`
   PAUSE). A compaction block counts only with its summary (`summarized`: its
   content a string with something in it): one whose summary never came (a Stop or a broken stream before its one

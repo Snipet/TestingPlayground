@@ -82,6 +82,7 @@ namespace playground
         constexpr int kRoomFactor = 2;
         constexpr int kMaxSummariesInARow = 2;
         constexpr int kMaxSummariesATurn = 3;
+        constexpr int kMaxNullSummaries = 2;       // pauses in a row with no summary before a turn ends
         constexpr const char* kCompactInstructions =
             "Summarize the conversation so far between a user and Claude, who builds and changes FMinus DSP programs "
             "inside an audio plugin through tools (read_file, write_file, edit_file, run_program, set_dial, "
@@ -93,7 +94,8 @@ namespace playground
             "solved, and measurements that matter; the checks set (set_checks) and how they stand (the plugin keeps "
             "measuring them); what is unfinished or was promised next; and the user's latest "
             "request, word for word. Do not copy the programs' code: the plugin sends the current files after this "
-            "summary, and read_file shows any of them. Plain prose and short lists.";
+            "summary, and read_file shows any of them. Plain prose and short lists. Do not call any tools while writing "
+            "this summary; respond with text only.";
 
         // The line that starts the message after a paused summary (runTurn): the user's message follows it again, or
         // the work goes on from the summary; the files follow whole either way.
@@ -113,10 +115,13 @@ namespace playground
         // every effort level; Claude Opus 5.5 and Claude Fable 5.2 take fast mode too.
         std::vector<ChatModel> builtInModels()
         {
-            return { { "claude-opus-5-5", "Claude Opus 5.5", kAllEfforts, 128000, true, true },
-                     { "claude-fable-5-2", "Claude Fable 5.2", kAllEfforts, 128000, true, true },
-                     { "claude-sonnet-5-5", "Claude Sonnet 5.5", kAllEfforts, 128000, true },
-                     { "claude-haiku-5-5", "Claude Haiku 5.5", kAllEfforts, 128000, true } };
+            std::vector<ChatModel> models{ { "claude-opus-5-5", "Claude Opus 5.5", kAllEfforts, 128000, true, true },
+                                           { "claude-fable-5-2", "Claude Fable 5.2", kAllEfforts, 128000, true, true },
+                                           { "claude-sonnet-5-5", "Claude Sonnet 5.5", kAllEfforts, 128000, true },
+                                           { "claude-haiku-5-5", "Claude Haiku 5.5", kAllEfforts, 128000, true } };
+            for (ChatModel& m : models)
+                m.window = 1000000;                // each reads a million tokens (the API's models reference)
+            return models;
         }
 
         // The models that take "fallbacks": "default" (a classifier's refusal retried on another model).
@@ -2412,6 +2417,17 @@ namespace playground
     // could not give it room.
     std::string ChatAgent::summariesNote(int64_t carried, int summaries, bool crowded)
     {
+        // A count of tokens as a musician reads it: "140K", "1M", "1.5M".
+        const auto count = [](int64_t n) -> std::string {
+            if (n < 1000000)
+                return thousands(n);
+            char buf[32];
+            std::snprintf(buf, sizeof buf, "%.1fM", static_cast<double>(n) / 1e6);
+            std::string t = buf;
+            if (t.size() > 3 && t.compare(t.size() - 3, 3, ".0M") == 0)
+                t.erase(t.size() - 3, 2);
+            return t;
+        };
         const Draft d = host_.chatDraft();
         std::size_t fileBytes = 0;
         for (const SourceFile& f : d.files)
@@ -2429,15 +2445,15 @@ namespace playground
                                     + " times in this turn, so the turn ends here: each summary is a request you pay for, and "
                                       "keeps less of the detail.";
         if (carried > 0)
-            out += " Right after a summary a request still holds about " + thousands(carried)
-                 + " tokens, and this model summarizes at " + thousands(compactTriggerFor(turnModel_))
-                 + (window > 0 ? " (it reads " + thousands(window) + " in all, with room kept for its reply)."
+            out += " Right after a summary a request still holds about " + count(carried)
+                 + " tokens, and this model summarizes at " + count(compactTriggerFor(turnModel_))
+                 + (window > 0 ? " (it reads " + count(window) + " in all, with room kept for its reply)."
                                : " (the plugin does not know how much it reads).");
-        out += " Each request carries the program's files (about " + thousands(static_cast<int64_t>(fileBytes / 4))
+        out += " Each request carries the program's files (about " + count(static_cast<int64_t>(fileBytes / 4))
              + " tokens) and what Claude is told about the plugin and its tools (about "
-             + thousands(static_cast<int64_t>(told / 4)) + " tokens). To go on: ";
+             + count(static_cast<int64_t>(told / 4)) + " tokens). To go on: ";
         if (larger != models_.end() && larger->window > window)
-            out += "choose a model that reads more (" + larger->name + " reads " + thousands(larger->window) + " tokens), ";
+            out += "choose a model that reads more (" + larger->name + " reads " + count(larger->window) + " tokens), ";
         else
             out += "choose a model that reads more, ";
         out += "make the program's files smaller or fewer (a large panel or shader split, or what is no longer used "
@@ -3046,7 +3062,7 @@ namespace playground
             o->setProperty("fallbacks", "default");
             beta = kFallbackBeta;
         }
-        if (model != models_.end() && model->compaction && !turnNoCompact_)
+        if (model != models_.end() && model->compaction)
         {
             // Paused after the summary: the plugin then sends the files and the user's message before Claude goes on
             // (runTurn, "A summary paused").
@@ -3293,7 +3309,6 @@ namespace playground
                 historyWeb_ = turnWeb_;
             }
             maxTokens = maxTokensFor(turnModel_);
-            turnNoCompact_ = false;
             plannerAsks_ = 0;
             turnPlanUsage_.clear();
         }
@@ -3313,6 +3328,7 @@ namespace playground
         int summariesInARow = 0, summariesThisTurn = 0;
         int64_t carriedAfter = 0;
         bool crowded = false;                      // a request after a summary left no room the window could give
+        int nullSummaries = 0;                     // pauses in a row that brought no summary (content null)
         int checkNudges = 0;                       // times this turn went on because a check failed
         bool worked = false;                       // a tool changed the program, the dials or the checks this turn
         // The web pages the turn's answers cite (url, title), in order: listed under its last answer.
@@ -3639,14 +3655,22 @@ namespace playground
             for (int i = pausedAt + 1; pausedAt >= 0 && i < blocks.size(); ++i)
                 if (!blankText(blocks[i]))
                     pausedAt = -1;
-            if (pausedAt >= 0 && !summarized(blocks[pausedAt]))
+            nullSummaries = pausedAt >= 0 && !summarized(blocks[pausedAt]) ? nullSummaries + 1 : 0;
+            if (nullSummaries > 0)
             {
-                // No summary (content null): the messages stay as they were, and the request goes again without the
-                // compaction edit for the rest of the turn, so that it never asks for a summary that cannot come.
+                // No summary (content null: the API ignores the block, nothing was compacted): the messages stay as
+                // they were and the request goes again as it was, the compaction edit and its beta still there (the
+                // compaction docs' own example; a history that starts at an earlier block needs the beta). Usually a
+                // one-off; a second in a row ends the turn.
                 const std::lock_guard<std::mutex> lock(mutex_);
-                turnNoCompact_ = true;
-                addEntry(ChatEntry::Kind::note, "The conversation could not be summarized this time, so Claude carries on "
-                                                "with all of it.");
+                if (nullSummaries >= kMaxNullSummaries)
+                {
+                    addEntry(ChatEntry::Kind::note, "The conversation could not be summarized, twice in a row, so the turn "
+                                                    "ends here. Send \"continue\" to try again, or start a new chat.");
+                    touch();
+                    break;
+                }
+                addEntry(ChatEntry::Kind::note, "The conversation could not be summarized this time; Claude asks again.");
                 touch();
                 continue;
             }

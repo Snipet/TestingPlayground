@@ -110,8 +110,10 @@
 // none, and its "word for word" is not the message); else a line in place of the tool results the summary took
 // (kAfterSummaryOwn, kAfterSummaryWork: Claude has the files, so it reads none again). So the first requests after a
 // summary carry each file once: the next tool results carry no state. A pause with no summary (content null: none
-// could be written, or safeguards refused it, stop reason "refusal") keeps the messages as they were and asks again
-// without the compaction edit for the rest of the turn (turnNoCompact_), never for a summary that cannot come. A
+// could be written, or safeguards refused it, stop reason "refusal"; the API ignores the block) keeps the messages as
+// they were and sends the request again as it was, the compaction edit and its beta still there (a history that starts
+// at an earlier block needs them), with a note; a second in a row (kMaxNullSummaries) ends the turn with a note. The
+// instructions ask for text alone (a tool called while summarizing leaves no summary). A
 // reply with a summary and more after it (the API did not pause) goes back as it came, and the state goes with
 // whatever follows it. A message that joins one left last unanswered (addMessage) with every file whole drops the
 // state that one held, so a chat kept after a pause and opened again sends its files once.
@@ -801,7 +803,6 @@ namespace playground
         bool resendState_ = false;                                  // a summary came: the state goes with what follows
         int compactRaised_ = 0;                                     // the summaries' trigger this conversation raised
                                                                     // (0: the model's own; the chat's file "compact")
-        bool turnNoCompact_ = false;                                // a summary could not come: none asked, this turn
         bool ownLast_ = false;                                      // the history ends in the user's own message
         juce::Array<juce::var> ownMessage_;                         // its pictures and words, as sent (userMessage)
         bool busy_ = false;
