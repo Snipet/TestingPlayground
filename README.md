@@ -2433,6 +2433,42 @@ build-dev/TestingPlaygroundRender my-effect/ -i vocal.wav -w vocal-out.wav --no-
   `allow-unsigned-executable-memory`). It holds the compiler and LLVM, as each plugin does, so it makes the extension
   larger. `Source/render/Main.cpp`; the `plugin.render` probe runs it against the tools.
 
+## Promotional videos
+
+`scripts/promo.py` makes short vertical videos (1080 x 1920, 60 fps, H.264 and AAC, about 20 seconds) of your own
+projects playing: the title at the top, the project's panel live under it (its knobs turning, its displays moving with
+the sound), its code scrolling under that, and an end card with the product's lockup. Each video is rendered offline
+from a storyboard, so it never drops a frame, needs no screen or audio routing, and comes out the same every run: change
+a project, run it again, and its video follows. macOS only; it needs ffmpeg and swift on the PATH.
+
+```sh
+scripts/promo.py synth list                       # the projects, each with its storyboard and video
+scripts/promo.py synth info "TB-303 Bassline"     # its dials, pages, presets and files
+scripts/promo.py synth new "Marimba"              # a starter storyboard to edit
+scripts/promo.py synth render --stills 1,8        # PNGs of each view at those seconds, to check the storyboards
+scripts/promo.py synth render                     # every storyboard's video; or name the projects
+```
+
+- **Where**: `~/Movies/<name> Promos/` (`--dir` another): `storyboards/<project>.json`, the videos beside them as
+  `<project>.mp4`, a `work/` folder of what each was made from (`--keep` keeps its views' videos and audio too), and an
+  optional `defaults.json` whose keys every storyboard takes unless it says otherwise. Your projects are only read:
+  the renderer copies the one it plays into a sandbox of its own (the chat, the network and Claude Desktop never see it).
+- **A storyboard** (JSON): `seconds`, `tempo` (the host's transport, playing from beat 0), `notes` as `[beat, note,
+  beats, velocity]` (or `midi`, a .mid file beside it), `repeat` (`{"beats": 8, "times": 3}`), `dials` (`[{"name":
+  "cutoff", "beat": 8, "beats": 8, "to": 0.8}]`: a glide from where the dial is to a place on its travel, or `value`
+  in its own units), `page` (the panel's page shown), `preset`, `code` (`{"file": "program.fm", "line": 40, "speed":
+  2.5}`: the file, its first line shown, the lines a second it scrolls) and the words: `title`, `subtitle`,
+  `panel_label`, `code_label`, `tagline`, `footer`, `end` (the end card's seconds, 2.5). `Tools/promo/Main.cpp`'s
+  header and `scripts/promo.py`'s say every key.
+- **How**: `<name>Promo` (`Tools/promo/Main.cpp`, built by the script into `build-dev`, outside `all`) plays the
+  project in a real processor and draws the editor headless on each frame, as Claude's view_panel does (the GPU, the
+  panel's shaders as on screen): the PANEL view's interface and the CODE view's file, each at the scale that makes it
+  the video's width, with the audio from the same loop, so they cannot drift. `Tools/promo/cards.swift` draws the text
+  in JetBrains Mono (this ffmpeg has no text filter), and ffmpeg composes it all on the theme's ground, the sound at
+  -14 LUFS.
+- **Limits**: the panel's keyboard shows only its own clicks, so the notes played do not light its keys; posting the
+  videos anywhere is yours to do.
+
 ## Build and run
 
 Requirements: macOS 14 or later on Apple silicon, Xcode or its command-line tools, CMake 3.30 or later, Ninja,
@@ -3050,7 +3086,10 @@ Tools/probes/            tests that measure, each run for both products: fminus/
                          headless); installer/, the installer's, run once
 Tools/wheel-dump/        wheel-dump, a developer's tool (outside `all`, never installed): a connected G29's elements
                          and live values beside WheelMap.h's table ("A racing wheel")
+Tools/promo/             <name>Promo, the promotional videos' renderer (outside `all`, never installed; macOS), and
+                         cards.swift, their text ("Promotional videos"; scripts/promo.py drives both)
 scripts/                 plugin.py (the products' identities: info, add, rename, codesign, notarize), test.sh,
+                         promo.py (promotional videos of your projects: "Promotional videos"),
                          import-factory.py (factory projects from a projects folder and a name map, into a staging
                          folder of yours),
                          sync-dsp-core.sh, install.sh, package.sh (the installer .pkg; --installer: the installer
