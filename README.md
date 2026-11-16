@@ -3058,8 +3058,10 @@ scripts/                 plugin.py (the products' identities: info, add, rename,
                          package-linux.sh (the Linux package, a .tar.gz) and linux-install.sh (its install.sh)
 .github/workflows/       build.yml (each pull request built and tested on macOS, Windows and Linux, bgfx's shader
                          compiler and the compilers' objects kept in caches on all three (ccache on macOS and Linux,
-                         sccache on Windows), saved from main; a pull request that changes only docs/ and the root's
-                         .md files builds nothing, its checks passing at once; run by hand, `platforms` builds only
+                         sccache on Windows), saved from main; a pull request whose files are all under docs/ or
+                         the root's .md files but CHANGELOG.md builds nothing, its checks passing at once (CHANGELOG.md
+                         is compiled in, so a pull request that changes it builds; changed entries in docs/changelog/
+                         are checked by scripts/changelog.py check even then); run by hand, `platforms` builds only
                          the platforms named), release.yml (a v* tag's installers for macOS,
                          Windows and Linux, as a draft release), publish-downloads.yml (a published release's files
                          to the website), runners.yml (what the hosted runners offer)

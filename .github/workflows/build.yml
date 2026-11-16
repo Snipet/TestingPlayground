@@ -38,9 +38,13 @@
 # "all", the default, every one): a branch's Windows build can be tried without a macOS runner. Pull requests and
 # pushes build all three, as the matrix in the job `changes` lists them.
 #
-# A pull request that changes only docs/** and the root's *.md files builds nothing (the job `changes` reads its
-# files; on any doubt it builds): each platform's job still starts and succeeds in seconds, every step skipped, so the
-# checks named for the platforms report. Nothing the build or the tests read lives there.
+# A pull request whose every file is under docs/ or one of the root's *.md files, CHANGELOG.md aside, builds nothing
+# (the job `changes` reads its files; on any doubt it builds): each platform's job still starts and succeeds in
+# seconds, every step skipped, so the checks named for the platforms report. CHANGELOG.md is code: it is compiled into
+# the plugins (What's new) and read by the probes and lint.changelog, so a pull request that changes it builds. The
+# entries, docs/changelog/*.md, are read by lint.changelog alone: a pull request that changes one and builds nothing
+# has them checked by `scripts/changelog.py check` in the job `changes`, and a failure there fails every platform's
+# job. Nothing else under docs/ and no other root *.md file is read by the build or the tests.
 #
 # Each action is pinned to its release's full commit SHA, with the tag in a comment: a tag can be moved, a SHA cannot.
 name: Build
@@ -66,15 +70,19 @@ concurrency:
 
 jobs:
   # code: whether anything but docs changed (true on a push, by hand, and whenever the pull request's files cannot be
-  # read whole); matrix: the platforms to build, every one but by hand with `platforms`
+  # read whole; CHANGELOG.md is code); matrix: the platforms to build, every one but by hand with `platforms`;
+  # entries: the changelog's entries' check when nothing builds and the pull request changes one (success, failure, or
+  # skipped)
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      contents: read
       pull-requests: read
     outputs:
       code: ${{ steps.files.outputs.code }}
       matrix: ${{ steps.platforms.outputs.matrix }}
+      entries: ${{ steps.entries.outcome }}
     steps:
       # jobs: the build's at once; tests: the tests' (the Mac's 3 cores run two, so a test's own threads have one)
       - id: platforms
@@ -115,26 +123,46 @@ jobs:
           code=true
           if [ "$EVENT" = pull_request ]; then
             if files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename'); then
-              n=0; other=0
+              n=0; other=0; entries=0
               while IFS= read -r f; do
                 [ -n "$f" ] || continue
                 n=$((n + 1))
                 case "$f" in
+                  CHANGELOG.md) other=$((other + 1)); echo "builds: $f (compiled into the plugins)" ;;
+                  docs/changelog/*) entries=$((entries + 1)) ;;
                   docs/*) ;;
                   */*) other=$((other + 1)); echo "builds: $f" ;;
                   *.md) ;;
                   *) other=$((other + 1)); echo "builds: $f" ;;
                 esac
               done <<< "$files"
-              echo "$n files changed (the pull request says $CHANGED), $other outside the docs"
+              echo "$n files changed (the pull request says $CHANGED), $other that build, $entries in docs/changelog/"
               # the API lists 3,000 files at most: a list shorter than the pull request builds
               if [ "$n" -gt 0 ] && [ "$n" = "$CHANGED" ] && [ "$other" = 0 ]; then code=false; fi
             else
               echo "the pull request's files could not be read: building"
             fi
           fi
-          echo "code=$code"
+          # nothing builds, so lint.changelog does not run: the entries are checked here instead
+          check=false
+          if [ "$code" = false ] && [ "${entries:-0}" -gt 0 ]; then check=true; fi
+          echo "code=$code check_entries=$check"
           echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "check_entries=$check" >> "$GITHUB_OUTPUT"
+
+      # the pull request's own checkout (its merge with main, as the platforms' jobs check out), read only
+      - if: steps.files.outputs.check_entries == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # its outcome goes to the platforms' jobs, whose "Only docs changed" fails on a failure: a check of this job
+      # alone may not be one a merge waits for
+      - name: The changelog's entries
+        id: entries
+        if: steps.files.outputs.check_entries == 'true'
+        continue-on-error: true
+        run: python3 scripts/changelog.py check
 
   build:
     name: ${{ matrix.platform }}
@@ -155,7 +183,16 @@ jobs:
     steps:
       - name: Only docs changed
         if: needs.changes.outputs.code != 'true'
-        run: echo "This pull request changes only docs/** and the root's *.md files, which no build or test reads; nothing to build."
+        env:
+          ENTRIES: ${{ needs.changes.outputs.entries }}
+        run: |
+          echo "This pull request changes only files under docs/ and the root's *.md files but CHANGELOG.md, which no"
+          echo "build or test reads (docs/changelog/ aside, which lint.changelog reads); nothing to build."
+          case "$ENTRIES" in
+            success) echo "Its changelog entries passed scripts/changelog.py check (the job \`changes\`)." ;;
+            failure) echo "::error::Its changelog entries fail scripts/changelog.py check: the job \`changes\` says why."
+                     exit 1 ;;
+          esac
 
       - name: Packages and a user (Arch Linux)
         if: needs.changes.outputs.code == 'true' && runner.os == 'Linux'
