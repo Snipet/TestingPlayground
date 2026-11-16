@@ -12,7 +12,47 @@ Each pull request's entry waits in its own file in `docs/changelog/` until `scri
 
 ## Unreleased
 
+## Version 0.2.0 (2026-11-16)
+
+## 2026-11-16
+
 Claude Desktop extension: **0.21.0** (was 0.17.0).
+
+### The chat summarizes a long conversation when it has to, and only once ([#80](https://github.com/Snipet/TestingPlayground/pull/80))
+
+**Fixed**
+- The chat no longer summarizes a long conversation far too early: it now waits until the conversation fills half of
+  what the model can read (500,000 tokens on a model that reads a million, never sooner than 150,000), where it used to
+  summarize at 150,000 on every model.
+- The chat no longer goes round summarizing request after request when the program's files and what Claude is told
+  about the plugin already fill most of the model's room, each summary a request you paid for. It gives the
+  conversation more room where the model has it; where it has none, the turn ends with a note that says what fills the
+  room, in numbers, and what helps: a model that reads more, smaller or fewer files, or a new chat.
+- Right after a summary Claude has every file whole and your last message as you sent it, pictures included, so it
+  carries on from where it was instead of reading the files again.
+
+### Factory projects come from the website ([#79](https://github.com/Snipet/TestingPlayground/pull/79))
+
+**Changed**
+- The plugins no longer carry factory projects of their own: FACTORY in PROJECTS and in the explorer shows the set
+  fetched from the website (after you say yes) and nothing else. The placeholders that came with earlier builds are
+  gone.
+- A session saved with a factory project open still loads and plays with no factory projects at all, and names the
+  project again once they arrive (unless you changed the program meanwhile).
+
+**Added**
+- While FACTORY is empty it says why in one row: the factory projects are not on this computer yet (**Get them**),
+  they are being fetched, they could not be fetched (**Try again**), what arrived could not be checked, or they are
+  turned off on this computer (and how to turn them on). The row is never a project: nothing chooses, stars or
+  exports it.
+- Claude's projects tool says the same when it lists projects and there are no factory projects yet; it never
+  fetches them.
+
+### The code's text size in Settings ([#77](https://github.com/Snipet/TestingPlayground/pull/77))
+
+**Added**
+- Settings, Editor: the code's text size, a step smaller or larger at a time (the same steps as Cmd-= and Cmd--), with
+  Reset back to 12 px. Every open editor follows at once, and a size set with the keys shows there.
 
 ### The git for projects in git remembered ([#75](https://github.com/Snipet/TestingPlayground/pull/75))
 
