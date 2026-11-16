@@ -28,7 +28,9 @@
 //             PROJECTS', this Mac's: EditorPort::projectsView), unless the one group is UNCATEGORISED (none starred,
 //             none given a category: a flat list)
 //   FACTORY   the factory projects (plugin/Factory.h), by name (the one open marked), folded at first: a click opens
-//             one (read-only: a save makes the user's own copy)
+//             one (read-only: a save makes the user's own copy). With no set in use, one row that is no project, saying
+//             why (EditorPort::factoryNote, ProjectGroups.h's noteRow), wrapped: a button where it acts (Get them, Try
+//             again), else text alone
 //   LIBRARY   the library's building blocks by category, a tick on those the program has: a click adds one as a tab
 //             (and #includes it), or shows it
 //   EXAMPLES  a click starts afresh from the example (Panel::loadExample: its files the only tabs, the dials at their
@@ -79,6 +81,8 @@ namespace playground::ui
             std::string spec;                         // the status line's under the pointer ("": the section's; a
                                                       // caption with one says it under the pointer, a caption without
                                                       // is not there for the pointer)
+            uint8_t note = 0;                         // FACTORY's note (no project): 1 its text alone, 2 its text and
+                                                      // an action, `detail` its label (the row a button); wrapped
         };
 
         struct Group

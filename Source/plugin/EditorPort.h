@@ -632,6 +632,24 @@ namespace playground
         uint64_t revision = 0;
     };
 
+    // The FACTORY group while no factory set is in use (plugin/FactoryStore.h's Status; EditorPort::factoryNote): one row
+    // that is no project, saying why (editor/ProjectGroups.h's noteRow has its words and its action). Plain data.
+    struct FactoryNote
+    {
+        enum class Kind : uint8_t
+        {
+            none,                                // a set is in use: the group shows its projects, and nothing else
+            getting,                             // a fetch under way, or about to be (a yes, the disk still being read)
+            notHere,                             // not answered yet, or "Not now": Get them (a yes)
+            offline,                             // the last fetch had no answer: Try again (a fetch now)
+            unchecked,                           // what the site sent could not be checked, and was not used
+            off                                  // <ENV_PREFIX>FACTORY=off, the environment's: no click changes it
+        };
+        Kind kind = Kind::none;
+        std::string reason;                      // offline's: the store's words ("no connection to ...")
+        bool operator==(const FactoryNote&) const = default;
+    };
+
     // The Standalone window's close, minimise and zoom buttons, together (EditorPort::windowButtons).
     struct WindowButtons
     {
@@ -1064,6 +1082,13 @@ namespace playground
         }
         virtual void setUpdates(bool on) { (void)on; }
         virtual void setFactoryProjects(bool on) { (void)on; }
+        //   factoryNote()      the FACTORY group's row while no set is in use (FactoryNote; kind none: a set is). Read
+        //                      each refresh: a copy under the store's short lock, never a wait on its work
+        //   getFactoryProjects() the row's Get them: a yes, as the offer's (the answer kept, a fetch now)
+        //   fetchFactoryNow()  the row's Try again: a fetch now (no answer changed); nothing before an editor opened
+        virtual FactoryNote factoryNote() const { return {}; }
+        virtual void getFactoryProjects() {}
+        virtual void fetchFactoryNow() {}
         virtual void checkForUpdates() {}
         virtual void skipUpdate(const std::string& version) { (void)version; }
         virtual bool announceUpdate(const std::string& version)

@@ -1,6 +1,8 @@
 // Source/editor/ProjectGroups.cpp: see ProjectGroups.h.
 #include "editor/ProjectGroups.h"
 
+#include "Product.h"
+
 #include <algorithm>
 #include <cctype>
 
@@ -143,7 +145,11 @@ namespace playground::ui::projectgroups
                 add(g, i, shown);
             }
         }
-        groups.erase(std::remove_if(groups.begin(), groups.end(), [](const Group& g) { return g.members.empty(); }), groups.end());
+        // No factory set in use: FACTORY kept for its note's row (not while a filter shows results: the note is none).
+        if (o.factoryGroup && o.factoryNote && !filtering
+            && std::none_of(projects.begin(), projects.end(), [](const ProjectEntry& e) { return e.factory && !e.name.empty(); }))
+            groupFor(Kind::factory, {}).note = true;
+        groups.erase(std::remove_if(groups.begin(), groups.end(), [](const Group& g) { return g.members.empty() && !g.note; }), groups.end());
         const auto rank = [](Kind k) { return k == Kind::favourites ? 0 : k == Kind::factory ? 1 : k == Kind::category ? 2 : 3; };
         std::stable_sort(groups.begin(), groups.end(), [&](const Group& a, const Group& b) {
             if (rank(a.kind) != rank(b.kind))
@@ -151,6 +157,56 @@ namespace playground::ui::projectgroups
             return a.key < b.key;
         });
         return groups;
+    }
+
+    NoteRow noteRow(const FactoryNote& note)
+    {
+        using K = FactoryNote::Kind;
+        NoteRow r;
+        switch (note.kind)
+        {
+            case K::none: return r;
+            case K::getting: r.text = "Getting the factory projects..."; break;
+            case K::notHere:
+                r.text = "The factory projects are not on " + std::string(kThisMachine) + ".";
+                r.action = "Get them";
+                break;
+            case K::offline:
+            {
+                // The store's words, short: "no connection to <host>" is "no connection" here.
+                std::string why = note.reason.empty() ? std::string("no connection") : note.reason;
+                if (why.rfind("no connection", 0) == 0)
+                    why = "no connection";
+                r.text = "The factory projects could not be fetched (" + why + ").";
+                r.action = "Try again";
+                break;
+            }
+            case K::unchecked: r.text = "The factory projects could not be checked, and were not used."; break;
+            case K::off:
+                r.text = "Factory projects are off on " + std::string(kThisMachine) + ": " + std::string(product::kEnvPrefix)
+                       + "FACTORY=off is set. Remove it from the environment and start the plugin again to turn them on.";
+                break;
+        }
+        r.spoken = r.action.empty() ? r.text : r.text + " " + r.action;
+        return r;
+    }
+
+    std::string pressNote(EditorPort& port, const FactoryNote& note)
+    {
+        switch (note.kind)
+        {
+            case FactoryNote::Kind::notHere:
+                port.getFactoryProjects();
+                return "GETTING THE FACTORY PROJECTS";
+            case FactoryNote::Kind::offline:
+                port.fetchFactoryNow();
+                return "TRYING AGAIN: THE FACTORY PROJECTS";
+            case FactoryNote::Kind::none:
+            case FactoryNote::Kind::getting:
+            case FactoryNote::Kind::unchecked:
+            case FactoryNote::Kind::off: break;          // no action: text alone
+        }
+        return {};
     }
 
     std::vector<std::pair<std::string, int>> tagsOf(const std::vector<ProjectEntry>& projects)

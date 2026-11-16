@@ -856,6 +856,8 @@ namespace playground::ui
         ProjectsView projectsView_;                      // PROJECTS' stars and folded groups, as the poll last read them
         bool factoryRead_ = false;
         uint64_t factorySeen_ = 0;                       // the factory set's generation factoryList_ was read at
+        FactoryNote factoryNote_;                        // FACTORY's row while no set is in use (EditorPort::factoryNote)
+        bool factoryNoteRead_ = false;
         std::vector<PresetEntry> presetList_;            // the project open's
         std::string presetsOf_;                          // the project presetList_ is of
         double projectsAt_ = -100.0;

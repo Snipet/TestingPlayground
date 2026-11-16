@@ -121,9 +121,11 @@ function(fp_add_probes key)
     # macOS, includes it, and Windows has none.
     target_include_directories(${FP_PROBES} PRIVATE ${FP_PROBE_ROOT}/common/win)
   endif()
-  # PROBE_SOURCE_DIR: the source tree, where plugin.factory finds scripts/import-factory.py and products/.
+  # PROBE_SOURCE_DIR: the source tree, where plugin.factory finds scripts/import-factory.py and products/, and the
+  # probes their fixtures (the made-up factory set: Tools/probes/fixtures/factory-set/).
   # FP_PROBES: the plugin's sources as the probes compile them, with their test seams (FactoryStore.h's
-  # useConfigForTests: the fixtures' keys); the plugin itself is compiled without, so it has no such call.
+  # useConfigForTests: the fixtures' keys; Factory.h's publishForTests: a made-up set); the plugin itself is compiled
+  # without, so it has no such call.
   target_compile_definitions(${FP_PROBES} PRIVATE FP_PROBES=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0
                                                  PROBE_DEFAULT_OUT_DIR="${CMAKE_BINARY_DIR}/probe-out/${key}"
                                                  PROBE_SOURCE_DIR="${PROJECT_SOURCE_DIR}")

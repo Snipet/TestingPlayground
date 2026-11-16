@@ -96,6 +96,7 @@
 //            does; opened by a fresh processor with the store emptied, the answer is restored before it compiles (no
 //            self-test wanted, no note); a project from before circuits (the field taken out) opens as before, its
 //            files, playing the provisional configuration
+#include "FactorySet.h"
 #include "Probe.h"
 
 #include "AutoClipper.h"
@@ -214,6 +215,7 @@ namespace
 
 PROBE(plugin, projects)
 {
+    probe::useFactorySet();                          // the made-up factory set (a plugin has none until fetched)
     const funkgui::HeadlessGuiScope gui;
     namespace ps = pg::projectstore;
 

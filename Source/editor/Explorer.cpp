@@ -2,6 +2,7 @@
 #include "editor/Explorer.h"
 
 #include "editor/ChatItems.h"                        // asciiText
+#include "editor/SettingsPages.h"                    // Builder::wrapped: a note's lines
 
 #include <algorithm>
 #include <cmath>
@@ -25,6 +26,19 @@ namespace playground::ui
         constexpr uint32_t kStride = 512;            // a11y ids a group
 
         constexpr funkgui::TextStyle kHeaderStyle{ 9.5f, 1.4f, 0.06f, false };   // tracked caps, as the panel's titles
+        constexpr float kNoteLineH = 15.0f;          // a note's line
+        constexpr float kNoteActionH = 26.0f;        // its action's pill, under its lines
+
+        // A note's lines for a row `w` wide: its text from the label's x to the row's right, less a margin.
+        std::vector<std::string> noteLines(const std::string& text, float w)
+        {
+            return settings::Builder::wrapped(asciiText(text), chat::kSmall, std::max(60.0f, w - kTextX - 10.0f));
+        }
+
+        float noteHeight(const ExplorerItem::Row& row, float w)
+        {
+            return 8.0f + kNoteLineH * static_cast<float>(noteLines(row.label, w).size()) + (row.note == 2 ? kNoteActionH : 0.0f);
+        }
     }
 
     ExplorerItem::ExplorerItem(uint32_t a11yBase, Hooks hooks) : base_(a11yBase), hooks_(std::move(hooks)) {}
@@ -79,7 +93,7 @@ namespace playground::ui
             for (int r = 0; r < static_cast<int>(grp.rows.size()); ++r)
             {
                 const Row& row = grp.rows[static_cast<std::size_t>(r)];
-                const float h = row.heading ? kHeadingH : kRowH;
+                const float h = row.note != 0 ? noteHeight(row, w) : row.heading ? kHeadingH : kRowH;
                 hits_.push_back({ Part::row, g, r, { kPadX, y, w, h } });
                 if (row.closable)
                     hits_.push_back({ Part::close, g, r, { kPadX + w - kSide - 2.0f, y + 0.5f * (h - kSide), kSide, kSide } });
@@ -137,8 +151,14 @@ namespace playground::ui
             case Part::row:
             {
                 const Row row = g.rows[static_cast<std::size_t>(h.row)];   // a copy: the hook may change the content
-                if (row.heading && row.fold == 0)
+                if ((row.heading && row.fold == 0) || row.note == 1)
                     return;
+                if (row.note == 2)                       // FACTORY's note's action: once, a double click no second time
+                {
+                    if (!twice && hooks_.open)
+                        hooks_.open(g.section, row);
+                    return;
+                }
                 if (row.heading)                         // a group's caption: folds it or opens it, once
                 {
                     if (!twice && hooks_.open)
@@ -170,7 +190,8 @@ namespace playground::ui
         if (h == nullptr)
             return funkgui::Cursor::normal;
         if (h->part == Part::row)
-            if (const Row& row = groups_[static_cast<std::size_t>(h->group)].rows[static_cast<std::size_t>(h->row)]; row.heading && row.fold == 0)
+            if (const Row& row = groups_[static_cast<std::size_t>(h->group)].rows[static_cast<std::size_t>(h->row)];
+                (row.heading && row.fold == 0) || row.note == 1)
                 return funkgui::Cursor::normal;
         return funkgui::Cursor::pointingHand;
     }
@@ -264,6 +285,28 @@ namespace playground::ui
                 case Part::row:
                 {
                     const Row& row = g.rows[static_cast<std::size_t>(h.row)];
+                    if (row.note != 0)
+                    {
+                        // FACTORY's note: its lines, quiet; its action a pill under them, the row lit under the pointer.
+                        if (row.note == 2 && hovered)
+                            c.rrect(r.x, r.y + 1.0f, r.w, r.h - 2.0f, 6.0f, p.hover);
+                        float y = r.y + 4.0f;
+                        for (const std::string& line : noteLines(row.label, r.w))
+                        {
+                            c.text(line.c_str(), r.x + kTextX, c.capCentreTop(y + 0.5f * kNoteLineH, chat::kSmall), chat::kSmall, p.soft);
+                            y += kNoteLineH;
+                        }
+                        if (row.note == 2)
+                        {
+                            const std::string label = asciiText(row.detail);
+                            const float bw = c.textWidth(label.c_str(), chat::kSmallStrong) + 24.0f;
+                            const Rect b{ r.x + kTextX - 2.0f, y + 3.0f, bw, kNoteActionH - 6.0f };
+                            c.rrect(b.x, b.y, b.w, b.h, 0.5f * b.h, p.accent.withAlpha(hovered ? 0.26f : 0.14f), 1.0f, p.accent);
+                            c.text(label.c_str(), b.centreX(), c.capCentreTop(b.centreY(), chat::kSmallStrong), chat::kSmallStrong,
+                                   p.accent, funkgui::Align::centre);
+                        }
+                        break;
+                    }
                     if (row.heading)
                     {
                         float right = r.w - 30.0f;
@@ -470,11 +513,13 @@ namespace playground::ui
                 {
                     const Row& row = g.rows[static_cast<std::size_t>(h.row)];
                     it.id = gid + 2 + 2 * static_cast<uint32_t>(h.row);
-                    it.role = row.fold != 0 ? funkgui::A11yRole::toggleButton
-                            : row.heading   ? funkgui::A11yRole::staticText
-                                            : funkgui::A11yRole::button;
-                    it.title = asciiText(row.label);
-                    it.value = asciiText(row.detail);
+                    it.role = row.fold != 0                  ? funkgui::A11yRole::toggleButton
+                            : row.heading || row.note == 1 ? funkgui::A11yRole::staticText
+                                                           : funkgui::A11yRole::button;
+                    it.title = asciiText(row.note == 2 ? row.detail : row.label);
+                    it.value = row.note != 0 ? std::string() : asciiText(row.detail);
+                    if (row.note == 2)
+                        it.description = asciiText(row.label);   // what the action is for
                     if (row.git)
                         it.description = "linked to " + row.remote;   // package 05: the git mark's words
                     it.checkable = row.active || row.marked || row.fold != 0;
@@ -520,7 +565,8 @@ namespace playground::ui
             if (match)
             {
                 if (h.part == Part::row)
-                    if (const Row& row = groups_[static_cast<std::size_t>(g)].rows[static_cast<std::size_t>(h.row)]; row.heading && row.fold == 0)
+                    if (const Row& row = groups_[static_cast<std::size_t>(g)].rows[static_cast<std::size_t>(h.row)];
+                        (row.heading && row.fold == 0) || row.note == 1)
                         return false;
                 act(h, false);
                 return true;

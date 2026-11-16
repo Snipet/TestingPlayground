@@ -3,8 +3,6 @@
 
 #include "plugin/EditorPort.h"
 
-#include "FactoryProjects.h"
-
 #include <juce_core/juce_core.h>
 
 #include <algorithm>
@@ -21,34 +19,22 @@ namespace playground::factory
                 *why = what;
         }
 
-        std::shared_ptr<Set> read()
-        {
-            auto out = std::make_shared<Set>();
-            for (std::size_t i = 0; i < kFactoryCount; ++i)
-            {
-                const FactoryProject& f = kFactory[i];
-                Sources files;
-                for (int k = 0; k < f.fileCount; ++k)
-                    files.push_back({ f.files[k].name, f.files[k].text });
-                std::string why;
-                if (std::optional<projectstore::Project> p = fromParts(f.name, f.json, files, &why))
-                    out->projects.push_back(std::move(*p));
-                else
-                    out->problems.push_back(std::string(f.name) + ": " + why);
-            }
-            std::sort(out->projects.begin(), out->projects.end(), [](const projectstore::Project& a, const projectstore::Project& b) {
-                const int c = juce::String(a.name).compareIgnoreCase(juce::String(b.name));
-                return c != 0 ? c < 0 : a.name < b.name;
-            });
-            return out;
-        }
-
-        // The set a FactoryStore published (none: the compiled-in one is current) and whose it is, under one lock that
-        // is held only to copy a pointer, so a reader on any thread never waits on the store's work.
+        // The set a FactoryStore published (none: the empty one is current) and whose it is, under one lock that is
+        // held only to copy a pointer, so a reader on any thread never waits on the store's work.
         std::mutex publishedMutex;
         Snapshot published;
         const void* publisher = nullptr;
         std::atomic<uint64_t> generationNow{ 0 };
+
+        Snapshot empty()
+        {
+            static const Snapshot none = std::make_shared<const Set>();
+            return none;
+        }
+
+#if defined(FP_PROBES)
+        const char testPublisher = 0;                    // publishForTests' owner: no store's
+#endif
     }
 
     const projectstore::Project* Set::find(std::string_view name) const
@@ -60,15 +46,6 @@ namespace playground::factory
         return nullptr;
     }
 
-    Snapshot builtIn()
-    {
-        static const Snapshot set = read();              // once, on first use (thread-safe)
-        return set;
-    }
-
-    const std::vector<std::string>& problems() { return builtIn()->problems; }
-    std::size_t bytes() { return kFactoryBytes; }
-
     Snapshot current()
     {
         {
@@ -76,7 +53,7 @@ namespace playground::factory
             if (published != nullptr)
                 return published;
         }
-        return builtIn();
+        return empty();
     }
 
     uint64_t generation() { return generationNow.load(std::memory_order_acquire); }
@@ -88,6 +65,18 @@ namespace playground::factory
         if (p == nullptr)
             return nullptr;
         return std::shared_ptr<const projectstore::Project>(std::move(set), p);   // the snapshot lives while it does
+    }
+
+    Snapshot setOf(std::vector<projectstore::Project> projects, int64_t sequence)
+    {
+        auto out = std::make_shared<Set>();
+        out->projects = std::move(projects);
+        out->sequence = sequence;
+        std::sort(out->projects.begin(), out->projects.end(), [](const projectstore::Project& a, const projectstore::Project& b) {
+            const int c = juce::String(a.name).compareIgnoreCase(juce::String(b.name));
+            return c != 0 ? c < 0 : a.name < b.name;
+        });
+        return out;
     }
 
     void publish(const void* owner, Snapshot set)
@@ -103,6 +92,10 @@ namespace playground::factory
             generationNow.fetch_add(1, std::memory_order_acq_rel);
         }
     }
+
+#if defined(FP_PROBES)
+    void publishForTests(Snapshot set) { publish(&testPublisher, std::move(set)); }
+#endif
 
     std::optional<projectstore::Project> fromParts(std::string_view own, const std::string& json, const Sources& files,
                                                    std::string* why)

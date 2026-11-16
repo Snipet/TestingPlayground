@@ -39,6 +39,7 @@
 //            exportProject wrote; 257 projects and a path not full refused at once, 2 GB of project files in all (a
 //            sparse file) refused on the job's thread, no file written; a processor that goes with an export held
 //            cancels it and waits for it, no file left
+#include "FactorySet.h"
 #include "Probe.h"
 
 #include "fminus/Failure.h"
@@ -151,6 +152,7 @@ namespace
 
 PROBE(plugin, export)
 {
+    probe::useFactorySet();                          // the made-up factory set (a plugin has none until fetched)
     const funkgui::HeadlessGuiScope gui;
     namespace ps = pg::projectstore;
     namespace px = pg::projectexport;

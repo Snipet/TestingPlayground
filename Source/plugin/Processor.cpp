@@ -1439,6 +1439,7 @@ namespace playground
         pollSave();                                              // the editor's save, its file written: it lands
         pollExport();                                            // an export that ended: its thread joined
         pollGit();                                               // package 05: a git job that ended, a pulled version
+        pollFactoryWaiting();                                    // a session's factory project, once the set has it
         journalPoll();                                           // what moved since the last poll (ProcessorLive.cpp)
         abSessionLoaded();                                       // a session loaded since ends the A/B (ProcessorAb.cpp)
         if (compiler_.revision() != seen_)
@@ -1617,6 +1618,7 @@ namespace playground
         juce::ValueTree state = apvts_.copyState();
         juce::ValueTree program{ kProgramTag };
         std::vector<std::string> keys;
+        const Assets samplesNow = assetsNow();                   // outside programMutex_ (factoryWaitingHolds)
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
             program.setProperty(kActive, draft_.active, nullptr);
@@ -1628,6 +1630,14 @@ namespace playground
                 program.setProperty(kProjectVersion, projectVersion_, nullptr);
                 if (!projectPreset_.empty())
                     program.setProperty(kProjectPreset, juce::String::fromUTF8(projectPreset_.c_str()), nullptr);
+            }
+            else if (factoryWaitingHolds(samplesNow))
+            {
+                // A session's factory project this machine's set still lacks: named as the session named it.
+                program.setProperty(kProject, juce::String::fromUTF8(factoryWaiting_.name.c_str()), nullptr);
+                program.setProperty(kProjectVersion, factoryWaiting_.version, nullptr);
+                if (!factoryWaiting_.preset.empty())
+                    program.setProperty(kProjectPreset, juce::String::fromUTF8(factoryWaiting_.preset.c_str()), nullptr);
             }
             // While an A/B is on (or its Close or Keep compiles), what played before it began (or the files on their
             // way), and those dials while each side has its own: a side never kept is not what the session plays.
@@ -1993,6 +2003,17 @@ namespace playground
                                                      : std::string();
                 projectVersion_ = std::max(0, static_cast<int>(program.getProperty(kProjectVersion, 0)));
                 projectPreset_ = projectstore::tidyName(program.getProperty(kProjectPreset).toString().toStdString());
+                // One this machine's set lacks: its program plays with no project named, the name kept for when a set
+                // that has it arrives (factoryWaiting_; opens set below, after the load's own).
+                factoryWaiting_ = {};
+                if (isFactoryName(named) && factoryOne == nullptr && projectstore::tidyName(ownName(named)) == ownName(named))
+                {
+                    factoryWaiting_.name = named;
+                    factoryWaiting_.version = projectVersion_;
+                    factoryWaiting_.preset = projectPreset_;
+                    projectVersion_ = 0;
+                    projectPreset_.clear();
+                }
                 projectId_ = program.getProperty(kProjectId).toString().toLowerCase().substring(0, 64).toStdString();
                 projectIdName_.clear();                          // checked against the project's file (chatOwnerNow)
             }
@@ -2003,9 +2024,12 @@ namespace playground
                 projectPreset_.clear();
                 projectId_.clear();
                 projectIdName_.clear();
+                factoryWaiting_ = {};
             }
             projectLatest_ = projectVersion_;
             ++projectOpens_;                                     // a save in flight lands as no project open now
+            factoryWaiting_.opens = projectOpens_;
+            factoryWaitingSeen_ = factory::generation();
             projectFiles_ = draft.files;                         // the session's files are its version's, as saved
             baseDials_.clear();                                  // restoreProjectBase's, below
             midiOpened_.reset();                                 // the session's mappings are its own
@@ -2801,6 +2825,53 @@ namespace playground
         const std::lock_guard<std::mutex> lock(programMutex_);
         if (projectName_ == name && projectPreset_ == preset && projectVersion_ == version)
             baseDials_ = std::move(base);
+    }
+
+    bool Processor::factoryWaitingHolds(const Assets& samples) const
+    {
+        return !factoryWaiting_.name.empty() && projectName_.empty() && projectOpens_ == factoryWaiting_.opens
+            && draft_.files == projectFiles_ && assets::same(samples.get(), projectAssets_.get());
+    }
+
+    // A session's factory project that this machine's set lacked when it loaded (factoryWaiting_): named once a set
+    // that has it arrives, while the program is still the session's as loaded; given up once it is not (a project
+    // opened, a fresh start, the files or the samples changed). Its texts stay the session's: a factory project open
+    // keeps the text it was opened with until it is opened again.
+    void Processor::pollFactoryWaiting()
+    {
+        const uint64_t generation = factory::generation();
+        const Assets samples = assetsNow();                      // outside programMutex_, as project() takes it
+        std::string name;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            if (factoryWaiting_.name.empty())
+                return;
+            if (!factoryWaitingHolds(samples))
+            {
+                factoryWaiting_ = {};
+                return;
+            }
+            if (generation == factoryWaitingSeen_)
+                return;
+            factoryWaitingSeen_ = generation;
+            name = factoryWaiting_.name;
+        }
+        const std::shared_ptr<const projectstore::Project> found = factory::find(name);
+        if (found == nullptr)
+            return;                                              // not in this set either: waits for the next
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            if (!factoryWaitingHolds(samples) || factoryWaiting_.name != name)
+                return;
+            projectName_ = found->name;
+            projectVersion_ = projectLatest_ = factoryWaiting_.version;
+            projectPreset_ = factoryWaiting_.preset;
+            baseDials_.clear();
+            factoryWaiting_ = {};
+        }
+        restoreProjectBase();                                    // its dials as the base, its presets in the cache
+        journal_.note(Journal::Who::host, "the session's project, " + found->name + ", is named again: the factory set has it now");
+        refreshPresets(true);
     }
 
     // EXAMPLES and RANDOM (EditorPort::startAfresh): `files` as a new instance plays Init. They are the whole draft, no
