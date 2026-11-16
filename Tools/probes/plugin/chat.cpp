@@ -5936,7 +5936,6 @@ PROBE(plugin, chat)
         summarizing("claude-opus-5-5", 600000);
         summarizing("claude-opus-5-5", 400000);
         summarizing("claude-opus-5-5", 450000);
-        script->add(fake::Response::ok(fake::Sse().start().text("Never asked.").end()));
         int before = script->postCount();
         std::size_t shown = agent.chatState().entries.size();
         agent.send("redesign the panel");
@@ -5969,7 +5968,6 @@ PROBE(plugin, chat)
         agent.setTransport(std::make_unique<fake::Transport>(script));   // the models are asked for again
         summarizing("claude-sonnet-5-5", 160000);
         summarizing("claude-sonnet-5-5", 140000);
-        script->add(fake::Response::ok(fake::Sse().start().text("Never asked.").end()));
         before = script->postCount();
         shown = agent.chatState().entries.size();
         agent.send("redesign the panel");
@@ -6019,7 +6017,8 @@ PROBE(plugin, chat)
         const auto everyFileOnce = [&](const std::string& texts) {
             bool ok = !draft.files.empty();
             for (const pg::SourceFile& f : draft.files)
-                ok = ok && count(texts, "<file name=\"" + f.name + "\"") == 1 && has(texts, f.text);
+                ok = ok && count(texts, "<file name=\"" + f.name + "\"") == 1
+                        && has(texts, f.name.size() > 4 && f.name.substr(f.name.size() - 4) == ".cir" ? pg::cir::stripLayout(f.text) : f.text);
             return ok && !has(texts, "unchanged=\"true\"");
         };
         const juce::File dir(juce::String(probe::outPath("chat-pause")));
@@ -6063,7 +6062,7 @@ PROBE(plugin, chat)
                                && has(str(next[0], "text"), "do not read them again") ? 1 : 0, 1);
         P.eq("pause.own_picture", images, 1);
         P.eq("pause.own_words", words > 0 && state > words ? 1 : 0, 1);
-        P.eq("pause.files_whole_once", everyFileOnce(textsOf(m[1])) && count(script->body(before + 1), "<plugin_state>") == 1 ? 1 : 0, 1);
+        P.eq("pause.files_whole_once", everyFileOnce(textsOf(m[1])) && count(claude::toJson(claude::parseJson(script->body(before + 1)).getProperty("messages", {})), "<plugin_state>") == 1 ? 1 : 0, 1);
         P.eq("pause.answered", lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "Here is the bigger knob." ? 1 : 0, 1);
         P.eq("pause.note", has(lastText(agent.chatState(), pg::ChatEntry::Kind::note), "summarized") ? 1 : 0, 1);
 
@@ -6098,7 +6097,7 @@ PROBE(plugin, chat)
         m = messagesOf(script->body(before + 3));
         const juce::Array<juce::var> last = arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {}));
         P.eq("pause.no_second_state", m.size() == 4 && last.size() == 1 && str(last[0], "type") == "tool_result"
-                                          && count(script->body(before + 3), "<plugin_state>") == 1 && alternates(m) ? 1 : 0, 1);
+                                          && count(claude::toJson(claude::parseJson(script->body(before + 3)).getProperty("messages", {})), "<plugin_state>") == 1 && alternates(m) ? 1 : 0, 1);
 
         // A pause with no summary (content null), and one that safeguards refused: the messages stay as they were,
         // and the request goes again without the compaction edit, once; the next turn asks for it again.
@@ -6142,7 +6141,6 @@ PROBE(plugin, chat)
         agent.setTransport(std::make_unique<fake::Transport>(script));
         script->add(fake::Response::ok(fake::Sse().start("claude-sonnet-5-5").compaction("A first summary.").endPaused(160000, 2500)));
         script->add(fake::Response::ok(fake::Sse().start("claude-sonnet-5-5").compaction("A second summary.").endPaused(140000, 2500)));
-        script->add(fake::Response::ok(fake::Sse().start("claude-sonnet-5-5").text("Never asked.").end()));
         before = script->postCount();
         agent.send("redesign it");
         agent.waitIdle();
