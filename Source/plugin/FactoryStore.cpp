@@ -795,15 +795,7 @@ namespace playground::factorystore
 
         static factory::Snapshot setOf(std::vector<projectstore::Project> projects, int64_t sequence)
         {
-            auto s = std::make_shared<factory::Set>();
-            s->projects = std::move(projects);
-            std::sort(s->projects.begin(), s->projects.end(), [](const projectstore::Project& a, const projectstore::Project& b) {
-                const int c = juce::String(a.name).compareIgnoreCase(juce::String(b.name));
-                return c != 0 ? c < 0 : a.name < b.name;
-            });
-            s->fetched = true;
-            s->sequence = sequence;
-            return s;
+            return factory::setOf(std::move(projects), sequence);
         }
 
         fs::path fileOf(const Entry& e) const { return files / pathOf(e.sha256 + ".fmpack"); }

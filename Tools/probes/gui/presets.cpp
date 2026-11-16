@@ -37,6 +37,7 @@
 //            a version reads its lists again (the version listed, Claude's note on it) and the status says it; a Delete
 //            asked of a version as Claude saves another is withdrawn (that version still chosen, by its number; the next
 //            click asks again, nothing deleted); an editor opened afterwards says none of it again
+#include "FactorySet.h"
 #include "Probe.h"
 
 #include "editor/Panel.h"
@@ -124,6 +125,7 @@ namespace
 
 PROBE(gui, presets)
 {
+    probe::useFactorySet();                          // the made-up factory set (a plugin has none until fetched)
     const funkgui::HeadlessGuiScope gui;
     funkgui::UiPreferences::get().setBackend(funkgui::UiPreferences::memoryBackend());   // never the user's file
     funkgui::UiPreferences::get().setTheme(0);

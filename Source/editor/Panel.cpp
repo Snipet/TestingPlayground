@@ -4975,6 +4975,14 @@ namespace playground::ui
             factorySeen_ = generation;
             factoryRead_ = true;
         }
+        // FACTORY's row while no set is in use: the store's state, a copy under its short lock.
+        if (const FactoryNote n = port_.factoryNote(); !factoryNoteRead_ || n != factoryNote_)
+        {
+            if (factoryNoteRead_)
+                ++listsRevision_;
+            factoryNote_ = n;
+            factoryNoteRead_ = true;
+        }
         const uint64_t gitNow = port_.gitPolled();       // package 05: a git job or a link changed
         if (projectsAt_ < 0.0 || now - projectsAt_ > kProjectsPoll || presetsOf_ != st.name || read != projectsReadSeen_
             || gitNow != gitSeen_)
@@ -5341,6 +5349,26 @@ namespace playground::ui
             }
             groups.push_back(std::move(g));
         }
+        else if (factoryNote_.kind != FactoryNote::Kind::none)
+        {
+            // No set in use: one row that is no project, saying why (ProjectGroups.h's noteRow), uncounted.
+            const projectgroups::NoteRow words = projectgroups::noteRow(factoryNote_);
+            ExplorerItem::Group g;
+            g.section = S::factory;
+            g.title = "FACTORY";
+            g.counted = false;
+            ExplorerItem::Row r;
+            r.label = words.text;
+            r.detail = words.action;
+            r.note = words.action.empty() ? 1 : 2;
+            r.icon = chat::Icon::none;
+            r.help = factoryNote_.kind == FactoryNote::Kind::notHere ? "Fetches the factory projects from the website, and keeps them up to date"
+                   : factoryNote_.kind == FactoryNote::Kind::offline ? "Fetches the factory projects again now"
+                                                                     : "Why there are no factory projects here";
+            r.spec = upper(words.text) + (words.action.empty() ? std::string() : "   " + upper(words.action));
+            g.rows.push_back(std::move(r));
+            groups.push_back(std::move(g));
+        }
         {
             ExplorerItem::Group g;
             g.section = S::library;
@@ -5410,6 +5438,15 @@ namespace playground::ui
                 break;
             case S::projects:
             case S::factory:
+                if (row.note != 0)
+                {
+                    // FACTORY's note's action (Get them, Try again): only the store is told; nothing waits.
+                    if (const std::string did = projectgroups::pressNote(port_, factoryNote_); !did.empty())
+                        notice(did);
+                    factoryNote_ = port_.factoryNote();
+                    ++listsRevision_;
+                    break;
+                }
                 if (row.heading)
                 {
                     // A group's caption: folded or opened, in PROJECTS too (this Mac's view).

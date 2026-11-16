@@ -36,6 +36,7 @@
 //            does, the Engine's linear 20 ms (0.6 / 960 = 0.000625 a sample: no step between two samples over 0.001;
 //            from the first sample off Bright's level to the first at Dark's 20 ms, within 1; half way at 10 ms; at
 //            Dark's 30 ms on)
+#include "FactorySet.h"
 #include "Probe.h"
 
 #include "editor/PresetPicker.h"
@@ -134,6 +135,7 @@ namespace
 
 PROBE(plugin, presets)
 {
+    probe::useFactorySet();                          // the made-up factory set (a plugin has none until fetched)
     const funkgui::HeadlessGuiScope gui;
     namespace ps = pg::projectstore;
     const juce::File dir = juce::File::getSpecialLocation(juce::File::tempDirectory)

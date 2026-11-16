@@ -40,10 +40,10 @@ namespace playground
                          + (f.fetching ? ", checking for new ones" : "");
                 case factorystore::Status::fetching: return "fetching them now";
                 case factorystore::Status::off: return "off on this computer (" + std::string(product::kEnvPrefix) + "FACTORY=off)";
-                case factorystore::Status::notAsked: return "not asked yet: the ones built in are shown";
-                case factorystore::Status::declined: return "off: the ones built in are shown";
+                case factorystore::Status::notAsked: return "not asked yet: none on " + std::string(kThisMachine);
+                case factorystore::Status::declined: return "off: none on " + std::string(kThisMachine);
                 case factorystore::Status::failed: return "could not fetch them: " + f.reason;
-                case factorystore::Status::none: return "not fetched yet: the ones built in are shown";
+                case factorystore::Status::none: return "not fetched yet";
             }
             return {};
         }
@@ -145,6 +145,48 @@ namespace playground
         factoryStore_->setAnswer(on ? factorystore::Answer::yes : factorystore::Answer::no);
         if (on && editorSeen_)
             factoryStore_->editorOpened();               // a fetch when the set on disk is missing or a day old
+    }
+
+    FactoryNote Processor::factoryNote() const
+    {
+        FactoryNote n;
+        if (factoryStore_ == nullptr)
+            return n;
+        using K = FactoryNote::Kind;
+        const factorystore::State f = factoryStore_->state();
+        switch (f.status)
+        {
+            case factorystore::Status::ready: return n;  // the projects, and nothing else (a failed check says nothing here)
+            case factorystore::Status::fetching:
+            case factorystore::Status::none: n.kind = K::getting; break;   // a yes, its fetch under way or about to be
+            case factorystore::Status::off: n.kind = K::off; break;
+            case factorystore::Status::notAsked:
+            case factorystore::Status::declined: n.kind = K::notHere; break;
+            case factorystore::Status::failed:
+                n.kind = f.failure == factorystore::Failure::check ? K::unchecked : K::offline;
+                n.reason = f.reason;
+                break;
+        }
+        // The set on disk not read yet: the answer may not be either, so nothing is offered until it is.
+        if (!f.loaded && n.kind != K::off)
+            n = { K::getting, {} };
+        return n;
+    }
+
+    void Processor::getFactoryProjects()
+    {
+        // The FACTORY group's Get them: the offer's yes for the factory projects (its other question left as it is).
+        if (factoryStore_ == nullptr)
+            return;
+        factoryStore_->setAnswer(factorystore::Answer::yes);
+        if (editorSeen_)
+            factoryStore_->refreshNow();
+    }
+
+    void Processor::fetchFactoryNow()
+    {
+        if (factoryStore_ != nullptr && editorSeen_)
+            factoryStore_->refreshNow();                 // Try again: the user's click (an editor's)
     }
 
     void Processor::checkForUpdates()

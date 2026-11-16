@@ -70,6 +70,7 @@
 //   READS     PROJECTS and EXPORT read the store's cache: a project another process wrote (a version more, then its
 //             author) is read by the store's Reader alone, none on the message thread, and shows once read (its new
 //             version first in PROJECTS; EXPORT's fields filled, then nothing written as it closes)
+#include "FactorySet.h"
 #include "Probe.h"
 
 #include "editor/Explorer.h"
@@ -245,6 +246,7 @@ namespace
 
 PROBE(gui, projects)
 {
+    probe::useFactorySet();                          // the made-up factory set (a plugin has none until fetched)
     const funkgui::HeadlessGuiScope gui;
     funkgui::UiPreferences::get().setBackend(funkgui::UiPreferences::memoryBackend());   // never the user's file
     funkgui::UiPreferences::get().setTheme(0);

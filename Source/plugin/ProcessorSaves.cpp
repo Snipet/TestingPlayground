@@ -564,6 +564,33 @@ namespace playground
                             : "The user's projects (" + std::to_string(mine.size()) + "), [category]:\n" + lines(mine);
         if (!factory.empty())
             out += "Factory projects (read-only: a save makes the user's own copy):\n" + lines(factory);
+        else
+        {
+            // None on this machine yet (the binary holds none: plugin/Factory.h): why, and how the user gets them. This
+            // tool never fetches them; only the user's click does.
+            const std::string none = "No factory projects on " + std::string(kThisMachine) + " yet: ";
+            const FactoryNote n = factoryNote();
+            switch (n.kind)
+            {
+                case FactoryNote::Kind::none: break;
+                case FactoryNote::Kind::getting: out += none + "they are being fetched from the website.\n"; break;
+                case FactoryNote::Kind::notHere:
+                    out += none + "they come from the website once the user asks for them (Get them in the FACTORY group of "
+                                  "PROJECTS or the explorer, or Settings, Network). This tool does not fetch them.\n";
+                    break;
+                case FactoryNote::Kind::offline:
+                    out += none + "the last fetch from the website failed (" + n.reason
+                         + "). Try again in the FACTORY group fetches them again. This tool does not fetch them.\n";
+                    break;
+                case FactoryNote::Kind::unchecked:
+                    out += none + "what the website sent could not be checked (" + n.reason + "), and was not used.\n";
+                    break;
+                case FactoryNote::Kind::off:
+                    out += none + "they are off where the plugin runs (" + std::string(product::kEnvPrefix)
+                         + "FACTORY=off is set in its environment).\n";
+                    break;
+            }
+        }
         return out;
     }
 }

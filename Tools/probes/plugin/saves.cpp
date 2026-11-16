@@ -50,6 +50,7 @@
 //   COPY     save_version of a factory project's name with no project open: the result names the factory project
 #include "Audio.h"
 #include "FakeClaude.h"
+#include "FactorySet.h"
 #include "Probe.h"
 
 #include "plugin/ChatAgent.h"
@@ -208,6 +209,7 @@ namespace
 
 PROBE(plugin, saves)
 {
+    probe::useFactorySet();                          // the made-up factory set (a plugin has none until fetched)
     const funkgui::HeadlessGuiScope gui;
     namespace ps = pg::projectstore;
     const juce::File dir = juce::File::getSpecialLocation(juce::File::tempDirectory)

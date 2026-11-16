@@ -439,6 +439,9 @@ namespace playground
         void answerOffer(bool allow, bool factory, bool updates) override;
         void setUpdates(bool on) override;
         void setFactoryProjects(bool on) override;
+        FactoryNote factoryNote() const override;
+        void getFactoryProjects() override;
+        void fetchFactoryNow() override;
         void checkForUpdates() override;
         void skipUpdate(const std::string& version) override;
         bool announceUpdate(const std::string& version) override;
@@ -557,6 +560,23 @@ namespace playground
         Sources projectFiles_;
         Assets projectAssets_;                                   // its samples, as projectFiles_ (project().edited)
         std::vector<projectstore::Dial> baseDials_;
+        // A session that named a factory project this machine's set lacked when it loaded (none fetched yet, or not that
+        // one: plugin/Factory.h) plays its program with no project named; this keeps the name (as the session spelt it),
+        // its version and preset, and projectOpens_ as the load left it (programMutex_). poll() names the project once a
+        // set that has it arrives (factory::generation() moves), only while nothing was opened or started afresh since
+        // (projectOpens_), no project is named, and the draft's files and samples are still the session's
+        // (projectFiles_, projectAssets_): never over a program the user has since changed into something else. While
+        // it waits, getStateInformation keeps the name, so a session saved meanwhile still names it.
+        struct FactoryWaiting
+        {
+            std::string name, preset;
+            int version = 0;
+            uint64_t opens = 0;
+        };
+        FactoryWaiting factoryWaiting_;
+        uint64_t factoryWaitingSeen_ = 0;                        // factory::generation() at the last look (poll)
+        bool factoryWaitingHolds(const Assets& samples) const;   // programMutex_ held: still the session's as loaded
+        void pollFactoryWaiting();                               // poll(): the name taken once the set has it
         // MIDI learn's mappings when a version with none was opened (it left them as they were), else none: saving
         // that project while they are still these is no change of theirs (projectstore::VersionMidi::inherited).
         std::optional<std::vector<midilearn::Mapping>> midiOpened_;

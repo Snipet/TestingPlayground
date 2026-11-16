@@ -5,6 +5,7 @@
 #include "editor/ChatStyle.h"
 #include "editor/Dropdown.h"
 #include "editor/ExportCard.h"
+#include "editor/SettingsPages.h"                 // Builder::wrapped: the note's lines
 #include "editor/Items.h"
 #include "editor/Theme.h"
 
@@ -150,6 +151,7 @@ namespace playground::ui
         projects_ = port_.projectsPolled();
         const std::vector<ProjectEntry> factory = port_.factoryProjects();
         projects_.insert(projects_.end(), factory.begin(), factory.end());
+        note_ = port_.factoryNote();
         arrange();
     }
 
@@ -162,23 +164,45 @@ namespace playground::ui
         o.tag = view_.tag;
         o.order = view_.order;
         o.reversed = view_.reversed;
+        o.factoryNote = note_.kind != FactoryNote::Kind::none;
         groups_ = projectgroups::arrange(projects_, o);
         rows_.clear();
+        // FACTORY's note while no set is in use: its text wrapped to the list (a row a line), then its action's row.
+        const projectgroups::NoteRow words = projectgroups::noteRow(note_);
+        const float noteW = (width_ > 0.0f ? listRect(places(width_, height_), L::projects).w : 360.0f) - 24.0f - 18.0f;
+        noteLines_ = words.text.empty() ? std::vector<std::string>{} : settings::Builder::wrapped(words.text, chat::kSmall, std::max(80.0f, noteW));
+        bool noteShown = false;
         for (int g = 0; g < static_cast<int>(groups_.size()); ++g)
         {
             rows_.push_back({ g, -1 });
-            if (!groups_[static_cast<std::size_t>(g)].folded)
-                for (const int m : groups_[static_cast<std::size_t>(g)].members)
-                    rows_.push_back({ g, m });
+            const projectgroups::Group& grp = groups_[static_cast<std::size_t>(g)];
+            if (grp.folded)
+                continue;
+            if (grp.note)
+            {
+                noteShown = !noteLines_.empty();
+                for (int i = 0; i < static_cast<int>(noteLines_.size()); ++i)
+                    rows_.push_back({ g, kNoteText, i });
+                if (!words.action.empty() && noteShown)
+                    rows_.push_back({ g, kNoteAction, 0 });
+            }
+            for (const int m : grp.members)
+                rows_.push_back({ g, m });
         }
+        if (!noteShown || words.action.empty())
+            noteFocused_ = false;
         const auto listed = [&](const std::string& name) {
             return std::any_of(projects_.begin(), projects_.end(), [&](const ProjectEntry& e) { return same(e.name, name); });
         };
         selected_.erase(std::remove_if(selected_.begin(), selected_.end(), [&](const std::string& n) { return !listed(n); }), selected_.end());
         if (!chosenName_.empty() && !listed(chosenName_))
         {
+            // Gone (deleted, or a factory project the set withdrew): chosen no more, and what was said of it goes too;
+            // a confirmation asked for over it is withdrawn.
             chosenName_.clear();
             readChosen();
+            why_.clear();
+            ask_ = Ask::none;
         }
         anchor_ = std::min(anchor_, static_cast<int>(rows_.size()) - 1);
         // The list keeps its place, as far as its rows reach (a group folded, a filter: fewer).
@@ -631,10 +655,26 @@ namespace playground::ui
         return -1;
     }
 
+    int ProjectBrowser::noteRowOf(bool action) const
+    {
+        for (int i = 0; i < static_cast<int>(rows_.size()); ++i)
+            if (rows_[static_cast<std::size_t>(i)].project == (action ? kNoteAction : kNoteText))
+                return i;
+        return -1;
+    }
+
+    void ProjectBrowser::pressNote()
+    {
+        if (const std::string did = projectgroups::pressNote(port_, note_); !did.empty())
+            notice_ = did;
+        note_ = port_.factoryNote();                     // the store's answer, as it is now (a fetch under way)
+        arrange();
+    }
+
     int ProjectBrowser::headerOf(const std::string& key) const
     {
         for (int i = 0; i < static_cast<int>(rows_.size()); ++i)
-            if (rows_[static_cast<std::size_t>(i)].project < 0 && groups_[static_cast<std::size_t>(rows_[static_cast<std::size_t>(i)].group)].key == key)
+            if (rows_[static_cast<std::size_t>(i)].project == -1 && groups_[static_cast<std::size_t>(rows_[static_cast<std::size_t>(i)].group)].key == key)
                 return i;
         return -1;
     }
@@ -643,6 +683,8 @@ namespace playground::ui
     {
         if (l != L::projects)
             return chosen_[idx(l)];
+        if (noteFocused_)
+            return noteRowOf(true);                      // the keys step on from there; no project is chosen
         if (chosenName_.empty())
             return -1;
         int any = -1;
@@ -986,7 +1028,17 @@ namespace playground::ui
 
     bool ProjectBrowser::poll()
     {
-        if (!open_ || port_.projectsRead() == readSeen_)
+        if (!open_)
+            return false;
+        // FACTORY's note: the store's state, read each frame (a copy under its short lock).
+        if (const FactoryNote n = port_.factoryNote(); n != note_)
+        {
+            note_ = n;
+            arrange();
+            if (port_.projectsRead() == readSeen_)
+                return true;
+        }
+        if (port_.projectsRead() == readSeen_)
             return false;
         // Read again only when what it shows changed (the Reader reads other files too: the explorer's, another
         // instance's), so that a confirmation asked for stands over lists that did not.
@@ -1215,6 +1267,7 @@ namespace playground::ui
         if (e == nullptr)
             return;
         endCategory();
+        noteFocused_ = false;
         chosenName_ = e->name;
         chosenGroup_ = groups_[static_cast<std::size_t>(rows_[static_cast<std::size_t>(row)].group)].key;
         selected_ = { e->name };
@@ -1239,15 +1292,33 @@ namespace playground::ui
         i = std::clamp(i, 0, n - 1);
         if (l == L::projects)
         {
-            // A header is never chosen: the project's row past it in the step's direction, else the one before.
+            // A header is never chosen: the project's row past it in the step's direction, else the one before. FACTORY's
+            // note's action is a stop for the keys (Return presses it) but no project: none is chosen while it has them.
+            const auto stop = [&](int k) {
+                const int pr = rows_[static_cast<std::size_t>(k)].project;
+                return pr >= 0 || pr == kNoteAction;
+            };
             const int dir = step < 0 ? -1 : 1;
             int j = i;
-            while (j >= 0 && j < n && rows_[static_cast<std::size_t>(j)].project < 0)
+            while (j >= 0 && j < n && !stop(j))
                 j += dir;
             if (j < 0 || j >= n)
-                for (j = i; j >= 0 && j < n && rows_[static_cast<std::size_t>(j)].project < 0;)
+                for (j = i; j >= 0 && j < n && !stop(j);)
                     j -= dir;
-            if (j >= 0 && j < n)
+            if (j >= 0 && j < n && rows_[static_cast<std::size_t>(j)].project == kNoteAction)
+            {
+                endCategory();
+                noteFocused_ = true;
+                focus_ = L::projects;
+                chosenName_.clear();
+                selected_.clear();
+                readChosen();
+                ask_ = Ask::none;
+                why_.clear();
+                reveal(L::projects, j, rowsShown);
+                ++revision_;
+            }
+            else if (j >= 0 && j < n)
                 chooseProject(j, rowsShown);
             return;
         }
@@ -1591,6 +1662,13 @@ namespace playground::ui
                 const int row = rowAt(p, at, l);
                 if (l == L::projects && row >= 0)
                 {
+                    if (const int pr = rows_[static_cast<std::size_t>(row)].project; pr == kNoteText || pr == kNoteAction)
+                    {
+                        // FACTORY's note: no project (no menu, no choice, no drag); its action's row presses it.
+                        if (pr == kNoteAction && !e.popup)
+                            pressNote();
+                        return;
+                    }
                     if (rows_[static_cast<std::size_t>(row)].project < 0)   // a group's header: folds it
                     {
                         if (e.popup)
@@ -1896,6 +1974,8 @@ namespace playground::ui
             else
                 close();
         }
+        else if (e.key == Key::enter && focus_ == L::projects && noteFocused_ && !typed_ && !categoryMode_)
+            pressNote();                                 // FACTORY's note's action, reached by the keys
         else if (e.key == Key::enter)
         {
             const bool none = focus_ == L::projects ? chosenName_.empty() : chosen_[idx(focus_)] < 0;   // one folded away counts
@@ -1953,8 +2033,9 @@ namespace playground::ui
             || (!search_.buffer.empty() && at.clear.contains(p)))
             return funkgui::Cursor::pointingHand;
         for (const List l : { L::projects, L::versions, L::presets })
-            if (rowAt(p, at, l) >= 0)
-                return funkgui::Cursor::pointingHand;
+            if (const int row = rowAt(p, at, l); row >= 0)
+                return l == L::projects && rows_[static_cast<std::size_t>(row)].project == kNoteText ? funkgui::Cursor::normal
+                                                                                                      : funkgui::Cursor::pointingHand;
         return funkgui::Cursor::normal;
     }
 
@@ -2099,7 +2180,9 @@ namespace playground::ui
             for (int i = std::max(0, from); i < to; ++i)
             {
                 const funkgui::Rect rr = rowRect(at, l, i);
-                const bool header = l == L::projects && rows_[static_cast<std::size_t>(i)].project < 0;
+                const int pr = l == L::projects ? rows_[static_cast<std::size_t>(i)].project : 0;
+                const bool header = l == L::projects && pr < 0;                    // a header, or FACTORY's note
+                const bool noteText = pr == kNoteText;
                 const bool chosen = l == L::projects ? (!header && same(rowProject(i)->name, chosenName_)) : i == chosen_[idx(l)];
                 const bool picked = l == L::projects && !header && has(selected_, rowProject(i)->name);
                 const bool target = l == L::projects && dropGroup >= 0 && rows_[static_cast<std::size_t>(i)].group == dropGroup;
@@ -2109,7 +2192,7 @@ namespace playground::ui
                     c.rrect(rr.x, rr.y + 1.0f, rr.w, rr.h - 2.0f, 7.0f, funkgui::mix(p.composer, p.accent, focus_ == l ? 0.22f : 0.10f));
                 else if (picked)
                     c.rrect(rr.x, rr.y + 1.0f, rr.w, rr.h - 2.0f, 7.0f, funkgui::mix(p.composer, p.accent, 0.13f));
-                else if (!target && hasPointer && rr.contains(pointer) && !dragging_)
+                else if (!target && !noteText && pr != kNoteAction && hasPointer && rr.contains(pointer) && !dragging_)
                     c.rrect(rr.x, rr.y + 1.0f, rr.w, rr.h - 2.0f, 7.0f, p.hover);
                 row(i, rr, chosen);
             }
@@ -2122,6 +2205,29 @@ namespace playground::ui
         list(L::projects, noProjects, [&](int i, const funkgui::Rect& rr, bool chosen) {
             const Row& rw = rows_[static_cast<std::size_t>(i)];
             const projectgroups::Group& g = groups_[static_cast<std::size_t>(rw.group)];
+            if (rw.project == kNoteText)
+            {
+                // FACTORY's note, a line a row: no project, quiet.
+                if (rw.line >= 0 && rw.line < static_cast<int>(noteLines_.size()))
+                    c.text(fitText(c, noteLines_[static_cast<std::size_t>(rw.line)], chat::kSmall, rr.w - 34.0f).c_str(), rr.x + 24.0f,
+                           c.capCentreTop(rr.centreY(), chat::kSmall), chat::kSmall, p.soft);
+                return;
+            }
+            if (rw.project == kNoteAction)
+            {
+                // Its action: a pill in the accent, lit under the pointer, ringed while the keys have it.
+                const std::string label = projectgroups::noteRow(note_).action;
+                const float w = c.textWidth(label.c_str(), chat::kSmallStrong) + 26.0f;
+                const funkgui::Rect b{ rr.x + 20.0f, rr.y + 3.0f, w, rr.h - 6.0f };
+                const bool over = hasPointer && rr.contains(pointer) && !dragging_;
+                c.rrect(b.x, b.y, b.w, b.h, 0.5f * b.h, p.accent.withAlpha(over ? 0.26f : 0.14f), 1.0f, p.accent);
+                if (noteFocused_ && focus_ == L::projects)
+                    c.rrect(b.x - dropdown::kRingGap, b.y - dropdown::kRingGap, b.w + 2.0f * dropdown::kRingGap, b.h + 2.0f * dropdown::kRingGap,
+                            0.5f * b.h + dropdown::kRingGap, p.accent.withAlpha(0.0f), 1.5f, p.accent);
+                c.text(label.c_str(), b.centreX(), c.capCentreTop(b.centreY(), chat::kSmallStrong), chat::kSmallStrong, p.accent,
+                       funkgui::Align::centre);
+                return;
+            }
             if (rw.project < 0)
             {
                 // A group's header: its chevron, its name, how many it has.
@@ -2134,7 +2240,8 @@ namespace playground::ui
                     tx += 16.0f;
                 }
                 const std::string title = upper(asciiText(g.title)) + (g.kind == Kind::factory ? "   READ-ONLY" : "");
-                const std::string n = filtering() && static_cast<int>(g.members.size()) != g.total
+                const std::string n = g.note ? std::string()   // FACTORY's note is no project: no count
+                                    : filtering() && static_cast<int>(g.members.size()) != g.total
                                         ? std::to_string(g.members.size()) + " of " + std::to_string(g.total)
                                         : std::to_string(g.total);
                 const float nW = c.textWidth(n.c_str(), chat::kSmall);
@@ -2358,7 +2465,8 @@ namespace playground::ui
                 it.role = funkgui::a11yrole::group;
                 it.bounds = b;
                 it.title = g.title;
-                it.value = std::to_string(g.members.size()) + (g.members.size() == 1 ? " project" : " projects") + (g.folded ? ", folded" : "");
+                it.value = g.note ? std::string("none on ") + kThisMachine + (g.folded ? ", folded" : "")
+                                  : std::to_string(g.members.size()) + (g.members.size() == 1 ? " project" : " projects") + (g.folded ? ", folded" : "");
                 it.help = g.kind == Kind::favourites ? "The projects starred"
                         : g.kind == Kind::factory    ? "The factory projects, read-only: saving one makes a project of your own"
                         : g.kind == Kind::category   ? "Projects of this category: drag projects here to give them it"
@@ -2369,6 +2477,28 @@ namespace playground::ui
             row.id = kRowId + static_cast<uint32_t>(i);
             row.parent = kGroupId + static_cast<uint32_t>(rw.group);
             row.bounds = rowRect(at, L::projects, i);
+            if (rw.project == kNoteText || rw.project == kNoteAction)
+            {
+                // FACTORY's note: its words once (at its first line, whole), and its action a button.
+                const projectgroups::NoteRow words = projectgroups::noteRow(note_);
+                if (rw.project == kNoteText && rw.line != 0)
+                    continue;
+                if (rw.project == kNoteText)
+                {
+                    row.role = funkgui::A11yRole::staticText;
+                    row.title = words.text;
+                }
+                else
+                {
+                    row.role = funkgui::A11yRole::button;
+                    row.title = words.action;
+                    row.description = words.text;
+                    row.help = note_.kind == FactoryNote::Kind::notHere ? "Fetches the factory projects from the website, and keeps them up to date"
+                                                                        : "Fetches the factory projects again now";
+                }
+                out.push_back(std::move(row));
+                continue;
+            }
             if (rw.project < 0)
             {
                 row.role = funkgui::A11yRole::toggleButton;
@@ -2516,7 +2646,11 @@ namespace playground::ui
             const int i = static_cast<int>((id - kRowId) % 0x1000u);
             if (i >= count(l))
                 return false;
-            if (l == L::projects && rows_[static_cast<std::size_t>(i)].project < 0)
+            if (l == L::projects && rows_[static_cast<std::size_t>(i)].project == kNoteAction)
+                pressNote();
+            else if (l == L::projects && rows_[static_cast<std::size_t>(i)].project == kNoteText)
+                return false;
+            else if (l == L::projects && rows_[static_cast<std::size_t>(i)].project < 0)
                 toggleFold(rows_[static_cast<std::size_t>(i)].group);
             else if (l == L::projects && a == funkgui::A11yAction::showMenu)
             {
