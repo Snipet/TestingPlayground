@@ -174,6 +174,14 @@ namespace fake
             return blockStop(i);
         }
 
+        // A compaction that made no summary (its content null: none could be written, or safeguards kept it).
+        Sse& compactionNull()
+        {
+            const int i = blocks_++;
+            blockStart(i, claude::object({ { "type", "compaction" }, { "content", juce::var() } }));
+            return blockStop(i);
+        }
+
         Sse& ping() { return event("ping", claude::object({ { "type", "ping" } })); }
 
         // `speed`, when given, is the usage's ("fast" or "standard"), as a fast-mode request's response says it.
@@ -203,6 +211,20 @@ namespace fake
                                                     { "delta", claude::object({ { "stop_reason", juce::String(stopReason) },
                                                                                 { "stop_sequence", juce::var() } }) },
                                                     { "usage", claude::object({ { "input_tokens", in }, { "output_tokens", out },
+                                                                                { "iterations", iterations } }) } }));
+            return event("message_stop", claude::object({ { "type", "message_stop" } }));
+        }
+
+        // The end of a request paused after its summary (pause_after_compaction): its usage lists the compaction alone,
+        // and the stop reason is "compaction" ("refusal" when safeguards kept the summary).
+        Sse& endPaused(int compactIn, int compactOut, const std::string& stopReason = "compaction")
+        {
+            juce::Array<juce::var> iterations;
+            iterations.add(claude::object({ { "type", "compaction" }, { "input_tokens", compactIn }, { "output_tokens", compactOut } }));
+            event("message_delta", claude::object({ { "type", "message_delta" },
+                                                    { "delta", claude::object({ { "stop_reason", juce::String(stopReason) },
+                                                                                { "stop_sequence", juce::var() } }) },
+                                                    { "usage", claude::object({ { "input_tokens", 0 }, { "output_tokens", 0 },
                                                                                 { "iterations", iterations } }) } }));
             return event("message_stop", claude::object({ { "type", "message_stop" } }));
         }
@@ -434,6 +456,7 @@ namespace fake
         std::vector<std::string> efforts;
         int maxTokens = 128000;
         bool compaction = true;
+        int window = 1000000;                // max_input_tokens (0: the list does not say it)
     };
 
     inline std::string modelsBody(const std::vector<ModelInfo>& models)
@@ -457,12 +480,14 @@ namespace fake
                   { "effort", effort },
                   { "context_management",
                     claude::object({ { "compact_20260112", claude::object({ { "supported", m.compaction } }) } }) } });
-            data.add(claude::object({ { "type", "model" },
-                                      { "id", juce::String(m.id) },
-                                      { "display_name", juce::String(m.name) },
-                                      { "max_input_tokens", 1000000 },
-                                      { "max_tokens", m.maxTokens },
-                                      { "capabilities", caps } }));
+            juce::var model = claude::object({ { "type", "model" },
+                                               { "id", juce::String(m.id) },
+                                               { "display_name", juce::String(m.name) },
+                                               { "max_tokens", m.maxTokens },
+                                               { "capabilities", caps } });
+            if (m.window > 0)
+                model.getDynamicObject()->setProperty("max_input_tokens", m.window);
+            data.add(model);
         }
         return claude::toJson(claude::object({ { "data", data }, { "has_more", false } }));
     }

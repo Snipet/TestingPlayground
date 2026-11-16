@@ -710,6 +710,10 @@ namespace playground::claude
             {
                 int64_t in = 0, out = 0;
                 int compactions = 0;
+                const juce::var first = its->getFirst();
+                usage_.sent = static_cast<juce::int64>(first.getProperty("input_tokens", 0))
+                            + static_cast<juce::int64>(first.getProperty("cache_read_input_tokens", 0))
+                            + static_cast<juce::int64>(first.getProperty("cache_creation_input_tokens", 0));
                 for (const auto& it : *its)
                 {
                     in += static_cast<juce::int64>(it.getProperty("input_tokens", 0));

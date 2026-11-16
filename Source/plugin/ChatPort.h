@@ -163,6 +163,9 @@ namespace playground
         // Another provider's model: the thinking level it uses when none is sent (one of `efforts`; "" when its server
         // does not say), shown as the level until one is chosen, which alone is ever sent.
         std::string defaultEffort = {};
+        // An Anthropic model's context window in tokens (/v1/models' max_input_tokens; 0: not said), by which the chat
+        // chooses when a long conversation is summarized (ChatAgent.h, "Large work"). Another provider's is `context`.
+        int window = 0;
     };
 
     // The model provider the chat talks to (plugin/Providers.h): Anthropic (the default), any server that speaks

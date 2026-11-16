@@ -86,15 +86,37 @@
 // speed reads the conversation without the cache once: requests at different speeds share no cached prefix.
 //
 // Large work. A long conversation is compacted server-side (beta compact-2026-01-12, on the models that take it): once
-// a request's input passes kCompactTrigger tokens the API summarizes what came before (with instructions that keep
-// the sound's design and leave out code) and answers from the summary; the compaction block goes into the history, and
+// a request's input passes the trigger the API summarizes what came before (with instructions that keep the sound's
+// design and leave out code) and answers from the summary. The trigger follows the model (compactTriggerFor): half of
+// what it reads (/v1/models' max_input_tokens, ChatModel::window), never under the API's default of 150,000 tokens (a
+// model whose window the list does not say gets that), never above what leaves a reply its room in the window; so a
+// model that reads a million tokens summarizes at 500,000, not at 15 % of its room. A summary helps only when it makes
+// room, and what every request carries (the system prompt, the tools, the program's files) is not summarized: a
+// request right after a summary that already carries 60 % of the trigger (kCrowdedShare) raises this conversation's
+// trigger to twice what it carried (kRoomFactor; compactRaised_, kept in the chat's file as "compact", forgotten by a
+// new chat), as far as the window allows. A turn whose requests bring a new summary twice in a row with the trigger not
+// raised, or three times in all (kMaxSummariesInARow, kMaxSummariesATurn), ends with a note that says what fills the
+// room, in numbers, and what helps (summariesNote): never summary after summary, each a request the user pays for. The
+// compaction block goes into the history, and
 // what came before it is dropped: the history then starts at the block, in its assistant message, as the API's own
 // examples continue after one. (Not at the user message before it: in the middle of a turn that is the results of
 // tool calls the summary took away, which the API refuses.) A history from a session is repaired the same way when it
 // loads, and before each message (repairHistory). The plugin's state sends a file's text only when Claude has not seen
-// that text (in an earlier block, through read_file, or as it wrote it); after a compaction it sends every file
-// again, with the next message or, when the summary came in the middle of a turn, with the tool results that follow
-// it.
+// that text (in an earlier block, through read_file, or as it wrote it). The request asks the API to pause after a
+// summary (pause_after_compaction): a reply that holds a compaction block and nothing after it (the block is looked
+// for, not the stop reason) goes into the history as its start, and the request goes again with one message after it
+// before Claude takes a step: the plugin's state with every file whole and, when the request summarized ended in the
+// user's own message (ownLast_), that message again as it was sent, its pictures too (ownMessage_: a summary keeps
+// none, and its "word for word" is not the message); else a line in place of the tool results the summary took
+// (kAfterSummaryOwn, kAfterSummaryWork: Claude has the files, so it reads none again). So the first requests after a
+// summary carry each file once: the next tool results carry no state. A pause with no summary (content null: none
+// could be written, or safeguards refused it, stop reason "refusal"; the API ignores the block) keeps the messages as
+// they were and sends the request again as it was, the compaction edit and its beta still there (a history that starts
+// at an earlier block needs them), with a note; a second in a row (kMaxNullSummaries) ends the turn with a note. The
+// instructions ask for text alone (a tool called while summarizing leaves no summary). A
+// reply with a summary and more after it (the API did not pause) goes back as it came, and the state goes with
+// whatever follows it. A message that joins one left last unanswered (addMessage) with every file whole drops the
+// state that one held, so a chat kept after a pause and opened again sends its files once.
 //
 // A reply holds max_tokens, thinking included, and at high effort a hard design can think that long. The system prompt
 // says so, and at xhigh and max effort a note with the user's message says it again (the API's advice: at those
@@ -674,6 +696,8 @@ namespace playground
         void repairHistory();                                       // one the API takes (mutex held)
         void dropThinking();                                        // the history without thinking (mutex held)
         int maxTokensFor(const std::string& id) const;              // a request's max_tokens (mutex held)
+        int compactTriggerFor(const std::string& id) const;         // when its conversation is summarized (mutex held)
+        std::string summariesNote(int64_t carried, int summaries, bool crowded);   // a turn that kept summarizing ends
         static std::string promptPrint();                           // the system prompt's and tools' hash
         void markSeen(const std::string& name, const std::string& text);   // the chat's Claude knows this text (mutex
                                                                     // held; Claude Desktop's views mark nothing here)
@@ -777,6 +801,10 @@ namespace playground
         uint64_t versionsGiven_ = 0;                                // keepVersion's count
         uint64_t lastSignature_ = 0;                                // the plugin's state as Claude last got it
         bool resendState_ = false;                                  // a summary came: the state goes with what follows
+        int compactRaised_ = 0;                                     // the summaries' trigger this conversation raised
+                                                                    // (0: the model's own; the chat's file "compact")
+        bool ownLast_ = false;                                      // the history ends in the user's own message
+        juce::Array<juce::var> ownMessage_;                         // its pictures and words, as sent (userMessage)
         bool busy_ = false;
         std::string asking_;                                        // the open question's tool_use id ("" for none)
         std::vector<measure::Check> checks_;                        // Claude's checks (set_checks), in the session

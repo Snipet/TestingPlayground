@@ -33,6 +33,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <utility>
@@ -67,7 +68,21 @@ namespace playground
         // goes back with the rest of the answer, and the API ignores what came before it. The history then starts at
         // the block (appendAnswer, repairHistory).
         constexpr const char* kCompactBeta = "compact-2026-01-12";
-        constexpr int kCompactTrigger = 150000;   // input tokens (the API's default; 50,000 at least)
+        // The trigger follows the model (compactTriggerFor): kCompactShare percent of what it reads, never under the
+        // API's default (kCompactFloor: also a model whose window /v1/models does not say), never above what leaves a
+        // reply its room in the window.
+        constexpr int kCompactFloor = 150000;      // input tokens (the API's default; 50,000 at least)
+        constexpr int kCompactShare = 50;          // percent of the model's window
+        // Never a loop of summaries (ChatAgent.h, "Large work"). A request right after a summary that carries
+        // kCrowdedShare percent of the trigger or more leaves no room to work: the conversation's trigger is raised to
+        // kRoomFactor times what it carried, as far as the model's window allows. A turn whose requests bring a new
+        // summary kMaxSummariesInARow times in a row with the trigger not raised, or kMaxSummariesATurn times in all,
+        // ends with a note.
+        constexpr int kCrowdedShare = 60;          // percent of the trigger
+        constexpr int kRoomFactor = 2;
+        constexpr int kMaxSummariesInARow = 2;
+        constexpr int kMaxSummariesATurn = 3;
+        constexpr int kMaxNullSummaries = 2;       // pauses in a row with no summary before a turn ends
         constexpr const char* kCompactInstructions =
             "Summarize the conversation so far between a user and Claude, who builds and changes FMinus DSP programs "
             "inside an audio plugin through tools (read_file, write_file, edit_file, run_program, set_dial, "
@@ -79,7 +94,20 @@ namespace playground
             "solved, and measurements that matter; the checks set (set_checks) and how they stand (the plugin keeps "
             "measuring them); what is unfinished or was promised next; and the user's latest "
             "request, word for word. Do not copy the programs' code: the plugin sends the current files after this "
-            "summary, and read_file shows any of them. Plain prose and short lists.";
+            "summary, and read_file shows any of them. Plain prose and short lists. Do not call any tools while writing "
+            "this summary; respond with text only.";
+
+        // The line that starts the message after a paused summary (runTurn): the user's message follows it again, or
+        // the work goes on from the summary; the files follow whole either way.
+        constexpr const char* kAfterSummaryOwn =
+            "(From the plugin: the conversation was summarized just now, before your answer. The user's last message "
+            "follows again as they sent it, then the plugin's state with every file whole, as it is now: you have them "
+            "in front of you, so do not read them again. Answer the message, carrying on from the summary.)";
+        constexpr const char* kAfterSummaryWork =
+            "(From the plugin: the conversation was summarized just now, in the middle of your work, so the results of "
+            "your last tool calls are in the summary alone. The plugin's state follows with every file whole, as it is "
+            "now: you have them in front of you, so do not read them again. Carry on from where the summary says the "
+            "work stood.)";
 
         const std::vector<std::string> kAllEfforts{ "low", "medium", "high", "xhigh", "max" };
 
@@ -87,10 +115,13 @@ namespace playground
         // every effort level; Claude Opus 5.5 and Claude Fable 5.2 take fast mode too.
         std::vector<ChatModel> builtInModels()
         {
-            return { { "claude-opus-5-5", "Claude Opus 5.5", kAllEfforts, 128000, true, true },
-                     { "claude-fable-5-2", "Claude Fable 5.2", kAllEfforts, 128000, true, true },
-                     { "claude-sonnet-5-5", "Claude Sonnet 5.5", kAllEfforts, 128000, true },
-                     { "claude-haiku-5-5", "Claude Haiku 5.5", kAllEfforts, 128000, true } };
+            std::vector<ChatModel> models{ { "claude-opus-5-5", "Claude Opus 5.5", kAllEfforts, 128000, true, true },
+                                           { "claude-fable-5-2", "Claude Fable 5.2", kAllEfforts, 128000, true, true },
+                                           { "claude-sonnet-5-5", "Claude Sonnet 5.5", kAllEfforts, 128000, true },
+                                           { "claude-haiku-5-5", "Claude Haiku 5.5", kAllEfforts, 128000, true } };
+            for (ChatModel& m : models)
+                m.window = 1000000;                // each reads a million tokens (the API's models reference)
+            return models;
         }
 
         // The models that take "fallbacks": "default" (a classifier's refusal retried on another model).
@@ -1694,6 +1725,16 @@ namespace playground
             content.add(text(context));
         if ((effort_ == "xhigh" || effort_ == "max") && provider_.kind == "anthropic")
             content.add(text(limitNote(maxTokensFor(model_))));
+        // The user's own part of it (its pictures, its words, the limit's note: not the results or the state), sent
+        // again after a summary that pauses before the answer. A message that joins one of the user's left last
+        // (addMessage) adds to it.
+        const bool joins = !messages_.isEmpty() && str(messages_[messages_.size() - 1], "role") == "user";
+        if (!(joins && ownLast_))
+            ownMessage_.clear();
+        for (const juce::var& b : content)
+            if (str(b, "type") != "tool_result" && !(context.size() > 0 && str(b, "type") == "text" && str(b, "text") == context))
+                ownMessage_.add(b);
+        ownLast_ = true;
         return content;
     }
 
@@ -1775,6 +1816,8 @@ namespace playground
                     break;
                 }
             juce::Array<juce::var> content = missingResults(answerText(qs, given));
+            ownLast_ = false;                      // an answer is a tool result: it cannot go again without its call
+            ownMessage_.clear();
             if (!context.empty())
                 content.add(text(context));
             if ((effort_ == "xhigh" || effort_ == "max") && provider_.kind == "anthropic")
@@ -1848,6 +1891,16 @@ namespace playground
             juce::Array<juce::var> all, results, rest;
             if (const auto* arr = before.getArray())
                 all = *arr;
+            // A state with every file whole (none marked unchanged) makes an earlier one in this message, never
+            // answered, needless: it goes (a chat kept after a summary paused, loaded again: its files went once).
+            const auto isState = [](const juce::var& b) {
+                return str(b, "type") == "text" && str(b, "text").rfind("<plugin_state>", 0) == 0;
+            };
+            const bool whole = std::any_of(content.begin(), content.end(), [&](const juce::var& b) {
+                return isState(b) && str(b, "text").find("unchanged=\"true\"") == std::string::npos;
+            });
+            if (whole)
+                all.removeIf(isState);
             all.addArray(content);
             for (const auto& b : all)
                 (str(b, "type") == "tool_result" ? results : rest).add(b);
@@ -1895,6 +1948,9 @@ namespace playground
     // The conversation forgotten (mutex held): what a new chat starts without.
     void ChatAgent::clearChat()
     {
+        compactRaised_ = 0;
+        ownLast_ = false;
+        ownMessage_.clear();
         messages_.clear();
         entries_.clear();
         ++conversation_;
@@ -2031,6 +2087,8 @@ namespace playground
         if (!asking_.empty())
             state.getDynamicObject()->setProperty("asking", juce::String(asking_));
         state.getDynamicObject()->setProperty("web", historyWeb_);
+        if (compactRaised_ > 0)
+            state.getDynamicObject()->setProperty("compact", compactRaised_);   // the trigger this conversation raised
         if (!checks_.empty())
         {
             // Each check as set_checks takes it, so loadState reads it back the same way.
@@ -2090,6 +2148,10 @@ namespace playground
         asking_.clear();
         activity_.clear();
         historyWeb_ = static_cast<bool>(v.getProperty("web", false));
+        compactRaised_ = static_cast<int>(std::clamp<juce::int64>(static_cast<juce::int64>(v.getProperty("compact", 0)), 0,
+                                                                  std::numeric_limits<int>::max()));
+        ownLast_ = false;
+        ownMessage_.clear();
         cutNoted_ = false;
         picturesNoted_ = false;
         checks_.clear();
@@ -2192,6 +2254,7 @@ namespace playground
     void ChatAgent::appendAnswer(const juce::Array<juce::var>& content)
     {
         messages_.add(claude::object({ { "role", "assistant" }, { "content", content } }));
+        ownLast_ = false;                          // the user's message is answered (or summarized: runTurn keeps it)
         const bool compacted = std::any_of(content.begin(), content.end(), summarized);
         if (!compacted)
             return;
@@ -2332,6 +2395,70 @@ namespace playground
     {
         const auto model = std::find_if(models_.begin(), models_.end(), [&](const ChatModel& m) { return m.id == id; });
         return std::min(kMaxTokensCap, model != models_.end() ? model->maxTokens : kDefaultMaxTokens);
+    }
+
+    // The input tokens at which a request to this model summarizes the conversation (mutex held): kCompactShare
+    // percent of its window, or the higher trigger this conversation raised (compactRaised_), never under
+    // kCompactFloor and never above what leaves a reply its room (the window less maxTokensFor), unless that is under
+    // the floor itself: the API's default then, as for a model whose window is not said.
+    int ChatAgent::compactTriggerFor(const std::string& id) const
+    {
+        const auto model = std::find_if(models_.begin(), models_.end(), [&](const ChatModel& m) { return m.id == id; });
+        const int64_t window = model != models_.end() ? model->window : 0;
+        const int64_t share = window * kCompactShare / 100;
+        const int64_t room = window > 0 ? window - maxTokensFor(id) : 0;
+        const int64_t trigger = std::min(std::max<int64_t>(share, compactRaised_), room);
+        return static_cast<int>(std::max<int64_t>(trigger, kCompactFloor));
+    }
+
+    // The note that ends a turn that kept summarizing (runTurn): what fills the room each request carries (the program's
+    // files, and what Claude is told of the plugin and its tools, at about four bytes a token), the model's room, and
+    // what the user can do. `carried`: what the last request after a summary held (0: none came); `crowded`: the window
+    // could not give it room.
+    std::string ChatAgent::summariesNote(int64_t carried, int summaries, bool crowded)
+    {
+        // A count of tokens as a musician reads it: "140K", "1M", "1.5M".
+        const auto count = [](int64_t n) -> std::string {
+            if (n < 1000000)
+                return thousands(n);
+            char buf[32];
+            std::snprintf(buf, sizeof buf, "%.1fM", static_cast<double>(n) / 1e6);
+            std::string t = buf;
+            if (t.size() > 3 && t.compare(t.size() - 3, 3, ".0M") == 0)
+                t.erase(t.size() - 3, 2);
+            return t;
+        };
+        const Draft d = host_.chatDraft();
+        std::size_t fileBytes = 0;
+        for (const SourceFile& f : d.files)
+            fileBytes += f.text.size();
+        const std::size_t told = systemPrompt().size() + claude::toJson(toolDefinitions()).size();
+        const std::lock_guard<std::mutex> lock(mutex_);
+        const auto model = std::find_if(models_.begin(), models_.end(), [&](const ChatModel& m) { return m.id == turnModel_; });
+        const int window = model != models_.end() ? model->window : 0;
+        const auto larger = std::max_element(models_.begin(), models_.end(),
+                                             [](const ChatModel& a, const ChatModel& b) { return a.window < b.window; });
+        std::string out = crowded || summaries < kMaxSummariesATurn
+                              ? "The conversation no longer fits this model's room, so the turn ends here: summarizing it "
+                                "again would make no room, and each summary is a request you pay for."
+                              : "The conversation was summarized " + std::to_string(summaries)
+                                    + " times in this turn, so the turn ends here: each summary is a request you pay for, and "
+                                      "keeps less of the detail.";
+        if (carried > 0)
+            out += " Right after a summary a request still holds about " + count(carried)
+                 + " tokens, and this model summarizes at " + count(compactTriggerFor(turnModel_))
+                 + (window > 0 ? " (it reads " + count(window) + " in all, with room kept for its reply)."
+                               : " (the plugin does not know how much it reads).");
+        out += " Each request carries the program's files (about " + count(static_cast<int64_t>(fileBytes / 4))
+             + " tokens) and what Claude is told about the plugin and its tools (about "
+             + count(static_cast<int64_t>(told / 4)) + " tokens). To go on: ";
+        if (larger != models_.end() && larger->window > window)
+            out += "choose a model that reads more (" + larger->name + " reads " + count(larger->window) + " tokens), ";
+        else
+            out += "choose a model that reads more, ";
+        out += "make the program's files smaller or fewer (a large panel or shader split, or what is no longer used "
+               "deleted), or start a new chat. Send \"continue\" to let Claude go on from the summary as it is.";
+        return out;
     }
 
     // What Claude is told of a file and remembered to have seen: a netlist's text without its drawing's *@ lines
@@ -2937,10 +3064,13 @@ namespace playground
         }
         if (model != models_.end() && model->compaction)
         {
+            // Paused after the summary: the plugin then sends the files and the user's message before Claude goes on
+            // (runTurn, "A summary paused").
             juce::Array<juce::var> edits;
             edits.add(claude::object({ { "type", "compact_20260112" },
                                        { "trigger", claude::object({ { "type", "input_tokens" },
-                                                                     { "value", kCompactTrigger } }) },
+                                                                     { "value", compactTriggerFor(turnModel_) } }) },
+                                       { "pause_after_compaction", true },
                                        { "instructions", kCompactInstructions } }));
             o->setProperty("context_management", claude::object({ { "edits", edits } }));
             beta += std::string(beta.empty() ? "" : ",") + kCompactBeta;
@@ -3053,6 +3183,8 @@ namespace playground
                 cm.maxTokens = static_cast<int>(m.getProperty("max_tokens", kDefaultMaxTokens));
                 if (cm.maxTokens <= 0)
                     cm.maxTokens = kDefaultMaxTokens;
+                cm.window = static_cast<int>(std::clamp<juce::int64>(static_cast<juce::int64>(m.getProperty("max_input_tokens", 0)),
+                                                                     0, std::numeric_limits<int>::max()));
                 cm.compaction = static_cast<bool>(caps.getProperty("context_management", juce::var())
                                                       .getProperty("compact_20260112", juce::var())
                                                       .getProperty("supported", false));
@@ -3189,6 +3321,14 @@ namespace playground
             planTurn();
 
         int cutOffs = 0;                           // replies cut off at max_tokens in a row, this turn
+        // The summaries this turn (ChatAgent.h, "Large work"): the last request brought one (the next one is the
+        // first to start at it, whose size tells the room left), how many requests in a row brought one, how many
+        // there were in all, and what the last request after one carried.
+        bool afterSummary = false;
+        int summariesInARow = 0, summariesThisTurn = 0;
+        int64_t carriedAfter = 0;
+        bool crowded = false;                      // a request after a summary left no room the window could give
+        int nullSummaries = 0;                     // pauses in a row that brought no summary (content null)
         int checkNudges = 0;                       // times this turn went on because a check failed
         bool worked = false;                       // a tool changed the program, the dials or the checks this turn
         // The web pages the turn's answers cite (url, title), in order: listed under its last answer.
@@ -3465,6 +3605,116 @@ namespace playground
                 touch();
             }
 
+            // The summaries (Anthropic's alone): what a request starting at a new summary carried raises this
+            // conversation's trigger when it leaves no room, and a turn that keeps summarizing ends (summariesEnd).
+            bool endSummaries = false;
+            if (!other && builder != nullptr && !stopped)
+            {
+                const claude::Usage& u = builder->usage();
+                // The summaries the reply brought: its compaction blocks with a summary in them (a compaction that made
+                // none, content null, makes no room and counts for nothing, whatever the usage lists).
+                int summaries = 0;
+                for (const auto& b : blocks)
+                    summaries += summarized(b) ? 1 : 0;
+                const std::lock_guard<std::mutex> lock(mutex_);
+                bool raised = false;
+                const int64_t carried = u.sent > 0 ? u.sent : u.input + u.cacheRead + u.cacheWrite;
+                if (afterSummary && carried > 0)
+                {
+                    carriedAfter = carried;
+                    const int trigger = compactTriggerFor(turnModel_);
+                    if (carried * 100 >= static_cast<int64_t>(trigger) * kCrowdedShare)
+                    {
+                        const int64_t want = carried * kRoomFactor;
+                        const int before = compactRaised_;
+                        compactRaised_ = static_cast<int>(std::min<int64_t>(std::max<int64_t>(want, compactRaised_),
+                                                                            std::numeric_limits<int>::max()));
+                        const int now = compactTriggerFor(turnModel_);
+                        raised = now > trigger;
+                        crowded = now < want;
+                        if (!raised)
+                            compactRaised_ = before;   // the window gave nothing: the chat keeps what it had
+                    }
+                    else
+                        crowded = false;
+                }
+                afterSummary = summaries > 0;
+                summariesInARow = summaries > 0 ? summariesInARow + 1 : 0;
+                summariesThisTurn += summaries;
+                endSummaries = summaries > 0
+                            && ((summariesInARow >= kMaxSummariesInARow && !raised) || summariesThisTurn >= kMaxSummariesATurn);
+            }
+
+            // A summary paused (pause_after_compaction): the reply holds a compaction block and nothing after it (the
+            // block looked for, not the stop reason: "compaction", or "refusal" when safeguards kept the summary).
+            int pausedAt = -1;
+            if (!other && !stopped && complete)
+                for (int i = 0; i < blocks.size(); ++i)
+                    if (str(blocks[i], "type") == "compaction")
+                        pausedAt = i;
+            for (int i = pausedAt + 1; pausedAt >= 0 && i < blocks.size(); ++i)
+                if (!blankText(blocks[i]))
+                    pausedAt = -1;
+            nullSummaries = pausedAt >= 0 && !summarized(blocks[pausedAt]) ? nullSummaries + 1 : 0;
+            if (nullSummaries > 0)
+            {
+                // No summary (content null: the API ignores the block, nothing was compacted): the messages stay as
+                // they were and the request goes again as it was, the compaction edit and its beta still there (the
+                // compaction docs' own example; a history that starts at an earlier block needs the beta). Usually a
+                // one-off; a second in a row ends the turn.
+                const std::lock_guard<std::mutex> lock(mutex_);
+                if (nullSummaries >= kMaxNullSummaries)
+                {
+                    addEntry(ChatEntry::Kind::note, "The conversation could not be summarized, twice in a row, so the turn "
+                                                    "ends here. Send \"continue\" to try again, or start a new chat.");
+                    touch();
+                    break;
+                }
+                addEntry(ChatEntry::Kind::note, "The conversation could not be summarized this time; Claude asks again.");
+                touch();
+                continue;
+            }
+            if (pausedAt >= 0)
+            {
+                // The history starts at the block (appendAnswer), and one message follows it before Claude goes on: the
+                // plugin's state with every file whole and, when the request summarized ended in the user's own
+                // message, that message again as it was sent (its pictures too: a summary keeps none); else a line in
+                // place of the tool results the summary took. Claude then has the files in front of it, once.
+                juce::Array<juce::var> own;
+                bool ownWas = false;
+                {
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    ownWas = ownLast_;
+                    own = ownMessage_;
+                    juce::Array<juce::var> block{ blocks[pausedAt] };
+                    appendAnswer(block);
+                }
+                const std::string state = contextBlock();
+                {
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    resendState_ = false;          // in this message
+                    juce::Array<juce::var> next;
+                    next.add(text(ownWas ? kAfterSummaryOwn : kAfterSummaryWork));
+                    if (ownWas)
+                        next.addArray(own);
+                    if (!state.empty())
+                        next.add(text(state));
+                    messages_.add(claude::object({ { "role", "user" }, { "content", next } }));
+                    ownLast_ = ownWas;
+                    ownMessage_ = own;
+                    touch();
+                }
+                if (endSummaries)
+                {
+                    // Ended here: the message waits in the history, and the next one joins it.
+                    const std::string note = summariesNote(carriedAfter, summariesThisTurn, crowded);
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    addEntry(ChatEntry::Kind::note, note);
+                    break;
+                }
+                continue;
+            }
+
             if (stopped || !complete || stopReason == "refusal")
             {
                 // The turn ends here. The answer goes back as its text alone (an empty one as a short note), so the
@@ -3534,6 +3784,15 @@ namespace playground
                     appendAnswer(blocks);
                 }
                 touch();
+            }
+            if (endSummaries)
+            {
+                // Summarized request after request: the reply is in the history (its calls are answered with the
+                // next message), and the turn ends with what fills the room and what helps.
+                const std::string note = summariesNote(carriedAfter, summariesThisTurn, crowded);
+                const std::lock_guard<std::mutex> lock(mutex_);
+                addEntry(ChatEntry::Kind::note, note);
+                break;
             }
             // A reply cut off at max_tokens (its thinking counts toward it): the turn goes on, Claude told so, unless
             // the reply before it was cut off too, since a reply that only thinks costs a whole reply each time.

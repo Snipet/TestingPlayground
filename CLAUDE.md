@@ -1510,11 +1510,26 @@ place (its `products/<key>.cmake`, and its names in the docs).
   was, the counts set aside back) and says so until the next, on every instance's page whichever ran it
   (`usage::lastResetFailed`, the ledger's).
 - **Large work.** `max_tokens` is the model's own limit (from /v1/models, at most 128K); server-side compaction (beta
-  `compact-2026-01-12`, trigger 150K input tokens, instructions that keep the design and leave out code) on the
-  models that take it, the compaction block kept and what came before it dropped: the history then starts at the
+  `compact-2026-01-12`, instructions that keep the design and leave out code) on the models that take it, its trigger
+  the model's (`compactTriggerFor`: `kCompactShare`, half, of its window, /v1/models' `max_input_tokens` kept as
+  `ChatModel::window`, which another provider's model never has; never under `kCompactFloor`, the API's default of
+  150K, also for a window not said; never above the window less a reply). Never a loop: a request right after a
+  summary that carries `kCrowdedShare` (60 %) of the trigger raises the conversation's (`compactRaised_`, the chat
+  file's `"compact"`) to `kRoomFactor` (twice) what it carried, as far as the window allows; a turn whose requests
+  summarize `kMaxSummariesInARow` (2) in a row with nothing raised, or `kMaxSummariesATurn` (3) in all, ends with
+  `summariesNote` (what fills the room, in numbers, and what helps; `plugin.chat` LOOP). The compaction block is kept
+  and what came before it dropped: the history then starts at the
   block, in its assistant message (never at the message before it, which mid-turn is tool results the API refuses
-  without their calls; `repairHistory`, also run on a loaded session), and the files go again with whatever follows,
-  a message or the turn's next tool results. A compaction block counts only with its summary (`summarized`: its
+  without their calls; `repairHistory`, also run on a loaded session). The request asks for `pause_after_compaction`:
+  a reply that holds a compaction block and nothing after it (the block looked for, not the stop reason) is the
+  history's start, and one message follows it before Claude goes on: the state with every file whole, then the user's
+  own message again as sent, pictures too (`ownMessage_`, when the request ended in it: `ownLast_`), else a line in
+  place of the tool results (`kAfterSummaryOwn`, `kAfterSummaryWork`); the next tool results carry no second state; a
+  pause with a null summary (or a refusal with one) keeps the messages and goes again as it was, the edit and its beta
+  still there (never a request without them while the model takes compaction), a second in a row ending the turn
+  (`kMaxNullSummaries`); a reply that did not pause goes back as it came and the files go with what follows; a
+  message joining one left last with every file whole drops the state that one held (`addMessage`; `plugin.chat`
+  PAUSE). A compaction block counts only with its summary (`summarized`: its
   content a string with something in it): one whose summary never came (a Stop or a broken stream before its one
   delta, a compaction that made none, content null) cuts nothing and is never kept (`repairHistory` takes it out of a
   loaded chat, and a line stands for a start already lost to it). Blank text never goes into the history (the API

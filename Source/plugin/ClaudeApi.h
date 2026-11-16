@@ -107,6 +107,9 @@ namespace playground::claude
         int64_t costMicroUsd = -1;            // the provider's own cost (OpenRouter's usage.cost), -1 unsaid
         bool reported = false;                // a usage object came (message_start's or message_delta's)
         int compactions = 0;                  // compaction iterations in the request (usage.iterations)
+        // The request's input as the API read it, cache reads and writes included: its first iteration's when the
+        // usage lists them (a compaction's input is the whole request), else the top-level counts' (0: not said).
+        int64_t sent = 0;
         int webSearches = 0, webFetches = 0;  // usage.server_tool_use: searches cost $10 a thousand
         std::string speed;                    // the speed it ran at, "fast" or "standard" (usage.speed); "" unsaid
     };
