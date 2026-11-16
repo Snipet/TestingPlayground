@@ -402,6 +402,10 @@ enable_testing()
 include(Probes)
 add_custom_target(probes)
 
+# The promotional videos' renderers (cmake/Promo.cmake): `promo` builds every product's; no build or gate does.
+include(Promo)
+add_custom_target(promo)
+
 # ---- one product -----------------------------------------------------------------------------------------------------
 # fp_add_product(<key>): products/<key>.cmake's identity, checked, and everything built from it: the generated headers
 # in <build>/generated/<key>/, the static libraries <Name>_fminus and <Name>_dsp, the plugin <Name> (AU, VST3,
@@ -981,6 +985,7 @@ namespace @FP_NAMESPACE@
 
   # ---- the probes and their tests (cmake/Probes.cmake) ---------------------------------------------------------------
   fp_add_probes(${key})
+  fp_add_promo(${key})                                    # cmake/Promo.cmake: built only by `promo`
 
   # `<key>`: this product alone (its plugin's formats, its extension and its probes); the presets dev-<key> build it.
   add_custom_target(${key})
