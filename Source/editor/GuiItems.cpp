@@ -1152,9 +1152,29 @@ namespace playground::ui
         held_ = -1;
     }
 
-    void GuiKeyboardItem::tick(float, bool hovered, bool, funkgui::Point p)
+    void GuiKeyboardItem::setKeysDown(const uint32_t (&keys)[4]) noexcept
+    {
+        for (std::size_t w = 0; w < down_.size(); ++w)
+            if (down_[w] != keys[w])
+            {
+                down_[w] = keys[w];
+                downMoved_ = true;
+            }
+    }
+
+    bool GuiKeyboardItem::lit(int note) const noexcept
+    {
+        if (note < 0 || note > 127)
+            return false;
+        const auto k = static_cast<std::size_t>(note);
+        return note == held_ || (down_[k / 32] & (1u << (k % 32))) != 0;
+    }
+
+    void GuiKeyboardItem::tick(float dt, bool hovered, bool, funkgui::Point p)
     {
         hover_ = hovered ? noteAt(p) : -1;
+        stir_.tick(dt, downMoved_);                      // a key down or up: the full rate a while (Stirred)
+        downMoved_ = false;
     }
 
     void GuiKeyboardItem::pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController&, funkgui::HostServices&)
@@ -1197,7 +1217,7 @@ namespace playground::ui
         {
             if (k.black)
                 continue;
-            const bool down = k.note == held_, hot = k.note == hover_;
+            const bool down = lit(k.note), hot = k.note == hover_;
             const Col fill = down ? funkgui::mix(ivory, col, 0.55f) : (hot ? funkgui::mix(ivory, col, 0.12f) : ivory);
             c.rrect(k.r.x + 0.5f, k.r.y, k.r.w - 1.0f, k.r.h, 3.0f, fill);
             if (((k.note % 12) + 12) % 12 == 0 && k.r.w >= 12.0f)
@@ -1211,7 +1231,7 @@ namespace playground::ui
         {
             if (!k.black)
                 continue;
-            const bool down = k.note == held_, hot = k.note == hover_;
+            const bool down = lit(k.note), hot = k.note == hover_;
             const Col fill = down ? funkgui::mix(ebony, col, 0.7f) : (hot ? funkgui::mix(ebony, col, 0.25f) : ebony);
             c.rrect(k.r.x, k.r.y, k.r.w, k.r.h, 2.5f, fill, 1.0f, gap);
             c.hairlineH(k.r.x + 2.0f, k.r.bottom() - 5.0f, k.r.w - 4.0f, funkgui::mix(fill, Col{ 0xFF, 0xFF, 0xFF }, 0.18f));

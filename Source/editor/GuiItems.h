@@ -8,7 +8,7 @@
 //                    chooses on a click (Return and Space step them), a menu opens on a click. One gesture each.
 //   GuiXyItem        a pad that moves two parameters at once: x to the right, y up
 //   GuiEnvelopeItem  the ADSR shape four parameters make, drawn (a readout)
-//   GuiKeyboardItem  an instrument's keys: a click plays a note, a drag slides across them
+//   GuiKeyboardItem  an instrument's keys: a click plays a note, a drag slides across them; every key down lit
 //   GuiShaderItem    a shader of the program's own, drawn by the GPU; the pointer over it is among its inputs
 //                    (pointer.x ...), and its pointer properties write parameters as an area's do
 //   GuiPointerItem   an area, or what a container, a label or a display with pointer properties takes (x=, y=,
@@ -279,6 +279,10 @@ namespace playground::ui
     // the key), a drag slides from key to key, letting go releases it; `play` takes (note, velocity 0..1), 0 a release.
     // With wheels, a pitch wheel and a mod wheel at its left: a drag moves one (the pitch wheel springs back to its
     // middle when let go); `wheel` takes (pitch, value: -1..1 for the pitch wheel, 0..1 for the mod wheel).
+    // Every key down lights as the pointer's does, whoever plays it (the host's MIDI, this keyboard, a racing wheel's
+    // start key): the Engine's keys down as of its last block (Meters::heldKeys, never a key the pedal holds after it
+    // came up), which GuiView::tick gives it each frame (setKeysDown); a change is motion for a quarter second
+    // (Stirred), so a phrase lights at the full rate.
     class GuiKeyboardItem final : public Item
     {
     public:
@@ -291,6 +295,9 @@ namespace playground::ui
         int noteAt(funkgui::Point p, float* velocity = nullptr) const;     // -1 off its keys
         funkgui::Point centreOfNote(int note) const;     // a key's middle, for the probes (its cell's centre if none)
         int held() const noexcept { return held_; }      // the note held, -1 for none
+        // The keys down, a bit each (Meters::heldKeys: key k word k / 32, bit k % 32), as of the frame.
+        void setKeysDown(const uint32_t (&keys)[4]) noexcept;
+        bool lit(int note) const noexcept;               // drawn down: the pointer's note, or a key down
         void release();                                  // lets go of it (and of the pitch wheel)
         bool wheels() const noexcept { return wheels_; }
         funkgui::Rect pitchWheel() const noexcept;       // the wheels' slots (empty without wheels)
@@ -300,7 +307,11 @@ namespace playground::ui
 
         void tick(float, bool hovered, bool, funkgui::Point p) override;
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override;
-        uint64_t drawKey() const override { return DrawKey{}.mix(held_).mix(hover_).mix(pitch_).mix(mod_).mix(dragWheel_).h; }
+        uint64_t drawKey() const override
+        {
+            return DrawKey{}.mix(held_).mix(hover_).mix(pitch_).mix(mod_).mix(dragWheel_)
+                .mix(down_[0]).mix(down_[1]).mix(down_[2]).mix(down_[3]).h;
+        }
         bool contains(funkgui::Point p) const override { return shown_ && area_.contains(p) && cell_.contains(p); }
         funkgui::Cursor cursorAt(funkgui::Point) const override { return funkgui::Cursor::pointingHand; }
         void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController&, funkgui::HostServices&) override;
@@ -309,7 +320,7 @@ namespace playground::ui
         void accessibility(std::vector<funkgui::A11yItem>& out) const override;
         bool a11yAction(uint32_t, funkgui::A11yAction, double, funkgui::GestureController&) override { return false; }
         void specLine(char* out, std::size_t n) const override;
-        bool settled() const override { return held_ < 0 && dragWheel_ < 0; }
+        bool settled() const override { return held_ < 0 && dragWheel_ < 0 && (!shown_ || !stir_.moving()); }
         funkgui::Point centre() const override { return { cell_.centreX(), cell_.centreY() }; }
         bool shown() const override { return shown_; }
         bool focusable() const override { return false; }
@@ -337,6 +348,9 @@ namespace playground::ui
         funkgui::Rect cell_, area_;
         bool shown_ = false;
         int held_ = -1, hover_ = -1;
+        std::array<uint32_t, 4> down_{};                 // the keys down (setKeysDown)
+        bool downMoved_ = false;                         // ... changed since the last tick
+        Stirred stir_;
     };
 
     // A note's name: 60 is C4.

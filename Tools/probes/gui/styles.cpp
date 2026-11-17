@@ -4,6 +4,8 @@
 // real Processor, written to <build>/probe-out/:
 //   gui.styles.png         its SYNTH page: a bar of pages, the knobs' nine looks in a row that wraps, sections as a
 //                          card, an inset and a plate, rounded, on a ground with a gradient; an instrument's keyboard
+//   gui.styles.keys.png    (an instrument) the keyboard with a C minor chord held by the host's MIDI and the pointer's
+//                          key lit
 //   gui.styles.fx.png      its FX page: a frame with its own corners, fill and border; pills of pages in it
 //   gui.styles.mixer.png   its MIXER page: a list of pages at the left
 //   gui.styles.narrow.png  the least size: the knobs' row wraps onto more lines
@@ -24,6 +26,11 @@
 //             releases it (silent); a drag slides to the next key
 //   WHEELS    (an instrument) the keyboard's wheels: the pitch wheel dragged up bends +1 and reaches the Engine's Host
 //             block (host.fm); let go, it springs back to 0; the mod wheel stays where it is left
+//   HELD      (an instrument) every key down lights as the pointer's does (Meters::heldKeys): a chord the host's MIDI
+//             plays through the processor (C minor: a black key among them) lights its keys and no other (a new draw
+//             key, the full rate while they change), the pointer's key lights at once beside it, each goes dark when
+//             let go (a new draw key again); a key the sustain pedal holds after it came up is dark while its voice
+//             sounds; settled once they rest
 //   LIVE      a knob's live= follows its field: the field's value as a share of the parameter's range
 //   RATE      what moves with no input keeps the editor at the full rate (Items.h Stirred), its frames as the items ask
 //             them (Cadence.h): a live= mark on a field that moves each block (55 frames a second or more, where it was
@@ -50,6 +57,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <initializer_list>
 #include <string>
 #include <thread>
 #include <vector>
@@ -410,6 +418,78 @@ PROBE(gui, styles)
         listen(processor, host, 1);
         P.near("wheels.mod_reaches_host", static_cast<double>(processor.engine().host().modwheel), 0.75, 1e-3);
         P.eq("wheels.settled", keys->settled() ? 1 : 0, 1);
+
+        // ---- HELD ------------------------------------------------------------------------------------------------------
+        // Every key down lights as the pointer's does, whoever plays it: here the host's MIDI, through the processor.
+        host.settle();
+        // A block of 256 samples with `events` at its first sample (the host's MIDI), then a frame: the keyboard reads
+        // the keys down the Engine published at the block's end.
+        const auto playMidi = [&processor, &host](std::initializer_list<juce::MidiMessage> events) {
+            juce::AudioBuffer<float> buffer(2, 256);
+            buffer.clear();
+            juce::MidiBuffer midi;
+            for (const juce::MidiMessage& m : events)
+                midi.addEvent(m, 0);
+            processor.processBlock(buffer, midi);
+            host.tick(1);
+        };
+        const auto noteOn = [](int note) { return juce::MidiMessage::noteOn(1, note, static_cast<juce::uint8>(100)); };
+        const auto noteOff = [](int note) { return juce::MidiMessage::noteOff(1, note); };
+        const auto pedal = [](bool down) { return juce::MidiMessage::controllerEvent(1, 64, down ? 127 : 0); };
+        const auto lit = [keys](std::initializer_list<int> notes) {
+            bool all = true;
+            for (const int n : notes)
+                all = all && keys->lit(n);
+            return all;
+        };
+        const auto dark = [keys](std::initializer_list<int> notes) {
+            bool none = true;
+            for (const int n : notes)
+                none = none && !keys->lit(n);
+            return none;
+        };
+        P.eq("held.none_first", dark({ 60, 63, 67, 72 }) ? 1 : 0, 1);
+        const uint64_t calmKey = keys->drawKey();
+        playMidi({ noteOn(60), noteOn(63), noteOn(67) });
+        P.eq("held.midi_lit", lit({ 60, 63, 67 }) ? 1 : 0, 1);
+        P.eq("held.others_dark", dark({ 59, 61, 62, 64, 65, 66, 68, 72 }) ? 1 : 0, 1);
+        P.eq("held.no_pointer_note", keys->held(), -1);
+        P.eq("held.draws", keys->drawKey() != calmKey ? 1 : 0, 1);
+        P.eq("held.full_rate", keys->settled() ? 0 : 1, 1);
+        // The pointer's own key lights at once, before the audio thread has heard it, beside the host's.
+        {
+            const funkgui::Point at = keys->centreOfNote(72);
+            host.press(at.x, at.y);
+            host.tick(1);
+            P.eq("held.pointer_lit", keys->held() == 72 && keys->lit(72) && lit({ 60, 63, 67 }) ? 1 : 0, 1);
+            playMidi({});                                // the pointer's note reaches the Engine
+            pg::Meters m;
+            port.meters(m);
+            P.eq("held.pointer_in_meters", static_cast<int>((m.heldKeys[72 / 32] >> (72 % 32)) & 1u), 1);
+            writePng(P, host, "gui.styles.keys.png", "keys");
+            host.release();
+            host.tick(1);
+            playMidi({});                                // ... and its release
+            P.eq("held.pointer_released", dark({ 72 }) && keys->held() < 0 ? 1 : 0, 1);
+            P.eq("held.midi_still_lit", lit({ 60, 63, 67 }) ? 1 : 0, 1);
+        }
+        const uint64_t chordKey = keys->drawKey();
+        playMidi({ noteOff(60), noteOff(63), noteOff(67) });
+        P.eq("held.midi_released_dark", dark({ 60, 63, 67 }) ? 1 : 0, 1);
+        P.eq("held.dark_draws", keys->drawKey() != chordKey ? 1 : 0, 1);
+        // A note the sustain pedal holds after its key came up sounds on, its key dark: only keys down light.
+        playMidi({ pedal(true), noteOn(62) });
+        P.eq("held.pedal_key_lit", lit({ 62 }) ? 1 : 0, 1);
+        playMidi({ noteOff(62) });
+        {
+            pg::Meters m;
+            port.meters(m);
+            P.eq("held.pedal_holds_voice", static_cast<int>(m.pedalHeld), 1);
+        }
+        P.eq("held.pedal_key_dark", dark({ 62 }) ? 1 : 0, 1);
+        playMidi({ pedal(false) });
+        host.tick(4, 0.1f);                               // past Stirred's quarter second
+        P.eq("held.settled", keys->settled() ? 1 : 0, 1);
     }
     else
     {

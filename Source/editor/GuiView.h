@@ -21,8 +21,8 @@
 //                       and scroll kept for the next layout()
 //   setControls()       each slot's dial (its Control, label and options' names) for the controls
 //   registerShaders()   the spec's shaders' programs given to FunkGui's registry (once built: Shaders.h), or why not
-//   tick()              a frame: the controls' live= marks and the shaders' inputs, from the meters (and the
-//                       pointer over each shader: pointer.x ...)
+//   tick()              a frame: the controls' live= marks, the shaders' inputs and the keyboards' keys down, from
+//                       the meters (and the pointer over each shader: pointer.x ...)
 //   showPointer()       a picture's pointer (view_panel's and the sandbox's values: pointer.hover ...): every shader's
 //                       pointer inputs drawn at those values, in place of the pointer's
 //
@@ -107,7 +107,8 @@ namespace playground::ui
         // compile's, which say why a shader was not built.
         void registerShaders(const PanelSpec& spec, const Sources& files, const std::string& notes);
         // `shown`: the meters as the displays take them; `live`: they are this interface's program's (else the controls
-        // show no live= mark); `liveTaps`: taps whose live= marks show even so (bit t: tap t; a picture's state).
+        // show no live= mark; the keyboards light the keys down whichever program plays); `liveTaps`: taps whose live=
+        // marks show even so (bit t: tap t; a picture's state).
         void tick(const PanelSpec& spec, const Meters& shown, bool live, uint32_t liveTaps = 0);
         // A picture's pointer: x, y, down, hover (pointer.x ... in a shader's inputs), each NaN for the pointer's own.
         void showPointer(const std::array<float, 4>& pointer) noexcept { shownPointer_ = pointer; }

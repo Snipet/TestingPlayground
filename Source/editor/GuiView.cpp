@@ -463,6 +463,10 @@ namespace playground::ui
             }
             item.setInputs(v);
         }
+        // The keyboards' keys down, whoever plays them (Meters::heldKeys: the host's MIDI, a keyboard's, a wheel's).
+        for (const int i : keyboards_)
+            if (i >= 0)
+                static_cast<GuiKeyboardItem&>(*items_[static_cast<std::size_t>(i)]).setKeysDown(shown.heldKeys);
     }
 
     funkgui::Theme GuiView::theme(const funkgui::Theme& th, const PanelSpec& spec) const
